@@ -1,0 +1,2 @@
+#include <ntverp.h>
+1 RCDATA { "hello" }

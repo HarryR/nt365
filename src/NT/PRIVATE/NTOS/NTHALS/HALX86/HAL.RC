@@ -1,0 +1,11 @@
+#include <WINVER.H>
+
+#include <NTVERP.H>
+
+#define	VER_FILETYPE	VFT_DLL
+#define	VER_FILESUBTYPE	VFT2_UNKNOWN
+#define VER_FILEDESCRIPTION_STR     "Hardware Abstraction Layer DLL"
+#define VER_INTERNALNAME_STR        "hal.dll"
+
+#include "COMMON.VER"
+
