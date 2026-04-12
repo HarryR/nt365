@@ -141,6 +141,11 @@ build_fsrtl()  { run_nmake "$NTOS/FSRTL/UP"    "FSRTL - File System RTL"; }
 build_raw()    { run_nmake "$NTOS/RAW/UP"      "RAW - Raw File System"; }
 build_vdm()    { run_nmake "$NTOS/VDM/UP"      "VDM - Virtual DOS Machine"; }
 
+# --- Boot device / filesystem drivers (TARGETTYPE=DRIVER) ---
+build_atdisk() { run_nmake "$NTOS/DD/HARDDISK" "ATDISK - IDE disk driver"; }
+build_null()   { run_nmake "$NTOS/DD/NULL"     "NULL - null device driver"; }
+build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"; }
+
 # --- INIT: links all libs into NTOSKRNL.EXE ---
 
 build_init() {
@@ -230,6 +235,9 @@ case "$COMPONENT" in
     vdm)    build_vdm ;;
     init)   build_init ;;
     hal)    build_hal ;;
+    atdisk) build_atdisk ;;
+    null)   build_null ;;
+    fastfat) build_fastfat ;;
     geni386) build_geni386 ;;
     all)
         build_geni386
@@ -251,16 +259,22 @@ case "$COMPONENT" in
         build_vdm
         build_init
         build_hal
+        build_atdisk
+        build_null
+        build_fastfat
         echo ""
         echo "========================================"
         echo "Build complete."
         echo "  NTOSKRNL: $NTOS/INIT/UP/obj/i386/ntoskrnl.exe"
         echo "  HAL:      $NTOS/NTHALS/HAL/obj/i386/hal.dll"
+        echo "  ATDISK:   $NT_ROOT/PUBLIC/SDK/LIB/I386/atdisk.sys"
+        echo "  NULL:     $NT_ROOT/PUBLIC/SDK/LIB/I386/null.sys"
+        echo "  FASTFAT:  $NT_ROOT/PUBLIC/SDK/LIB/I386/fastfat.sys"
         echo "========================================"
         ;;
     *)
         echo "Unknown component: $COMPONENT"
-        echo "Usage: $0 [ke|rtl|ex|ob|se|ps|mm|cache|config|lpc|dbgk|io|kd|fsrtl|raw|vdm|init|hal|all]"
+        echo "Usage: $0 [ke|rtl|ex|ob|se|ps|mm|cache|config|lpc|dbgk|io|kd|fsrtl|raw|vdm|init|hal|atdisk|null|fastfat|all]"
         exit 1
         ;;
 esac

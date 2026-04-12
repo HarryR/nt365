@@ -32,6 +32,9 @@ COMP_DIRS=(
     "$NTOS/VDM/UP"
     "$NTOS/INIT/UP"
     "$NTOS/NTHALS/HAL"
+    "$NTOS/DD/HARDDISK"
+    "$NTOS/DD/NULL"
+    "$NTOS/FASTFAT"
 )
 
 for dir in "${COMP_DIRS[@]}"; do
@@ -51,7 +54,8 @@ fi
 find "$NTOS" -maxdepth 3 \( -name "RC*00*" -o -name "RD*00*" \) -delete 2>/dev/null
 
 # Build products in PUBLIC/SDK/LIB that we generate
-for f in ntoskrnl.lib ntoskrnl.exp hal.lib hal.exp tmp.lib tmp.exp; do
+for f in ntoskrnl.lib ntoskrnl.exp hal.lib hal.exp tmp.lib tmp.exp \
+         atdisk.sys null.sys fastfat.sys; do
     if [ -f "$NT_ROOT/PUBLIC/SDK/LIB/I386/$f" ]; then
         rm -f "$NT_ROOT/PUBLIC/SDK/LIB/I386/$f"
         echo "  cleaned PUBLIC/SDK/LIB/I386/$f"
