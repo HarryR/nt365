@@ -14,13 +14,14 @@ HalpInitSerial(VOID)
 {
     if (SerialInitialized) return;
 
-    HalpWritePort(COM1_PORT + 1, 0x00);  /* Disable interrupts */
-    HalpWritePort(COM1_PORT + 3, 0x80);  /* DLAB on */
-    HalpWritePort(COM1_PORT + 0, 0x01);  /* 115200 baud (divisor 1) */
-    HalpWritePort(COM1_PORT + 1, 0x00);
-    HalpWritePort(COM1_PORT + 3, 0x03);  /* 8N1, DLAB off */
-    HalpWritePort(COM1_PORT + 2, 0xC7);  /* Enable FIFO */
-    HalpWritePort(COM1_PORT + 4, 0x0B);  /* DTR + RTS + OUT2 */
+    /* Initialize COM2 for HAL debug output (COM1 reserved for KD) */
+    HalpWritePort(HAL_DEBUG_PORT + 1, 0x00);  /* Disable interrupts */
+    HalpWritePort(HAL_DEBUG_PORT + 3, 0x80);  /* DLAB on */
+    HalpWritePort(HAL_DEBUG_PORT + 0, 0x01);  /* 115200 baud (divisor 1) */
+    HalpWritePort(HAL_DEBUG_PORT + 1, 0x00);
+    HalpWritePort(HAL_DEBUG_PORT + 3, 0x03);  /* 8N1, DLAB off */
+    HalpWritePort(HAL_DEBUG_PORT + 2, 0xC7);  /* Enable FIFO */
+    HalpWritePort(HAL_DEBUG_PORT + 4, 0x0B);  /* DTR + RTS + OUT2 */
 
     SerialInitialized = TRUE;
 }
@@ -31,9 +32,9 @@ HalpSerialPutChar(CHAR c)
     HalpInitSerial();
 
     /* Wait for transmit buffer empty */
-    while (!(HalpReadPort(COM1_PORT + 5) & 0x20))
+    while (!(HalpReadPort(HAL_DEBUG_PORT + 5) & 0x20))
         ;
-    HalpWritePort(COM1_PORT, (UCHAR)c);
+    HalpWritePort(HAL_DEBUG_PORT, (UCHAR)c);
 }
 
 VOID

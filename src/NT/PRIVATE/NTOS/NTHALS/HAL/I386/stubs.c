@@ -45,6 +45,7 @@ HalSetTimeIncrement(
     IN ULONG DesiredIncrement
     )
 {
+    HalpSerialPrint("HAL: SetTimeIncrement\r\n");
     return 100000;  /* 10ms in 100ns units */
 }
 
@@ -84,6 +85,7 @@ HalQueryRealTimeClock(
     OUT PTIME_FIELDS TimeFields
     )
 {
+    HalpSerialPrint("HAL: QueryRealTimeClock\r\n");
     return FALSE;
 }
 
@@ -186,6 +188,7 @@ HalAssignSlotResources(
 VOID
 HalReportResourceUsage(VOID)
 {
+    HalpSerialPrint("HAL: ReportResourceUsage\r\n");
 }
 
 /* HalGetInterruptVector is in interrupt.c */
@@ -357,6 +360,7 @@ IoWritePartitionTable(
 BOOLEAN
 HalAllProcessorsStarted(VOID)
 {
+    HalpSerialPrint("HAL: AllProcessorsStarted\r\n");
     return TRUE;
 }
 
@@ -374,7 +378,7 @@ HalReturnToFirmware(
     IN FIRMWARE_REENTRY Routine
     )
 {
-    HalpSerialPrint("HAL: ReturnToFirmware\r\n");
+    HalpSerialPrint("HAL: ReturnToFirmware!\r\n");
     HalpWritePort(0x64, 0xFE);     /* Reset via 8042 keyboard controller */
     _asm { cli }
     _asm { hlt }
@@ -434,17 +438,52 @@ KdPortInitialize(
     IN BOOLEAN Initialize
     )
 {
+    HalpSerialPrint(Initialize ? "HAL: KdPortInitialize(TRUE)\r\n"
+                               : "HAL: KdPortInitialize(FALSE)\r\n");
+    if (Initialize) {
+        /* Initialize COM1 for KD communication */
+        HalpWritePort(COM1_PORT + 1, 0x00);  /* Disable interrupts */
+        HalpWritePort(COM1_PORT + 3, 0x80);  /* DLAB on */
+        HalpWritePort(COM1_PORT + 0, 0x01);  /* 115200 baud */
+        HalpWritePort(COM1_PORT + 1, 0x00);
+        HalpWritePort(COM1_PORT + 3, 0x03);  /* 8N1, DLAB off */
+        HalpWritePort(COM1_PORT + 2, 0xC7);  /* Enable FIFO */
+        HalpWritePort(COM1_PORT + 4, 0x0B);  /* DTR + RTS + OUT2 */
+        HalpSerialPrint("HAL: COM1 initialized for KD\r\n");
+    }
     return Initialize;
 }
+
+static ULONG KdpGetByteCount = 0;
 
 ULONG
 KdPortGetByte(
     OUT PUCHAR Input
     )
 {
-    if (HalpReadPort(COM1_PORT + 5) & 0x01) {
-        *Input = HalpReadPort(COM1_PORT);
-        return 1;  /* CP_GET_SUCCESS */
+    /* Poll COM1 for up to ~1 second (matching kernel's timeout expectation).
+     * The kernel's KdpReceivePacketLeader assumes each KdPortGetByte call
+     * waits before returning NODATA. Without polling, ACK packets from
+     * the debugger arrive after the kernel has already timed out. */
+    ULONG i;
+    for (i = 0; i < 1000000; i++) {
+        if (HalpReadPort(COM1_PORT + 5) & 0x01) {
+            *Input = HalpReadPort(COM1_PORT);
+            KdpGetByteCount++;
+            if (KdpGetByteCount <= 64) {
+                /* Trace received bytes to COM2 as hex */
+                CHAR hex[8];
+                UCHAR nibh = (*Input >> 4) & 0x0F;
+                UCHAR nibl = *Input & 0x0F;
+                hex[0] = nibh < 10 ? '0'+nibh : 'A'+nibh-10;
+                hex[1] = nibl < 10 ? '0'+nibl : 'A'+nibl-10;
+                hex[2] = ' ';
+                hex[3] = '\0';
+                HalpSerialPrint(hex);
+            }
+            return 1;  /* CP_GET_SUCCESS */
+        }
+        HalpReadPort(0x80);  /* ~1us delay */
     }
     return 0;  /* CP_GET_NODATA */
 }
@@ -462,7 +501,10 @@ KdPortPutByte(
     IN UCHAR Output
     )
 {
-    HalpSerialPutChar((CHAR)Output);
+    /* KD uses COM1 directly — not HalpSerialPutChar which is on COM2 */
+    while (!(HalpReadPort(COM1_PORT + 5) & 0x20))
+        ;
+    HalpWritePort(COM1_PORT, Output);
 }
 
 VOID KdPortRestore(VOID) {}

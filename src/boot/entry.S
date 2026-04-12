@@ -53,7 +53,7 @@ _start:
     movw $0x4F4D, 0xB8000
 
     /* Write to COM1 to show we got control */
-    movw $0x3F8, %dx
+    movw $0x2F8, %dx
     movb $'!', %al
     outb %al, %dx
 
@@ -74,7 +74,7 @@ _start:
     ljmp $KGDT_R0_CODE, $1f
 1:
     movb $'D', %al
-    movw $0x3F8, %dx
+    movw $0x2F8, %dx
     outb %al, %dx
 
     movw $KGDT_R0_DATA, %ax
@@ -92,7 +92,7 @@ _start:
 
     /* Load IDT */
     movb $'I', %al
-    movw $0x3F8, %dx
+    movw $0x2F8, %dx
     outb %al, %dx
     lidt idt_ptr
 

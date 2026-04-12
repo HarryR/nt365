@@ -78,6 +78,8 @@ HalEnableSystemInterrupt(
 {
     ULONG irq;
 
+    HalpSerialPrint("HAL: EnableSystemInterrupt\r\n");
+
     if (Vector < PRIMARY_VECTOR_BASE || Vector >= PRIMARY_VECTOR_BASE + 16) {
         return FALSE;
     }

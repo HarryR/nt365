@@ -115,10 +115,11 @@ static USHORT KernelNameW[] = { 'n','t','o','s','k','r','n','l','.','e','x','e',
 static USHORT HalNameW[]    = { 'h','a','l','.','d','l','l',0 };
 
 /*======================================================================
- * Serial port output (COM1 0x3F8) for debug
+ * Serial port output (COM2 0x2F8) for debug
+ * COM1 is reserved for KD (kernel debugger binary protocol)
  *====================================================================*/
 
-#define COM1_PORT 0x3F8
+#define SERIAL_PORT 0x2F8  /* COM2 */
 
 static inline void outb(USHORT port, UCHAR val) {
     __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -131,18 +132,18 @@ static inline UCHAR inb(USHORT port) {
 }
 
 static void serial_init(void) {
-    outb(COM1_PORT + 1, 0x00);  /* Disable interrupts */
-    outb(COM1_PORT + 3, 0x80);  /* Enable DLAB */
-    outb(COM1_PORT + 0, 0x03);  /* 38400 baud */
-    outb(COM1_PORT + 1, 0x00);
-    outb(COM1_PORT + 3, 0x03);  /* 8N1 */
-    outb(COM1_PORT + 2, 0xC7);  /* Enable FIFO */
-    outb(COM1_PORT + 4, 0x0B);  /* DTR + RTS + OUT2 */
+    outb(SERIAL_PORT + 1, 0x00);  /* Disable interrupts */
+    outb(SERIAL_PORT + 3, 0x80);  /* Enable DLAB */
+    outb(SERIAL_PORT + 0, 0x03);  /* 38400 baud */
+    outb(SERIAL_PORT + 1, 0x00);
+    outb(SERIAL_PORT + 3, 0x03);  /* 8N1 */
+    outb(SERIAL_PORT + 2, 0xC7);  /* Enable FIFO */
+    outb(SERIAL_PORT + 4, 0x0B);  /* DTR + RTS + OUT2 */
 }
 
 static void serial_putc(char c) {
-    while (!(inb(COM1_PORT + 5) & 0x20));
-    outb(COM1_PORT, c);
+    while (!(inb(SERIAL_PORT + 5) & 0x20));
+    outb(SERIAL_PORT, c);
     if (c == '\n') serial_putc('\r');
 }
 
@@ -683,7 +684,7 @@ static void build_loader_block(multiboot_info_t *mbi) {
     head->Flink = &KernelModule.InLoadOrderLinks;
     head->Blink = &HalModule.InLoadOrderLinks;
 
-    /* Store pointer for assembly code */
+    /* Store pointer for assembly code — will be fixed up to KSEG0 later */
     loader_block = (ULONG)&LoaderBlock;
 }
 
@@ -1004,6 +1005,70 @@ ULONG loader_main(multiboot_info_t *mbi) {
     /* Build the loader parameter block */
     print("\nBuilding LOADER_PARAMETER_BLOCK...\n");
     build_loader_block(mbi);
+
+    /*
+     * Fix up all LoaderBlock pointers to KSEG0 addresses.
+     * The kernel expects everything in KSEG0 (0x80000000+) space.
+     * After MmInitSystem destroys the identity map, physical addresses
+     * become inaccessible — only KSEG0 mappings survive.
+     */
+    {
+        #define TOKSEG(p) ((PVOID)((ULONG)(p) | KSEG0_BASE))
+        #define FIXLIST(head) do { \
+            LIST_ENTRY *_h = (head); \
+            LIST_ENTRY *_e = _h->Flink; \
+            /* Fix head's Flink/Blink */ \
+            _h->Flink = TOKSEG(_h->Flink); \
+            _h->Blink = TOKSEG(_h->Blink); \
+            /* Walk list and fix each entry's Flink/Blink */ \
+            while (_e != _h) { \
+                LIST_ENTRY *_next = _e->Flink; \
+                _e->Flink = TOKSEG(_e->Flink); \
+                _e->Blink = TOKSEG(_e->Blink); \
+                _e = _next; \
+            } \
+        } while(0)
+
+        /* String pointers */
+        LoaderBlock.ArcBootDeviceName = TOKSEG(LoaderBlock.ArcBootDeviceName);
+        LoaderBlock.ArcHalDeviceName  = TOKSEG(LoaderBlock.ArcHalDeviceName);
+        LoaderBlock.NtBootPathName    = TOKSEG(LoaderBlock.NtBootPathName);
+        LoaderBlock.NtHalPathName     = TOKSEG(LoaderBlock.NtHalPathName);
+        LoaderBlock.LoadOptions       = TOKSEG(LoaderBlock.LoadOptions);
+
+        /* Struct pointers */
+        LoaderBlock.NlsData           = TOKSEG(LoaderBlock.NlsData);
+        LoaderBlock.ArcDiskInformation = TOKSEG(LoaderBlock.ArcDiskInformation);
+
+        /* Idle thread/stack */
+        LoaderBlock.KernelStack = (ULONG)LoaderBlock.KernelStack | KSEG0_BASE;
+        LoaderBlock.Thread      = (ULONG)LoaderBlock.Thread | KSEG0_BASE;
+
+        /* ArcDiskInfo list head */
+        {
+            ARC_DISK_INFORMATION *adi = (ARC_DISK_INFORMATION *)TOKSEG(&ArcDiskInfo);
+            /* Empty list — just fix up the self-pointers */
+            adi->DiskSignatures.Flink = &adi->DiskSignatures;
+            adi->DiskSignatures.Blink = &adi->DiskSignatures;
+        }
+
+        /* Fix linked lists */
+        FIXLIST(&LoaderBlock.MemoryDescriptorListHead);
+        FIXLIST(&LoaderBlock.LoadOrderListHead);
+        FIXLIST(&LoaderBlock.BootDriverListHead);
+
+        /* Fix LDR_DATA_TABLE_ENTRY name buffers */
+        KernelModule.BaseDllName.Buffer = TOKSEG(KernelModule.BaseDllName.Buffer);
+        KernelModule.FullDllName.Buffer = TOKSEG(KernelModule.FullDllName.Buffer);
+        HalModule.BaseDllName.Buffer = TOKSEG(HalModule.BaseDllName.Buffer);
+        HalModule.FullDllName.Buffer = TOKSEG(HalModule.FullDllName.Buffer);
+
+        /* LoaderBlock pointer itself */
+        loader_block = (ULONG)&LoaderBlock | KSEG0_BASE;
+
+        #undef TOKSEG
+        #undef FIXLIST
+    }
 
     /*
      * Find KiSystemStartup in ntoskrnl's exports

@@ -19,8 +19,10 @@
 #define PIT_CMD     0x43
 #define PIT_FREQ    1193182
 
-/* COM1 serial port */
-#define COM1_PORT   0x3F8
+/* Serial ports */
+#define COM1_PORT   0x3F8   /* Used by KD (kernel debugger) */
+#define COM2_PORT   0x2F8   /* Used by HAL debug output */
+#define HAL_DEBUG_PORT  COM2_PORT
 
 /* PIC vector base */
 #define PRIMARY_VECTOR_BASE     0x30

@@ -4,6 +4,7 @@
 #
 # Usage: ./boot.sh [options]
 #   --serial    Show serial output on terminal (default: to file)
+#   --kd        Use TCP serial (:4321) for kdserial.py KD packet decoder
 #   --gdb       Start with GDB stub, wait for connection on :1234
 #   --trace     Enable execution tracing to /tmp/qemu_trace.log
 #
@@ -28,7 +29,10 @@ for f in "$KERN" "$HAL" "$BOOT" "$NLS_ANSI" "$NLS_OEM" "$NLS_LANG" "$SYSTEM_HIVE
 done
 
 # Parse options
-SERIAL_OPT="-serial file:/tmp/micront_serial.log"
+# COM1 = KD debugger port (binary packets)
+# COM2 = HAL debug output (plain text)
+SERIAL1_OPT="-serial file:/tmp/micront_kd.log"
+SERIAL2_OPT="-serial file:/tmp/micront_hal.log"
 GDB_OPT=""
 TRACE_OPT=""
 DISPLAY_OPT="-display none"
@@ -36,7 +40,14 @@ DISPLAY_OPT="-display none"
 for arg in "$@"; do
     case "$arg" in
         --serial)
-            SERIAL_OPT="-serial stdio"
+            SERIAL2_OPT="-serial stdio"
+            ;;
+        --kd)
+            SERIAL1_OPT="-serial tcp:localhost:4321"
+            SERIAL2_OPT="-serial stdio"
+            echo "KD serial (COM1) connects to TCP :4321."
+            echo "Start kdserial.py FIRST in another terminal:"
+            echo "  python3 tools/kdserial.py --listen -v"
             ;;
         --gdb)
             GDB_OPT="-S -gdb tcp::1234"
@@ -54,8 +65,11 @@ echo "Booting MicroNT..."
 echo "  Kernel: $KERN"
 echo "  HAL:    $HAL"
 echo "  Boot:   $BOOT"
-if [ "$SERIAL_OPT" = "-serial file:/tmp/micront_serial.log" ]; then
-    echo "  Serial: /tmp/micront_serial.log"
+if echo "$SERIAL1_OPT" | grep -q "file:"; then
+    echo "  COM1 (KD):  /tmp/micront_kd.log"
+fi
+if echo "$SERIAL2_OPT" | grep -q "file:"; then
+    echo "  COM2 (HAL): /tmp/micront_hal.log"
 fi
 echo ""
 
@@ -64,7 +78,8 @@ eval qemu-system-i386 \
     -initrd "\"$KERN,$HAL,$NLS_ANSI,$NLS_OEM,$NLS_LANG,$SYSTEM_HIVE\"" \
     -m 64 \
     $DISPLAY_OPT \
-    $SERIAL_OPT \
+    $SERIAL1_OPT \
+    $SERIAL2_OPT \
     -no-reboot \
     $GDB_OPT \
     $TRACE_OPT
