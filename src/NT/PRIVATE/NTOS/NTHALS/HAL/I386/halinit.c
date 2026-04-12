@@ -88,6 +88,19 @@ HalInitSystem(
          * If a pending FPU error exists when interrupts are later enabled
          * (KiRestoreInterrupts), exception 16 fires before the interrupt
          * dispatch table is initialized, causing BugCheck 0x50. */
+        /* Clear pending FPU exceptions to prevent exception 16 (#MF) from
+         * firing before the kernel's interrupt dispatch table is initialized.
+         * Must temporarily clear EM+TS in CR0 since fnclex checks these on 486. */
+        _asm {
+            mov eax, cr0
+            push eax                     ; save original CR0
+            and eax, NOT (CR0_TS+CR0_EM) ; clear TS (bit 3) + EM (bit 2)
+            mov cr0, eax
+            fnclex                       ; now safe to clear FPU exceptions
+            pop eax                      ; restore original CR0
+            mov cr0, eax
+        }
+
         HalpSerialPrint("HAL: Phase 0 complete (PICs programmed, all masked)\r\n");
 
         return TRUE;

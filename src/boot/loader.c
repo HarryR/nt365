@@ -78,11 +78,17 @@ static ULONG *alloc_page_table(void) {
     return pt;
 }
 
-/* PCR - Processor Control Region (one page, KIP0PCRADDRESS = 0xFFDFF000) */
-static UCHAR BootPcr[4096] __attribute__((aligned(4096)));
+/* PCR + Shared User Data: TWO contiguous pages (matching OSLOADER layout).
+ * Page 0 = PCR (KIP0PCRADDRESS = 0xFFDFF000)
+ * Page 1 = Shared User Data (KI_USER_SHARED_DATA = 0xFFDF0000)
+ * The OSLOADER allocates these as LoaderStartupPcrPage. */
+static UCHAR BootPcrPages[2 * 4096] __attribute__((aligned(4096)));
+#define BootPcr           (BootPcrPages)
+#define SharedUserDataPage (BootPcrPages + 4096)
 
-/* Shared user data page (KI_USER_SHARED_DATA = 0xFFDF0000) */
-static UCHAR SharedUserDataPage[4096] __attribute__((aligned(4096)));
+/* TSS — separate allocation matching OSLOADER's LoaderMemoryData.
+ * KTSS is ~0x2000 bytes, allocate 2 pages. */
+static UCHAR BootTssPages[2 * 4096] __attribute__((aligned(4096)));
 
 /* Idle thread/process/stack - allocated statically */
 static UCHAR IdleThreadStorage[4096] __attribute__((aligned(16)));
@@ -256,8 +262,12 @@ static PVOID load_pe_image(ULONG file_base, ULONG load_addr, const char *name) {
     print_hex(size_of_image);
     print("\n");
 
-    /* Clear the entire image region at the PHYSICAL address */
-    memset((void *)load_addr, 0, size_of_image);
+    /* Clear only the headers region. DON'T zero the full image —
+     * the kernel's NPX save area in BSS needs to be left as-is
+     * (the real OSLOADER doesn't zero allocated physical pages).
+     * Sections with raw data are copied below, BSS sections have
+     * SizeOfRawData=0 so they get skipped and retain whatever
+     * was in physical memory (or zeros from multiboot). */
 
     /* Copy headers */
     ULONG header_size = nt->OptionalHeader.SizeOfHeaders;
@@ -336,7 +346,9 @@ static ULONG pe_lookup_export(ULONG image_base, const char *func_name) {
         const char *name = (const char *)(image_base + name_table[i]);
         if (strcmp(name, func_name) == 0) {
             USHORT ordinal = ord_table[i];
-            return image_base + func_table[ordinal];
+            /* Return KSEG0 virtual address, not physical.
+             * The kernel expects all function pointers in KSEG0 space. */
+            return KSEG0_BASE | (image_base + func_table[ordinal]);
         }
     }
     return 0;
@@ -605,6 +617,15 @@ static void build_loader_block(multiboot_info_t *mbi) {
     add_memory_descriptor(LoaderOsloaderHeap, 0xE00, 0x100);   /* 14-15MB: boot stub + data */
     add_memory_descriptor(LoaderFree,         0xF00, 0x3100);  /* 15-64MB free */
 
+    /* PCR pages (LoaderStartupPcrPage) — 2 contiguous pages */
+    add_memory_descriptor(LoaderStartupPcrPage,
+                          (ULONG)BootPcrPages >> PAGE_SHIFT, 2);
+
+    /* TSS pages (LoaderMemoryData) */
+    add_memory_descriptor(LoaderMemoryData,
+                          (ULONG)BootTssPages >> PAGE_SHIFT,
+                          (sizeof(BootTssPages) + PAGE_SIZE - 1) >> PAGE_SHIFT);
+
     /* NLS data descriptor — the kernel walks memory descriptors to find
      * LoaderNlsData and sums up the page count for InitNlsTableSize */
     add_memory_descriptor(LoaderNlsData,
@@ -822,6 +843,46 @@ ULONG loader_main(multiboot_info_t *mbi) {
     setup_page_tables();
 
     /*
+     * NSUnmapFreeDescriptors equivalent: zero KSEG0 PTEs for free pages.
+     * MmInitSystem uses PTE valid bits to determine which pages are free.
+     * Without this, ALL pages have valid PTEs and the MM can't tell what's
+     * free — it may overwrite kernel data during pool initialization.
+     */
+    print("  Unmapping free pages from KSEG0...\n");
+    {
+        int i;
+        for (i = 0; i < NumMemDescriptors; i++) {
+            if (MemDescriptors[i].MemoryType == LoaderFree) {
+                ULONG page;
+                for (page = MemDescriptors[i].BasePage;
+                     page < MemDescriptors[i].BasePage + MemDescriptors[i].PageCount;
+                     page++) {
+                    /* Zero the KSEG0 PTE for this page.
+                     * KSEG0 PDE index = (page >> 10) + 512
+                     * PTE index = page & 0x3FF
+                     * PTE address via self-map: 0xC0000000 + (KSEG0_VA >> 10) */
+                    ULONG kseg0_va = KSEG0_BASE | (page << PAGE_SHIFT);
+                    ULONG pde_idx = kseg0_va >> 22;
+                    ULONG pte_idx = (kseg0_va >> 12) & 0x3FF;
+
+                    /* Get the page table from the PDE */
+                    ULONG pde = PageDirectory[pde_idx];
+                    if (pde & PAGE_PRESENT) {
+                        ULONG *pt = (ULONG *)(pde & ~0xFFF);
+                        pt[pte_idx] = 0;  /* Zero the PTE — marks page as not present */
+                    }
+                }
+            }
+        }
+        /* Flush TLB */
+        {
+            ULONG cr3;
+            __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+            __asm__ volatile("mov %0, %%cr3" : : "r"(cr3));
+        }
+    }
+
+    /*
      * After paging: physical addresses are accessible via both
      * identity map (0-64MB) and KSEG0 (0x80000000+).
      * Update image pointers to virtual addresses.
@@ -840,7 +901,7 @@ ULONG loader_main(multiboot_info_t *mbi) {
 
     ULONG gdt_kseg0 = KSEG0_BASE | (ULONG)boot_gdt;
     ULONG idt_kseg0 = KSEG0_BASE | (ULONG)boot_idt;
-    ULONG tss_kseg0 = KSEG0_BASE | (ULONG)boot_tss;
+    ULONG tss_kseg0 = KSEG0_BASE | (ULONG)BootTssPages;
 
     print("    GDT: ");
     print_hex(gdt_kseg0);
@@ -858,7 +919,7 @@ ULONG loader_main(multiboot_info_t *mbi) {
     /* TSS descriptor (GDT entry 5, selector 0x28) - base = TSS KSEG0 address */
     {
         GDT_ENTRY *e = &gdt_virt[5];
-        e->LimitLow = BOOT_TSS_SIZE - 1;
+        e->LimitLow = sizeof(BootTssPages) - 1;  /* Full KTSS size */
         e->BaseLow  = tss_kseg0 & 0xFFFF;
         e->BaseMid  = (tss_kseg0 >> 16) & 0xFF;
         e->Access   = 0x89;  /* Present, DPL=0, TSS32 available */
