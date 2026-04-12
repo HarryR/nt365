@@ -180,35 +180,29 @@ build_init() {
 # --- HAL: builds lib, then links HAL.DLL ---
 
 build_hal() {
-    local hal_dir="$NTOS/NTHALS/HALX86"
+    local hal_dir="$NTOS/NTHALS/HAL"
 
     # Step 1: Build the HAL as a library (via nmake/MAKEFILE.DEF)
-    run_nmake "$hal_dir" "HAL - x86 HAL (lib)"
+    run_nmake "$hal_dir" "HAL - MicroNT HAL (lib)"
 
     echo "========================================"
-    echo "Building: HAL - x86 HAL (DLL link)"
+    echo "Building: HAL - MicroNT HAL (DLL link)"
     echo "========================================"
 
     mkdir -p "$hal_dir/obj/i386"
-
-    # Step 2: Compile HAL.RC -> hal.res
-    local hal_win="D:\\PRIVATE\\NTOS\\NTHALS\\HALX86"
     cd "$hal_dir"
 
-    run_wine_cmd "HAL RC" \
-        "D:&& cd \\PRIVATE\\NTOS\\NTHALS\\HALX86&& rc -r -fo obj\\i386\\hal.tmp -Di386 -D_X86_ -ID:\\PUBLIC\\SDK\\INC -ID:\\PUBLIC\\SDK\\INC\\CRT -ID:\\PUBLIC\\OAK\\INC -I..\\..\\inc HAL.RC&& cvtres -i386 obj\\i386\\hal.tmp -r -o obj\\i386\\hal.res"
-
-    # Step 3: Link HAL.DLL
+    # Link HAL.DLL (no RC file for now — no version resources needed)
     run_wine_cmd "HAL LINK" \
-        "D:&& cd \\PRIVATE\\NTOS\\NTHALS\\HALX86&& link -OUT:obj\\i386\\hal.dll -DLL -MACHINE:i386 -BASE:0x80400000 -SUBSYSTEM:NATIVE -ENTRY:HalInitSystem@8 -NODEFAULTLIB -RELEASE -DEBUG:MINIMAL -DEBUGTYPE:COFF -OPT:REF obj\\i386\\hal.res obj\\i386\\*.obj D:\\PUBLIC\\SDK\\LIB\\I386\\ntoskrnl.lib D:\\PUBLIC\\SDK\\LIB\\I386\\libcntpr.lib D:\\PUBLIC\\SDK\\LIB\\I386\\int64.lib D:\\PUBLIC\\SDK\\LIB\\I386\\hal.exp"
+        "D:&& cd \\PRIVATE\\NTOS\\NTHALS\\HAL&& link -OUT:obj\\i386\\hal.dll -DLL -MACHINE:i386 -BASE:0x80400000 -SUBSYSTEM:NATIVE -ENTRY:HalInitSystem@8 -NODEFAULTLIB -RELEASE -DEBUG:MINIMAL -DEBUGTYPE:COFF -OPT:REF obj\\i386\\*.obj D:\\PUBLIC\\SDK\\LIB\\I386\\ntoskrnl.lib D:\\PUBLIC\\SDK\\LIB\\I386\\libcntpr.lib D:\\PUBLIC\\SDK\\LIB\\I386\\int64.lib D:\\PUBLIC\\SDK\\LIB\\I386\\hal.exp"
 
     cd "$SCRIPT_DIR"
 
     if [ -f "$hal_dir/obj/i386/hal.dll" ]; then
-        echo ">>> HAL - x86 HAL (DLL): OK"
+        echo ">>> HAL - MicroNT HAL (DLL): OK"
         ls -la "$hal_dir/obj/i386/hal.dll"
     else
-        echo ">>> HAL - x86 HAL (DLL): FAILED"
+        echo ">>> HAL - MicroNT HAL (DLL): FAILED"
         return 1
     fi
 }
@@ -261,7 +255,7 @@ case "$COMPONENT" in
         echo "========================================"
         echo "Build complete."
         echo "  NTOSKRNL: $NTOS/INIT/UP/obj/i386/ntoskrnl.exe"
-        echo "  HAL:      $NTOS/NTHALS/HALX86/obj/i386/hal.dll"
+        echo "  HAL:      $NTOS/NTHALS/HAL/obj/i386/hal.dll"
         echo "========================================"
         ;;
     *)

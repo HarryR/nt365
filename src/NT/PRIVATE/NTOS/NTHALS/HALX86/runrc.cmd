@@ -1,5 +1,0 @@
-@echo off
-D:
-cd \PRIVATE\NTOS\NTHALS\HALX86
-set PATH=D:\PUBLIC\OAK\BIN\I386
-rc -v -r -fo obj\i386\hal.res -Di386 -D_X86_ -ID:\PUBLIC\SDK\INC -ID:\PUBLIC\SDK\INC\CRT -ID:\PUBLIC\OAK\INC -I..\..\inc HAL.RC

@@ -1,0 +1,33 @@
+!IF 0
+
+MicroNT HAL - Minimal Hardware Abstraction Layer
+
+!ENDIF
+
+MAJORCOMP=ntos
+MINORCOMP=hal
+
+TARGETNAME=hal
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+
+!IF $(386)
+TARGETTYPE=HAL
+!ELSE
+TARGETTYPE=DRIVER
+!ENDIF
+
+INCLUDES=..\..\inc;..\..\ke;..\..\io
+
+SOURCES=
+
+i386_SOURCES=i386\halinit.c   \
+             i386\irql.c       \
+             i386\interrupt.c  \
+             i386\display.c    \
+             i386\stubs.c
+
+DLLDEF=obj\*\hal.def
+
+!IF $(386)
+NTTARGETFILES=$(TARGETPATH)\i386\hal.lib
+!ENDIF

@@ -34,5 +34,8 @@ src/NT/PUBLIC/SDK/LIB/I386/hal.exp
 src/NT/PUBLIC/SDK/LIB/I386/tmp.lib
 src/NT/PUBLIC/SDK/LIB/I386/tmp.exp
 
+# Old HAL (preserved for reference, not built)
+src/NT/PRIVATE/NTOS/NTHALS.old/
+
 # QEMU/test artifacts
 *.log

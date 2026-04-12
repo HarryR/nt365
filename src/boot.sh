@@ -12,7 +12,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KERN="$SCRIPT_DIR/NT/PRIVATE/NTOS/INIT/UP/obj/i386/ntoskrnl.exe"
-HAL="$SCRIPT_DIR/NT/PRIVATE/NTOS/NTHALS/HALX86/obj/i386/hal.dll"
+HAL="$SCRIPT_DIR/NT/PRIVATE/NTOS/NTHALS/HAL/obj/i386/hal.dll"
 BOOT="$SCRIPT_DIR/boot/boot.elf"
 NLS_ANSI="$SCRIPT_DIR/boot/data/C_1252.NLS"
 NLS_OEM="$SCRIPT_DIR/boot/data/C_437.NLS"

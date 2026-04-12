@@ -31,7 +31,7 @@ COMP_DIRS=(
     "$NTOS/RAW/UP"
     "$NTOS/VDM/UP"
     "$NTOS/INIT/UP"
-    "$NTOS/NTHALS/HALX86"
+    "$NTOS/NTHALS/HAL"
 )
 
 for dir in "${COMP_DIRS[@]}"; do
