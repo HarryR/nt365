@@ -91,12 +91,49 @@ typedef struct _ARC_DISK_INFORMATION {
     LIST_ENTRY DiskSignatures;
 } ARC_DISK_INFORMATION, *PARC_DISK_INFORMATION;
 
-/* Configuration component data (minimal) */
+/* Configuration tree (mirrors NT/PRIVATE/NTOS/INC/ARC.H).
+ * The kernel's CmpInitializeHardwareConfiguration walks this tree and creates
+ * \Registry\Machine\Hardware\Description\... keys named after the component
+ * Type using CmTypeName[]. A SystemClass root becomes "System". */
+
+typedef enum _CONFIGURATION_CLASS {
+    SystemClass = 0,
+    ProcessorClass,
+    CacheClass,
+    AdapterClass,
+    ControllerClass,
+    PeripheralClass,
+    MemoryClass,
+    MaximumClass
+} CONFIGURATION_CLASS;
+
+/* Only the CONFIGURATION_TYPE values we actually use are named.
+ * Real enum has 38 entries; the kernel forces Type=ArcSystem for SystemClass
+ * components regardless, so we just set Type=0 (ArcSystem) for the root. */
+typedef enum _CONFIGURATION_TYPE {
+    ArcSystem = 0,
+    CentralProcessor = 1,
+} CONFIGURATION_TYPE;
+
+typedef struct _CONFIGURATION_COMPONENT {
+    CONFIGURATION_CLASS Class;
+    CONFIGURATION_TYPE Type;
+    ULONG Flags;                    /* DEVICE_FLAGS */
+    USHORT Version;
+    USHORT Revision;
+    ULONG Key;
+    ULONG AffinityMask;
+    ULONG ConfigurationDataLength;
+    ULONG IdentifierLength;
+    PCHAR Identifier;
+} CONFIGURATION_COMPONENT;
+
 typedef struct _CONFIGURATION_COMPONENT_DATA {
     struct _CONFIGURATION_COMPONENT_DATA *Parent;
     struct _CONFIGURATION_COMPONENT_DATA *Child;
     struct _CONFIGURATION_COMPONENT_DATA *Sibling;
-    ULONG ComponentEntry[16]; /* simplified */
+    CONFIGURATION_COMPONENT ComponentEntry;
+    PVOID ConfigurationData;
 } CONFIGURATION_COMPONENT_DATA, *PCONFIGURATION_COMPONENT_DATA;
 
 /* LDR_DATA_TABLE_ENTRY - loaded module list entry */

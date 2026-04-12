@@ -41,6 +41,18 @@ static LDR_DATA_TABLE_ENTRY HalModule;
 static MEMORY_ALLOCATION_DESCRIPTOR MemDescriptors[32];
 static int NumMemDescriptors;
 
+/* Hardware configuration tree.
+ *
+ * The kernel's CmpInitializeHardwareConfiguration walks this tree and
+ * creates \Registry\Machine\Hardware\Description\... keys. A SystemClass
+ * root produces "Description\System", which CmpInitializeMachineDependent-
+ * Configuration (INIT386.C) then opens to add CentralProcessor etc.
+ * Without this, NtOpenKey of that path fails with STATUS_OBJECT_NAME_NOT_FOUND.
+ *
+ * For QEMU with known hardware, a single-node root is sufficient — the
+ * kernel populates the processor/NPX entries itself from KPRCB data. */
+static CONFIGURATION_COMPONENT_DATA ConfigRoot;
+
 /* NLS data — contiguous buffer with page-aligned sections, matching OSLOADER layout.
  * The kernel expects all three NLS files in one contiguous block typed LoaderNlsData. */
 #define NLS_BUFFER_SIZE (256 * 1024)  /* 256KB should be plenty */
@@ -592,8 +604,16 @@ static void build_loader_block(multiboot_info_t *mbi) {
     InitializeListHead(&ArcDiskInfo.DiskSignatures);
     LoaderBlock.ArcDiskInformation = &ArcDiskInfo;
 
-    /* Configuration root - NULL for now */
-    LoaderBlock.ConfigurationRoot = NULL;
+    /* Hardware configuration root: single SystemClass node. The kernel walks
+     * this tree to create \Registry\Machine\Hardware\Description\System which
+     * CmpInitializeMachineDependentConfiguration needs to open.
+     * Fields not listed are zero-init by BSS; that's fine because:
+     *   - Parent/Child/Sibling are NULL (leaf node)
+     *   - CmpInitializeRegistryNode forces Class=SystemClass -> Type=ArcSystem
+     *   - ConfigurationDataLength/IdentifierLength=0 -> no data/identifier written */
+    ConfigRoot.ComponentEntry.Class = SystemClass;
+    ConfigRoot.ComponentEntry.Type  = ArcSystem;
+    LoaderBlock.ConfigurationRoot = &ConfigRoot;  /* KSEG0-fixed up below */
 
     /* I386 specific */
     LoaderBlock.I386.CommonDataArea = NULL;
@@ -1147,6 +1167,7 @@ ULONG loader_main(multiboot_info_t *mbi) {
         /* Struct pointers */
         LoaderBlock.NlsData           = TOKSEG(LoaderBlock.NlsData);
         LoaderBlock.ArcDiskInformation = TOKSEG(LoaderBlock.ArcDiskInformation);
+        LoaderBlock.ConfigurationRoot  = TOKSEG(LoaderBlock.ConfigurationRoot);
 
         /* Idle thread/stack */
         LoaderBlock.KernelStack = (ULONG)LoaderBlock.KernelStack | KSEG0_BASE;
