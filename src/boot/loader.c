@@ -906,13 +906,17 @@ static void build_loader_block(multiboot_info_t *mbi) {
         add_memory_descriptor(LoaderBootDriver,   0x500, 0x100);     /* 5-6MB drivers */
         add_memory_descriptor(LoaderFree,         0x600, 0x800);     /* 6-14MB */
 
-        /* Boot stub region (0xE00-0xEFF): carve out specific sub-regions.
-         * These BSS variables have known addresses within this range.
-         * We mark the whole range as OsloaderHeap, then add specific
-         * typed descriptors for sub-regions the kernel needs to find.
-         * The kernel handles overlapping descriptors — the more specific
-         * type wins during the PFN walk. */
-        add_memory_descriptor(LoaderOsloaderHeap, 0xE00, 0x100);
+        /* Boot stub region (0xE00-0xEFF): our BSS including PageDirectory
+         * and PageTables[]. MUST NOT be LoaderOsloaderHeap — MmFreeLoaderBlock
+         * (MMINIT.C:1016) walks LoaderOsloaderHeap/RegistryData/NlsData
+         * descriptors and zeroes KSEG0 PTEs + decrements share count, putting
+         * the physical pages on the FreePageList. When the kernel then reuses
+         * one of these phys pages (zero-page thread), it zeroes a page table
+         * we still reference via CR3/PDE — next TLB flush triggers "not
+         * present" on kernel .text. LoaderMemoryData is the type NT itself
+         * uses for page tables (see the commented-out case in MmFreeLoaderBlock:
+         *   //case LoaderMemoryData: //this has page table and other stuff. ) */
+        add_memory_descriptor(LoaderMemoryData, 0xE00, 0x100);
 
         /* Specific typed sub-regions within the osloader heap */
         add_memory_descriptor(LoaderStartupPcrPage, pcr_base, 2);
