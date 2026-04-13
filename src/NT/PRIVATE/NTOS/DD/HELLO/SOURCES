@@ -1,0 +1,18 @@
+!IF 0
+
+Copyright (c) 2024 MicroNT
+
+Module: hello.sys — minimal boot-time kernel driver for visibility checks.
+
+!ENDIF
+
+MAJORCOMP=ntos
+MINORCOMP=dd
+
+TARGETNAME=hello
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=DRIVER
+
+INCLUDES=..\..\inc
+
+SOURCES=hello.c

@@ -33,6 +33,11 @@ fi
 NT_ENV="set _NTDRIVE=D:&& set _NTROOT=\\&& set BASEDIR=D:\\&& set NTMAKEENV=D:\\PUBLIC\\OAK\\BIN&& set 386=1&& set TARGETCPU=I386&& set NT_UP=1&& set NTDEBUG=&& set NTDEBUGTYPE=&& set PATH=D:\\PUBLIC\\OAK\\BIN\\I386"
 
 # run_nmake <linux_dir> <description> [extra_nmake_args...]
+#
+# By default clears NTTEST / UMTEST / UMAPPL so they don't accidentally turn
+# a kernel-lib build into an EXE build. For components that are intentionally
+# UMAPPL builds (like gensrv, smss), set `KEEP_UMAPPL=1` in the caller env
+# to preserve the SOURCES file's UMAPPL= directive.
 run_nmake() {
     local linux_dir="$1"
     local desc="$2"
@@ -60,11 +65,17 @@ run_nmake() {
     local rel_path="${linux_dir#$NT_ROOT}"
     local win_dir="D:$(echo "$rel_path" | sed 's|/|\\|g')"
 
+    # For user-mode-app builds (UMAPPL=), don't zero out UMAPPL.
+    local umappl_override="UMAPPL="
+    if [ "${KEEP_UMAPPL:-}" = "1" ]; then
+        umappl_override=""
+    fi
+
     cd "$linux_dir"
 
     WINEDEBUG=-all \
     wine cmd.exe /C \
-        "$NT_ENV&& set MAKEDIR=$win_dir&& nmake /NOLOGO NTTEST= UMTEST= UMAPPL= $extra_args"
+        "$NT_ENV&& set MAKEDIR=$win_dir&& nmake /NOLOGO NTTEST= UMTEST= $umappl_override $extra_args"
 
     local rc=$?
     cd "$SCRIPT_DIR"
@@ -145,6 +156,30 @@ build_vdm()    { run_nmake "$NTOS/VDM/UP"      "VDM - Virtual DOS Machine"; }
 build_atdisk() { run_nmake "$NTOS/DD/HARDDISK" "ATDISK - IDE disk driver"; }
 build_null()   { run_nmake "$NTOS/DD/NULL"     "NULL - null device driver"; }
 build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"; }
+build_hello()  { run_nmake "$NTOS/DD/HELLO"    "HELLO - MicroNT visibility driver"; }
+build_gensrv() {
+    KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/SDKTOOLS/GENSRV" "GENSRV - NT syscall stub generator"
+    # Install into OAK/BIN/I386 so nmake rules can invoke it by bare name.
+    local gensrv_out="$NT_ROOT/PRIVATE/SDKTOOLS/GENSRV/obj/i386/gensrv.exe"
+    local gensrv_dst="$NT_ROOT/PUBLIC/OAK/BIN/I386/gensrv.exe"
+    if [ -f "$gensrv_out" ]; then
+        cp "$gensrv_out" "$gensrv_dst"
+        echo ">>> installed gensrv.exe into PUBLIC/OAK/BIN/I386/"
+    fi
+}
+build_rtl_user() {
+    # TARGETPATH=..\obj puts rtl.lib at RTL/obj/i386/ — ensure it exists.
+    mkdir -p "$NTOS/RTL/obj/i386"
+    run_nmake "$NTOS/RTL/USER" "RTL_USER - user-mode runtime library"
+}
+build_ntdll()  {
+    # gensrv writes i386/usrstubs.asm into the DAYTONA build dir — create it.
+    mkdir -p "$NTOS/DLL/DAYTONA/i386"
+    # makedll=1 tells MAKEFILE.DEF to actually link the DLL (not just import lib)
+    run_nmake "$NTOS/DLL/DAYTONA" "NTDLL - user-mode runtime library" makedll=1
+}
+build_smlib()  { run_nmake "$NT_ROOT/PRIVATE/SM/CLIENT" "SM client library"; }
+build_smss()   { KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/SM/SERVER" "SMSS - Session Manager"; }
 
 # --- INIT: links all libs into NTOSKRNL.EXE ---
 
@@ -238,6 +273,12 @@ case "$COMPONENT" in
     atdisk) build_atdisk ;;
     null)   build_null ;;
     fastfat) build_fastfat ;;
+    hello)  build_hello ;;
+    gensrv) build_gensrv ;;
+    rtl_user) build_rtl_user ;;
+    ntdll)  build_ntdll ;;
+    smlib)  build_smlib ;;
+    smss)   build_smss ;;
     geni386) build_geni386 ;;
     all)
         build_geni386
@@ -262,6 +303,7 @@ case "$COMPONENT" in
         build_atdisk
         build_null
         build_fastfat
+        build_hello
         echo ""
         echo "========================================"
         echo "Building boot disk image"

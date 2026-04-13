@@ -54,7 +54,7 @@ Return Value:
     STRING MessageData;
     STRING MessageHeader;
     DBGKD_DEBUG_IO DebugIo;
-    
+
     //
     // Move the output string to the message buffer.
     //

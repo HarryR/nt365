@@ -1263,7 +1263,7 @@ $(DYNLINK_LIB) $(DYNLINK_LIB:.lib=.exp): $(DLLDEF) $(LIBRARY_OBJS) $(DLLLIBOBJEC
 -def:$(DLLDEF)
 $(LIBRARY_OBJS)
 <<NOKEEP
-    erase $(@R).exp
+    -erase $(@R).exp
     ren $(@D)\tmp.exp $(@B).exp
     -lib -out:$(@R).lib @<<
 -machine:$(TARGET_DIRECTORY)

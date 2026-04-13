@@ -9,6 +9,7 @@
 
 # Build artifacts in NT source tree
 **/obj/
+*.sys
 _objects.mac
 
 # Generated files
@@ -27,12 +28,33 @@ src/boot/*.o
 src/boot/boot.elf
 
 # Build products placed in PUBLIC/SDK/LIB
+# (we keep *.lib import libraries tracked but ignore DLL/EXE/EXP outputs)
 src/NT/PUBLIC/SDK/LIB/I386/ntoskrnl.lib
 src/NT/PUBLIC/SDK/LIB/I386/ntoskrnl.exp
 src/NT/PUBLIC/SDK/LIB/I386/hal.lib
 src/NT/PUBLIC/SDK/LIB/I386/hal.exp
 src/NT/PUBLIC/SDK/LIB/I386/tmp.lib
 src/NT/PUBLIC/SDK/LIB/I386/tmp.exp
+# ntdll is built from our sources — keep .lib tracked, ignore .dll/.exp
+src/NT/PUBLIC/SDK/LIB/I386/ntdll.dll
+src/NT/PUBLIC/SDK/LIB/I386/ntdll.exp
+
+# Generated boot disk
+src/boot/data/disk.raw
+src/boot/data/disk.h
+
+# Generated SYSTEM hive (tools/mkhive.py)
+src/boot/data/SYSTEM
+
+# gensrv output (installed into OAK/BIN each build)
+src/NT/PUBLIC/OAK/BIN/I386/gensrv.exe
+
+# gensrv-generated files (rebuilt every ntdll build)
+src/NT/PRIVATE/NTOS/DLL/DAYTONA/i386/usrstubs.asm
+src/NT/PRIVATE/NTOS/DLL/DAYTONA/ntdll.xtr
+
+# Generated sysroot trees
+src/ntoskrnl.gdb
 
 # Old HAL (preserved for reference, not built)
 src/NT/PRIVATE/NTOS/NTHALS.old/
