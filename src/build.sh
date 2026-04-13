@@ -180,7 +180,14 @@ build_ntdll()  {
 }
 build_urtl()   { run_nmake "$NT_ROOT/PRIVATE/URTL" "URTL - native-app startup library (nt.lib)"; }
 build_smlib()  { run_nmake "$NT_ROOT/PRIVATE/SM/CLIENT" "SM client library"; }
-build_smss()   { KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/SM/SERVER" "SMSS - Session Manager"; }
+build_smss()   {
+    # Build smss with NTDEBUG so KdPrint() calls are compiled in and we can
+    # see "SMSS: ..." output on serial (via our KDTRAP.C tee).
+    NT_ENV_SAVED="$NT_ENV"
+    NT_ENV="$(echo "$NT_ENV" | sed 's/set NTDEBUG=&&/set NTDEBUG=sym\&\&/')"
+    KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/SM/SERVER" "SMSS - Session Manager"
+    NT_ENV="$NT_ENV_SAVED"
+}
 
 # --- INIT: links all libs into NTOSKRNL.EXE ---
 
@@ -249,6 +256,15 @@ build_hal() {
 }
 
 # --- Main ---
+
+# Multi-arg support: `build.sh kd init` builds both in order.
+# No args → build all.
+if [ $# -gt 1 ]; then
+    for arg in "$@"; do
+        bash "$SCRIPT_DIR/build.sh" "$arg" || exit $?
+    done
+    exit 0
+fi
 
 COMPONENT="${1:-all}"
 

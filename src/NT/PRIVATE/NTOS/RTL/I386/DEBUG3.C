@@ -26,7 +26,6 @@
 #include "stdio.h"
 #include "string.h"
 #include "ntrtlp.h"
-#include "hal.h"
 
 //
 // Prototype for local procedure
@@ -71,25 +70,6 @@ DbgPrint (
     va_start(arglist, Format);
     Output.Length = _vsnprintf(Buffer, sizeof(Buffer), Format, arglist);
     Output.Buffer = Buffer;
-    //
-    // MicroNT: tee to HAL serial so DbgPrint output is visible without
-    // a KD attached. Null-terminate (_vsnprintf truncates silently).
-    //
-    if (Output.Length >= (USHORT)sizeof(Buffer)) Output.Length = sizeof(Buffer) - 1;
-    Buffer[Output.Length] = '\0';
-    /*
-     * MicroNT: serialize the HAL-serial tee so concurrent DbgPrint calls from
-     * ISRs / DPCs / APCs don't interleave bytes. Cheap cli/sti bracket is fine
-     * for boot-time debug; this is UP, and the critical section is short.
-     */
-    {
-        ULONG _flags;
-        _asm { pushfd }
-        _asm { pop _flags }
-        _asm { cli }
-        HalDisplayString((PUCHAR)Buffer);
-        if (_flags & 0x200) { _asm { sti } }
-    }
     return DebugService(BREAKPOINT_PRINT, &Output, 0);
 }
 

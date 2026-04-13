@@ -105,6 +105,34 @@ Return Value:
 
         if (KdDebuggerNotPresent  &&
             ExceptionRecord->ExceptionInformation[0] != BREAKPOINT_PROMPT) {
+            /*
+             * MicroNT: no KD debugger attached, but we still want to see
+             * DbgPrint/KdPrint from user-mode (smss, ntdll). Tee
+             * BREAKPOINT_PRINT strings to HalDisplayString so kernel-mode
+             * serial (COM2) carries them too.
+             */
+            if (ExceptionRecord->ExceptionInformation[0] == BREAKPOINT_PRINT) {
+                try {
+                    STRING LocalString;
+                    UCHAR LocalBuf[513];
+                    LocalString = *((PSTRING)ExceptionRecord->ExceptionInformation[1]);
+                    if (LocalString.Length > 512) LocalString.Length = 512;
+                    if (PreviousMode == UserMode) {
+                        ProbeForRead(LocalString.Buffer, LocalString.Length,
+                                     sizeof(UCHAR));
+                    }
+                    {
+                        USHORT i;
+                        for (i = 0; i < LocalString.Length; i++) {
+                            LocalBuf[i] = LocalString.Buffer[i];
+                        }
+                        LocalBuf[LocalString.Length] = 0;
+                    }
+                    HalDisplayString(LocalBuf);
+                } except (EXCEPTION_EXECUTE_HANDLER) {
+                    ;
+                }
+            }
             ContextRecord->Eip++;
             return(TRUE);
         }
@@ -154,6 +182,19 @@ Return Value:
 
                 } else {
                     String = *((PSTRING)ExceptionRecord->ExceptionInformation[1]);
+                }
+                /*
+                 * MicroNT: always tee the print to HalDisplayString so we
+                 * see user-mode DbgPrint / kernel DbgPrint output on COM2
+                 * even when no KD debugger is attached.
+                 */
+                {
+                    UCHAR _lbuf[513];
+                    USHORT _li, _ll = String.Length;
+                    if (_ll > 512) _ll = 512;
+                    for (_li = 0; _li < _ll; _li++) _lbuf[_li] = String.Buffer[_li];
+                    _lbuf[_ll] = 0;
+                    HalDisplayString(_lbuf);
                 }
                 Enable = KdEnterDebugger(TrapFrame, ExceptionFrame);
                 if (KdpPrintString(&String)) {
@@ -468,12 +509,78 @@ Return Value:
     // return FALSE.
     //
 
+    /*
+     * MicroNT: surface user-mode unhandled exceptions (before the process
+     * dies silently with an opaque exit status). Second chance only, since
+     * first chance gives the user's own handler a shot.
+     */
+    {
+        static ULONG _prev_code = 0, _prev_eip = 0;
+        if (PreviousMode == UserMode &&
+            ExceptionRecord->ExceptionCode != STATUS_BREAKPOINT &&
+            ((ULONG)ExceptionRecord->ExceptionCode != _prev_code ||
+             ContextRecord->Eip != _prev_eip))
+        {
+            static const CHAR _hx[] = "0123456789abcdef";
+            CHAR tmp[160];
+            ULONG values[5];
+            const CHAR *labels[5];
+            ULONG p;
+            int li, j, k;
+            _prev_code = (ULONG)ExceptionRecord->ExceptionCode;
+            _prev_eip = ContextRecord->Eip;
+            labels[0] = SecondChance ? "UMODE EXC(2nd): code=" : "UMODE EXC(1st): code=";
+            labels[1] = " addr=";
+            labels[2] = " p0=";
+            labels[3] = " p1=";
+            labels[4] = " eip=";
+            values[0] = (ULONG)ExceptionRecord->ExceptionCode;
+            values[1] = (ULONG)ExceptionRecord->ExceptionAddress;
+            values[2] = ExceptionRecord->NumberParameters > 0
+                    ? ExceptionRecord->ExceptionInformation[0] : 0;
+            values[3] = ExceptionRecord->NumberParameters > 1
+                    ? ExceptionRecord->ExceptionInformation[1] : 0;
+            values[4] = ContextRecord->Eip;
+            k = 0;
+            for (li = 0; li < 5; li++) {
+                for (p = 0; labels[li][p]; p++) tmp[k++] = labels[li][p];
+                for (j = 28; j >= 0; j -= 4) tmp[k++] = _hx[(values[li] >> j) & 0xF];
+            }
+            tmp[k++] = '\n';
+            tmp[k] = 0;
+            HalDisplayString(tmp);
+        }
+    }
+
     if ((ExceptionRecord->ExceptionCode == STATUS_BREAKPOINT) &&
         (ExceptionRecord->NumberParameters > 0) &&
         ((ExceptionRecord->ExceptionInformation[0] == BREAKPOINT_LOAD_SYMBOLS)||
          (ExceptionRecord->ExceptionInformation[0] == BREAKPOINT_UNLOAD_SYMBOLS)||
          (ExceptionRecord->ExceptionInformation[0] == BREAKPOINT_PRINT))) {
 
+        /*
+         * MicroNT: tee DbgPrint/KdPrint text to HalDisplayString so we see
+         * kernel + user-mode debug output on COM2 even when no KD debugger
+         * is attached. Boot options without DEBUG land us in KdpStub.
+         */
+        if (ExceptionRecord->ExceptionInformation[0] == BREAKPOINT_PRINT) {
+            try {
+                STRING LocalString;
+                UCHAR  LocalBuf[513];
+                USHORT i, ll;
+                LocalString = *((PSTRING)ExceptionRecord->ExceptionInformation[1]);
+                ll = LocalString.Length;
+                if (ll > 512) ll = 512;
+                if (PreviousMode == UserMode) {
+                    ProbeForRead(LocalString.Buffer, ll, sizeof(UCHAR));
+                }
+                for (i = 0; i < ll; i++) LocalBuf[i] = LocalString.Buffer[i];
+                LocalBuf[ll] = 0;
+                HalDisplayString(LocalBuf);
+            } except (EXCEPTION_EXECUTE_HANDLER) {
+                ;
+            }
+        }
         ContextRecord->Eip++;
         return(TRUE);
     } else if (KdPitchDebugger == TRUE) {

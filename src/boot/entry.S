@@ -186,8 +186,13 @@ boot_gdt:
     /* 0x30: KGDT_R0_PCR - filled in at runtime (base = PCR address) */
     .quad 0x0000000000000000
 
-    /* 0x38: KGDT_R3_TEB - filled in at runtime */
-    .quad 0x0000000000000000
+    /* 0x38: KGDT_R3_TEB - ring-3 data, DPL=3, present, accessed, 32-bit,
+     * byte-granular, limit=0xFFF (1 page TEB). Matches OSLOADER SUDATA.ASM
+     * exactly (access=0xF3, flags=0x40). Base is updated per-thread by
+     * SwapContext (CTXSWAP.ASM writes KgdtBaseLow/Mid/Hi). If the access
+     * byte is 0 here, FS reads fault "segment not present" which looks
+     * like a NULL-page read from user code. */
+    .quad 0x0040F30000000FFF
 
     /* 0x40: reserved */
     .quad 0x0000000000000000

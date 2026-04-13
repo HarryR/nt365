@@ -414,6 +414,38 @@ def build_micront_system_hive() -> Hive:
 
     h["ControlSet001\\Control"]
 
+    # Session Manager minimal config so smss.exe doesn't try to spawn
+    # programs we don't have (autochk.exe, csrss.exe, etc.).
+    sm = h["ControlSet001\\Control\\Session Manager"]
+    # Empty BootExecute — skip autocheck.
+    sm.set_multi_sz("BootExecute", [])
+    sm["Environment"] \
+        .set_expand_sz("SystemRoot", "%SystemDrive%\\") \
+        .set_expand_sz("Path", "%SystemRoot%\\System32")
+    # No required subsystems — smss won't try to load csrss.exe / debug
+    # subsystem. Without this the default "Debug\0Windows\0" kicks in and
+    # smss crashes looking for a SubSystems\Windows value.
+    sm_sub = h["ControlSet001\\Control\\Session Manager\\SubSystems"]
+    sm_sub.set_multi_sz("Required", [])
+    sm_sub.set_multi_sz("Optional", [])
+    # DOS Devices — smss creates \DosDevices\<Name> symlinks pointing at the
+    # given NT device path. Without a C: symlink, RtlDosPathNameToNtPathName_U
+    # fails to resolve "C:\System32" and SmpInitializeKnownDlls returns
+    # STATUS_OBJECT_PATH_NOT_FOUND (c000003a).
+    h["ControlSet001\\Control\\Session Manager\\DOS Devices"] \
+        .set_sz("C:", "\\Device\\Harddisk0\\Partition1")
+    # KnownDlls: SmpInitializeKnownDlls reads DllDirectory to locate the
+    # KnownDlls filesystem directory. Missing => conversion of NULL path
+    # returns STATUS_OBJECT_NAME_INVALID (c0000033). Point at System32.
+    h["ControlSet001\\Control\\Session Manager\\KnownDlls"] \
+        .set_expand_sz("DllDirectory", "%SystemRoot%\\System32")
+    # Memory Management + FileRenameOperations subkeys — SmpRegistryConfigurationTable
+    # queries both via RTL_QUERY_REGISTRY_SUBKEY with no OPTIONAL flag; any
+    # missing subkey => STATUS_OBJECT_NAME_NOT_FOUND and SmpInit aborts.
+    h["ControlSet001\\Control\\Session Manager\\Memory Management"] \
+        .set_multi_sz("PagingFiles", [])
+    h["ControlSet001\\Control\\Session Manager\\FileRenameOperations"]
+
     # Services keys for boot drivers. IopInitializeBootDrivers opens each
     # BOOT_DRIVER_LIST_ENTRY's RegistryPath; IopGetDriverNameFromKeyNode reads
     # Type to decide whether to put the driver under \Driver or \FileSystem.

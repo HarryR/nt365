@@ -767,7 +767,6 @@ Return Value:
     PFILE_OBJECT fileObject;
 
     UNREFERENCED_PARAMETER( NormalRoutine );
-    DbgPrint("IopCompleteRequest: APC fired\n");
     UNREFERENCED_PARAMETER( NormalContext );
     UNREFERENCED_PARAMETER( SystemArgument2 );
 

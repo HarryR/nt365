@@ -63,6 +63,9 @@ for arg in "$@"; do
             TRACE_OPT="-d exec 2>/tmp/qemu_trace.log"
             echo "Execution trace -> /tmp/qemu_trace.log"
             ;;
+	--gui)
+	    DISPLAY_OPT=""
+	    ;;
     esac
 done
 

@@ -41,12 +41,14 @@ _CRTAPI1 main(
     PROCESS_BASIC_INFORMATION ProcessInfo;
     BOOLEAN WasEnabled;
 
+    DbgPrint("SMSS: main() entered\n");
     SetBasePriority = FOREGROUND_BASE_PRIORITY+2;
     Status = NtSetInformationProcess( NtCurrentProcess(),
                                       ProcessBasePriority,
                                       (PVOID) &SetBasePriority,
                                        sizeof( SetBasePriority )
                                     );
+    DbgPrint("SMSS: NtSetInformationProcess status=%08x\n", Status);
     ASSERT(NT_SUCCESS(Status));
 
     if (ARGUMENT_PRESENT( DebugParameter )) {

@@ -408,6 +408,14 @@ Return Value:
             KeBugCheck(HAL_INITIALIZATION_FAILED);
         }
 
+        /*
+         * MicroNT: normally KdInitSystem is only called from BugCheck when
+         * /DEBUG isn't in boot options, leaving KiDebugRoutine == NULL and
+         * losing all DbgPrint output. Call it early so BREAKPOINT_PRINT
+         * exceptions reach KdpStub (which we patched to tee to HalDisplayString).
+         */
+        KdInitSystem(LoaderBlock, FALSE);
+
 #if i386
         //
         // Interrupts can now be enabled
@@ -1535,6 +1543,19 @@ Phase1Initialization(
 
     if (Status == STATUS_SUCCESS) {
 
+        /* Capture smss's exit status so the bugcheck parameter reveals
+         * why it died (unresolved import, section-map fault, syscall
+         * returning non-NTSUCCESS, etc). Without this the SESSION5 code
+         * is opaque. */
+        PROCESS_BASIC_INFORMATION SmssBasicInfo;
+        Status = ZwQueryInformationProcess( ProcessInformation.Process,
+                                            ProcessBasicInformation,
+                                            &SmssBasicInfo,
+                                            sizeof(SmssBasicInfo),
+                                            NULL );
+        DbgPrint("INIT: SMSS terminated; exit status=0x%08x\n",
+                 SmssBasicInfo.ExitStatus);
+
 #if DBG
 
         sprintf(DebugBuffer, "INIT: Session Manager terminated.\n");
@@ -1547,7 +1568,8 @@ Phase1Initialization(
 
 #endif // DBG
 
-        KeBugCheck(SESSION5_INITIALIZATION_FAILED);
+        KeBugCheckEx(SESSION5_INITIALIZATION_FAILED,
+                     (ULONG)SmssBasicInfo.ExitStatus, 0, 0, 0);
 
     } else {
         //
