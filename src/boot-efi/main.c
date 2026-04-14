@@ -139,6 +139,41 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
         for (UINTN i = 0; i < n; i++) pe_resolve_imports(&all[i], all, n);
     }
 
+    /* Query boot disk geometry + MBR signature/checksum while UEFI is
+     * still up. Needed for atdisk's INT13 table (size) and the kernel's
+     * IopCreateArcNames matching (sig + sum). */
+    {
+        UINT64 total_blocks = 0;
+        UINT32 block_size   = 0;
+        UINT32 mbr_sig      = 0;
+        UINT32 mbr_neg_sum  = 0;
+        if (fs_boot_disk_size(&total_blocks, &block_size) == EFI_SUCCESS) {
+            /* Read MBR (sector 0). FAT/MBR sectors are 512 B; pad for safety. */
+            static UINT8 mbr[4096] __attribute__((aligned(4)));
+            if (fs_boot_disk_read_sector0(mbr, sizeof mbr) == EFI_SUCCESS) {
+                UINT32 *dw = (UINT32 *)mbr;
+                UINT32 sum = 0;
+                for (int i = 0; i < 128; i++) sum += dw[i];
+                mbr_neg_sum = (UINT32)-(INT32)sum;   /* so sum + ours == 0 */
+                /* Disk signature lives at MBR offset 0x1B8 (4 bytes, LE). */
+                mbr_sig = *(UINT32 *)(mbr + 0x1B8);
+                com1_puts("[main] MBR signature=");
+                com1_put_hex(mbr_sig);
+                com1_puts(" sum=");
+                com1_put_hex(sum);
+                com1_puts(" (loader stores negsum=");
+                com1_put_hex(mbr_neg_sum);
+                com1_puts(")\n");
+            } else {
+                com1_puts("[main] MBR read failed — ARC name match will fail\n");
+            }
+            loaderblock_set_boot_disk(total_blocks, block_size,
+                                      mbr_sig, mbr_neg_sum);
+        } else {
+            com1_puts("[main] boot disk size query failed — atdisk may not mount\n");
+        }
+    }
+
     /* Pre-exit: reserve the machine-state pages (PD, PCR, TSS, stacks). */
     mmu_alloc_reserved();
 
@@ -163,6 +198,32 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
     com1_puts("  MapKey=");
     com1_put_hex((unsigned long)map_key);
     com1_puts("\n");
+
+    /* Stamp CMOS so atdisk.sys finds our IDE drive.
+     *
+     * NT 3.5's atdisk reads CMOS byte 0x12 (via RTC index 0x70 / data 0x71)
+     * to learn which drives are installed on the primary IDE controller.
+     * High nibble = drive 0 type (0xF = "extended type, see byte 0x19"),
+     * low nibble = drive 1. If both nibbles are zero, atdisk treats the
+     * controller as empty and stops before probing hardware (see
+     * NTOS/DD/HARDDISK/I386/ATD_CONF.C:499). Legacy BIOSes populated CMOS
+     * during POST; OVMF does not, so we do it here. 0x19 = 47 is the
+     * "user-defined type" marker — the value itself doesn't matter because
+     * atdisk's IssueIdentify will query real geometry from the drive. */
+    {
+        __asm__ volatile(
+            "outb %%al, $0x70\n\t"      /* index = 0x12 */
+            "movb $0x12, %%al\n\t"
+            "outb %%al, $0x70\n\t"
+            "movb $0xF0, %%al\n\t"      /* drive0=ext, drive1=none */
+            "outb %%al, $0x71\n\t"
+            "movb $0x19, %%al\n\t"      /* index = 0x19 */
+            "outb %%al, $0x70\n\t"
+            "movb $47,   %%al\n\t"      /* user-defined type */
+            "outb %%al, $0x71\n\t"
+            : : : "al");
+        com1_puts("[main] CMOS drive-type bytes stamped for atdisk\n");
+    }
 
     /* --------------------------------------------------------------------
      * Point of no return. UEFI services will be gone after this call. */

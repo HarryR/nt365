@@ -164,6 +164,20 @@ void loaderblock_set_nls(EFI_PHYSICAL_ADDRESS base_phys,
     g_nls_uni_off   = uni_off;
 }
 
+/* Boot disk info from UEFI BlockIo + MBR read. See loaderblock.h. */
+static UINT64 g_boot_disk_blocks     = 0;
+static UINT32 g_boot_disk_block_size = 0;
+static UINT32 g_boot_disk_mbr_sig    = 0;
+static UINT32 g_boot_disk_mbr_sum    = 0;   /* two's complement of MBR sum */
+
+void loaderblock_set_boot_disk(UINT64 total_blocks, UINT32 block_size,
+                               UINT32 mbr_signature, UINT32 mbr_checksum) {
+    g_boot_disk_blocks     = total_blocks;
+    g_boot_disk_block_size = block_size;
+    g_boot_disk_mbr_sig    = mbr_signature;
+    g_boot_disk_mbr_sum    = mbr_checksum;
+}
+
 unsigned long loaderblock_handoff_ptr(void) {
     return g_lpb_phys ? (unsigned long)kseg0_of(g_lpb_phys) : 0;
 }
@@ -218,8 +232,8 @@ EFI_STATUS loaderblock_build(void) {
         ARC_DISK_INFORMATION *adi = arena_alloc(sizeof *adi, 4);
         init_list_head_kseg0(&adi->DiskSignatures);
         ARC_DISK_SIGNATURE *sig = arena_alloc(sizeof *sig, 4);
-        sig->Signature = 0;          /* Phase 2: fill from GPT disk GUID */
-        sig->CheckSum  = 0;
+        sig->Signature = g_boot_disk_mbr_sig;
+        sig->CheckSum  = g_boot_disk_mbr_sum;
         sig->ValidPartitionTable = 1;
         sig->ArcName = kseg0_of(arena_dup_ascii("multi(0)disk(0)rdisk(0)"));
         list_tail_insert_kseg0(&adi->DiskSignatures, &sig->ListEntry);
@@ -229,16 +243,88 @@ EFI_STATUS loaderblock_build(void) {
     /* --- Strings (KSEG0-fixed). */
     lpb->ArcBootDeviceName = kseg0_of(arena_dup_ascii("multi(0)disk(0)rdisk(0)partition(1)"));
     lpb->ArcHalDeviceName  = kseg0_of(arena_dup_ascii("multi(0)disk(0)rdisk(0)partition(1)"));
-    lpb->NtBootPathName    = kseg0_of(arena_dup_ascii("\\WINNT\\"));
+    /* Our FAT has System32/ at the partition root (no \WINNT\ wrapper), so
+     * \SystemRoot = partition-root, i.e. NtBootPathName = "\". smss,
+     * kernel32.dll, ntdll.dll etc. are then found at \System32\*. */
+    lpb->NtBootPathName    = kseg0_of(arena_dup_ascii("\\"));
     lpb->NtHalPathName     = kseg0_of(arena_dup_ascii("\\"));
     lpb->LoadOptions       = kseg0_of(arena_dup_ascii(""));
 
-    /* --- ConfigurationRoot: one SystemClass node, kernel reads it via
-     *     CmpInitializeRegistryNode which forces Class=System regardless. */
+    /* --- ConfigurationRoot: SystemClass node with a "Configuration Data"
+     *     blob describing INT13 drive parameters for our boot disk.
+     *
+     * atdisk.sys (NTOS/DD/HARDDISK/I386/ATD_CONF.C:1322) opens
+     * \Registry\Machine\Hardware\Description\System and reads its
+     * "Configuration Data" value, parsing it as
+     * CM_FULL_RESOURCE_DESCRIPTOR followed by an array of
+     * CM_INT13_DRIVE_PARAMETER. If that lookup fails, atdisk's
+     * diskExtension->Pi.PartitionLength stays at zero and every
+     * IoCallDriver read gets STATUS_INVALID_PARAMETER — partitions
+     * never get enumerated, STOP 0x7B on boot-volume mount.
+     *
+     * CmpInitializeRegistryNode (NTOS/CONFIG/CMCONFIG.C:657-705) expects
+     * ConfigurationData to point at a CM_PARTIAL_RESOURCE_LIST (starting
+     * with Version), NOT a full descriptor — it synthesizes the full
+     * descriptor itself by prepending InterfaceType + BusNumber header.
+     * So we emit just the partial list + trailing INT13 param array.
+     *
+     * Legacy BIOS populated this via NTDETECT.COM. Under UEFI we
+     * synthesize it here from disk layout we know statically: 64 MiB
+     * disk = 132*16*63 CHS (slight overshoot, fully covers partition 1). */
     {
+        struct {
+            NT_CM_PARTIAL_RESOURCE_LIST partial;
+            NT_CM_INT13_DRIVE_PARAMETER drive0;
+        } __attribute__((aligned(4))) *blob =
+            arena_alloc(sizeof *blob, 4);
+
+        blob->partial.Version  = 1;
+        blob->partial.Revision = 1;
+        blob->partial.Count    = 1;
+        blob->partial.PartialDescriptors[0].Type = NT_CmResourceTypeDeviceSpecific;
+        blob->partial.PartialDescriptors[0].ShareDisposition = 0;
+        blob->partial.PartialDescriptors[0].Flags = 0;
+        blob->partial.PartialDescriptors[0].DeviceSpecificData.DataSize =
+            sizeof(NT_CM_INT13_DRIVE_PARAMETER);
+        blob->partial.PartialDescriptors[0].DeviceSpecificData.Reserved1 = 0;
+        blob->partial.PartialDescriptors[0].DeviceSpecificData.Reserved2 = 0;
+
+        /* Synthesize CHS from the UEFI-reported block count. Fix heads=16
+         * and sectors/track=63 (the BIOS INT 13h maximum and industry-
+         * standard translation), compute cylinders to cover the whole
+         * disk with some headroom. atdisk uses CHS-derived size as its
+         * PartitionLength cap, so we need cyl*heads*spt*block_size >=
+         * total_blocks*block_size. */
+        {
+            UINT32 spt   = 63;
+            UINT32 heads = 16;
+            /* ceil(blocks / (heads * spt)). Use 32-bit math: ia32 + freestanding
+             * has no __udivdi3 helper linked, and 32-bit blocks (up to 4 TiB @
+             * 512 B) is well past anything NT 3.5 can address via INT 13h. */
+            UINT32 blocks_u32 = (g_boot_disk_blocks > 0xFFFFFFFFULL) ?
+                                 0xFFFFFFFFu : (UINT32)g_boot_disk_blocks;
+            UINT32 cyls  = (blocks_u32 + (heads * spt) - 1) / (heads * spt);
+            if (cyls == 0) cyls = 1;
+
+            blob->drive0.DriveSelect      = 0x80;        /* INT13 disk 0 */
+            blob->drive0.MaxCylinders     = cyls - 1;    /* 0-based */
+            blob->drive0.SectorsPerTrack  = (UINT16)spt;
+            blob->drive0.MaxHeads         = (UINT16)(heads - 1); /* 0-based */
+            blob->drive0.NumberDrives     = 1;
+            com1_puts("[loaderblock] INT13 disk0: ");
+            com1_put_dec((unsigned long)cyls);
+            com1_puts(" cyl x ");
+            com1_put_dec(heads);
+            com1_puts(" head x ");
+            com1_put_dec(spt);
+            com1_puts(" sec\n");
+        }
+
         CONFIGURATION_COMPONENT_DATA *cr = arena_alloc(sizeof *cr, 4);
-        cr->ComponentEntry.Class = SystemClass;
-        cr->ComponentEntry.Type  = ArcSystem;
+        cr->ComponentEntry.Class                   = SystemClass;
+        cr->ComponentEntry.Type                    = ArcSystem;
+        cr->ComponentEntry.ConfigurationDataLength = sizeof *blob;
+        cr->ConfigurationData                      = kseg0_of(blob);
         lpb->ConfigurationRoot = kseg0_of(cr);
     }
 

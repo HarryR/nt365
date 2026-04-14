@@ -19,12 +19,16 @@ OBJCOPY    := objcopy
 
 CFLAGS := \
     -m32 -ffreestanding -fno-stack-protector -fno-stack-check \
-    -fshort-wchar -mno-red-zone -Wall -Wextra -Werror \
+    -fshort-wchar -mno-red-zone -malign-double \
+    -Wall -Wextra -Werror \
     -I$(EFI_INC) -I$(EFI_INC)/$(ARCH) \
     -DEFI_FUNCTION_WRAPPER \
     -nostdinc \
     -isystem $(EFI_INC) -isystem $(EFI_INC)/$(ARCH) \
     -isystem $(shell $(CC) -m32 -print-file-name=include)
+# -malign-double: GCC's default ia32 ABI aligns UINT64 to 4, but UEFI's
+# ABI aligns it to 8 — match OVMF or any struct containing EFI_LBA
+# reads at shifted offsets (we hit this reading Media->LastBlock).
 
 LDFLAGS := \
     -nostdlib -znocombreloc -T $(EFI_LDS) -shared \
@@ -32,11 +36,22 @@ LDFLAGS := \
 
 OBJS := main.o com1.o fs.o memmap.o mmu.o pe.o loaderblock.o handoff.o
 
-# ESP image: FAT16 volume holding /EFI/BOOT/BOOTIA32.EFI + a full NT
-# System32 tree, so the single partition serves as both UEFI ESP and the
-# NT boot volume. UEFI spec allows FAT12/16/32 equally for ESP; we use
-# FAT16 because the kernel's fastfat driver is FAT12/16 only.
+# ESP image: MBR-partitioned disk with a single FAT16 partition holding
+# /EFI/BOOT/BOOTIA32.EFI + a full NT System32 tree, so the single
+# partition serves as both UEFI ESP and the NT boot volume. UEFI spec
+# allows FAT12/16/32 equally for ESP; we use FAT16 because the kernel's
+# fastfat driver is FAT12/16 only.
+#
+# MBR (not unpartitioned) is required so NT's atdisk sees a partition
+# table at sector 0 (IoReadPartitionTable) — without one, no partition
+# device objects get created and multi(0)disk(0)rdisk(0)partition(1)
+# fails to resolve → STOP 0x7B. GPT support is a future step.
 ESP_IMG_SIZE_MB := 64
+
+# Partition starts at 1 MiB (sector 2048) — standard alignment; leaves
+# room for MBR + historical boot code even though we don't use any.
+ESP_PART_OFFSET_MB := 1
+ESP_PART_SIZE_MB   := $(shell echo $$(( $(ESP_IMG_SIZE_MB) - $(ESP_PART_OFFSET_MB) )))
 
 # Repo-relative paths to the NT build outputs that belong on the ESP.
 # Each line is "<dest-on-esp>:<source-in-tree>". The order here determines
@@ -97,35 +112,43 @@ esp.img: BOOTIA32.EFI $(SYSTEM_SRCS)
 	    exit 1; \
 	fi
 	dd if=/dev/zero of=$@ bs=1M count=$(ESP_IMG_SIZE_MB) status=none
-	@# No -F flag -> mformat picks FAT16 for volumes under ~2 GB.
-	mformat -i $@
-	mmd     -i $@ ::/EFI ::/EFI/BOOT ::/System32 ::/System32/config ::/System32/Drivers
-	mcopy   -i $@ BOOTIA32.EFI ::/EFI/BOOT/BOOTIA32.EFI
+	@# MBR partition table: one partition, type 0x06 (FAT16), bootable,
+	@# starting at sector 2048 (1 MiB). Classic sfdisk script syntax:
+	@# `start,size,type,bootable` with empty size = "to end of disk".
+	@printf '2048,,6,*\n' | sfdisk --quiet --no-reread $@
+	@# Format the partition via mtools's @@offset syntax. No -F flag so
+	@# mformat auto-picks FAT16 for partitions under ~2 GB.
+	mformat -i $@@@$(ESP_PART_OFFSET_MB)M
+	mmd     -i $@@@$(ESP_PART_OFFSET_MB)M ::/EFI ::/EFI/BOOT ::/System32 ::/System32/config ::/System32/Drivers
+	mcopy   -i $@@@$(ESP_PART_OFFSET_MB)M BOOTIA32.EFI ::/EFI/BOOT/BOOTIA32.EFI
 	@# Copy each system file to its destination path on the image
 	@for pair in $(SYSTEM_FILES); do \
 	    dest=":`echo $$pair | cut -d: -f1`"; \
 	    src=`echo $$pair | cut -d: -f2`; \
 	    echo "  -> $$dest  ($$src)"; \
-	    mcopy -i $@ "$$src" "::$${dest#:}" || exit 1; \
+	    mcopy -i $@@@$(ESP_PART_OFFSET_MB)M "$$src" "::$${dest#:}" || exit 1; \
 	done
 
 clean:
 	rm -f $(OBJS) loader.so BOOTIA32.EFI esp.img SYSTEM
 	rm -f *.out *.log *.fd
 
-# Inspect the built ESP: FAT variant + recursive directory listing.
+# Inspect the built ESP: partition table + FAT variant + recursive listing.
+IMG := esp.img@@$(ESP_PART_OFFSET_MB)M
 info: esp.img
+	@echo "--- partitions ---"
+	@sfdisk --list esp.img
 	@echo "--- minfo ---"
-	@minfo -i esp.img | grep -Ei 'fat|cluster|sector|size|serial|name' || true
+	@minfo -i $(IMG) | grep -Ei 'fat|cluster|sector|size|serial|name' || true
 	@echo "--- mdir / ---"
-	@mdir -i esp.img ::/
+	@mdir -i $(IMG) ::/
 	@echo "--- mdir /EFI/BOOT ---"
-	@mdir -i esp.img ::/EFI/BOOT
+	@mdir -i $(IMG) ::/EFI/BOOT
 	@echo "--- mdir /System32 ---"
-	@mdir -i esp.img ::/System32
+	@mdir -i $(IMG) ::/System32
 	@echo "--- mdir /System32/config ---"
-	@mdir -i esp.img ::/System32/config
+	@mdir -i $(IMG) ::/System32/config
 	@echo "--- mdir /System32/Drivers ---"
-	@mdir -i esp.img ::/System32/Drivers
+	@mdir -i $(IMG) ::/System32/Drivers
 
 .PHONY: all clean info

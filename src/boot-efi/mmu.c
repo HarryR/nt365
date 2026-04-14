@@ -88,6 +88,12 @@ EFI_STATUS mmu_alloc_at(UINTN pages, PageKind kind,
     return mmu_alloc_impl(pages, kind, AllocateAddress, out_phys, preferred);
 }
 
+EFI_STATUS mmu_alloc_below(UINTN pages, PageKind kind,
+                           EFI_PHYSICAL_ADDRESS max_addr,
+                           EFI_PHYSICAL_ADDRESS *out_phys) {
+    return mmu_alloc_impl(pages, kind, AllocateMaxAddress, out_phys, max_addr);
+}
+
 /*============================================================================
  * Page-table + GDT/IDT layout
  *
@@ -148,10 +154,15 @@ unsigned long mmu_handoff_stack_top(void) {
 
 EFI_STATUS mmu_alloc_reserved(void) {
     EFI_STATUS s;
+    /* All structures reachable via KSEG0 at runtime (PD, PTs, TSS, PCR,
+     * GDT, IDT, idle stack) must live in phys 0..16 MiB so their KSEG0
+     * aliases fall within PDE[512..515] — the only KSEG0 PDEs NT 3.5
+     * copies into a new process's page directory (PROCSUP.C:52,297). */
+    const EFI_PHYSICAL_ADDRESS LOW16M = 0x01000000;
 
-    s = mmu_alloc(1, PK_MEMORY_DATA, &g_phys_pd);           if (EFI_ERROR(s)) return s;
-    s = mmu_alloc(1, PK_PCR,          &g_phys_pcr);          if (EFI_ERROR(s)) return s;
-    s = mmu_alloc(1, PK_PCR,          &g_phys_sud);          if (EFI_ERROR(s)) return s;
+    s = mmu_alloc_below(1, PK_MEMORY_DATA, LOW16M, &g_phys_pd);       if (EFI_ERROR(s)) return s;
+    s = mmu_alloc_below(1, PK_PCR,         LOW16M, &g_phys_pcr);      if (EFI_ERROR(s)) return s;
+    s = mmu_alloc_below(1, PK_PCR,         LOW16M, &g_phys_sud);      if (EFI_ERROR(s)) return s;
     /* KTSS is ~8364 bytes: 0x68 header + KIIO_ACCESS_MAP (32-byte
      * DirectionMap + 8196-byte IoMap) + 32-byte IntDirectionMap. Kernel's
      * KiInitializeTSS (ntoskrnl .text ~0x801b2279) fills the bitmap with
@@ -159,14 +170,14 @@ EFI_STATUS mmu_alloc_reserved(void) {
      * any allocation smaller than 3 pages. 2 pages = silent corruption
      * of whatever is in phys-adjacent memory (fastfat headers, in our case,
      * which then makes PsLoadedModule scan STOP 0x1E on the driver). */
-    s = mmu_alloc(3, PK_MEMORY_DATA, &g_phys_tss);          if (EFI_ERROR(s)) return s;
-    s = mmu_alloc(4, PK_MEMORY_DATA, &g_phys_idlestack);    if (EFI_ERROR(s)) return s;
-    s = mmu_alloc(1, PK_MEMORY_DATA, &g_phys_gdt);          if (EFI_ERROR(s)) return s;
-    s = mmu_alloc(1, PK_MEMORY_DATA, &g_phys_idt);          if (EFI_ERROR(s)) return s;
-    s = mmu_alloc(PTS_TOTAL, PK_MEMORY_DATA, &g_phys_pts);
+    s = mmu_alloc_below(3, PK_MEMORY_DATA, LOW16M, &g_phys_tss);      if (EFI_ERROR(s)) return s;
+    s = mmu_alloc_below(4, PK_MEMORY_DATA, LOW16M, &g_phys_idlestack);if (EFI_ERROR(s)) return s;
+    s = mmu_alloc_below(1, PK_MEMORY_DATA, LOW16M, &g_phys_gdt);     if (EFI_ERROR(s)) return s;
+    s = mmu_alloc_below(1, PK_MEMORY_DATA, LOW16M, &g_phys_idt);     if (EFI_ERROR(s)) return s;
+    s = mmu_alloc_below(PTS_TOTAL, PK_MEMORY_DATA, LOW16M, &g_phys_pts);
     if (EFI_ERROR(s)) return s;
 
-    com1_puts("[mmu] reserved core pages\n");
+    com1_puts("[mmu] reserved core pages (all < 16 MiB)\n");
     return EFI_SUCCESS;
 }
 

@@ -545,7 +545,10 @@ Return Value:
                                            &ConfigData->Controller[0],
                                            0,
                                            TRUE)) {
+                        HalDisplayString("ATDCFG: UpdateGeometryFromBios TRUE (geom filled)\n");
                         ConfigData->Controller[0].Disk[0].DriveType = 0xFF;
+                    } else {
+                        HalDisplayString("ATDCFG: UpdateGeometryFromBios FALSE (geometry remains zero)\n");
                     }
                     HalDisplayString("ATDCFG: UpdateGeometryFromBios done\n");
                 }
@@ -1337,6 +1340,7 @@ Return Value:
 
 
     if (!NT_SUCCESS(status)) {
+        HalDisplayString("BIOSgeom: ZwOpenKey failed\n");
         return FALSE;
     }
 
@@ -1361,6 +1365,7 @@ Return Value:
     ZwClose(biosKey);
 
     if (!NT_SUCCESS(status)) {
+        HalDisplayString("BIOSgeom: ZwQueryValueKey(ConfigurationData) failed\n");
         ExFreePool(keyData);
         return FALSE;
     }
@@ -1373,16 +1378,43 @@ Return Value:
     // and that the last resouce list is device-specific and long enough.
     //
 
-    if (keyData->DataLength < sizeof(CM_FULL_RESOURCE_DESCRIPTOR) ||
-        resourceDescriptor->PartialResourceList.Count == 0 ||
-        resourceDescriptor->PartialResourceList.PartialDescriptors[0].Type !=
-        CmResourceTypeDeviceSpecific ||
-        resourceDescriptor->PartialResourceList.PartialDescriptors[0]
-            .u.DeviceSpecificData.DataSize < sizeof(ULONG)
-            ) {
-
-        ExFreePool(keyData);
-        return FALSE;
+    {
+        char msg[128];
+        ULONG i;
+        PUCHAR raw = (PUCHAR)resourceDescriptor;
+        HalDisplayString("BIOSgeom: raw[0..39]:");
+        for (i = 0; i < 40 && i < keyData->DataLength; i++) {
+            sprintf(msg, " %02x", raw[i]);
+            HalDisplayString(msg);
+        }
+        HalDisplayString("\n");
+        sprintf(msg, "BIOSgeom: DataLength=%lu fullDescSize=%lu\n",
+                keyData->DataLength,
+                (ULONG)sizeof(CM_FULL_RESOURCE_DESCRIPTOR));
+        HalDisplayString(msg);
+        sprintf(msg, "BIOSgeom: Count=%lu Type=0x%02x DataSize=%lu\n",
+                resourceDescriptor->PartialResourceList.Count,
+                resourceDescriptor->PartialResourceList.PartialDescriptors[0].Type,
+                resourceDescriptor->PartialResourceList.PartialDescriptors[0].u.DeviceSpecificData.DataSize);
+        HalDisplayString(msg);
+    }
+    if (keyData->DataLength < sizeof(CM_FULL_RESOURCE_DESCRIPTOR)) {
+        HalDisplayString("BIOSgeom: FAIL DataLength < sizeof(CM_FULL_RESOURCE_DESCRIPTOR)\n");
+        ExFreePool(keyData); return FALSE;
+    }
+    if (resourceDescriptor->PartialResourceList.Count == 0) {
+        HalDisplayString("BIOSgeom: FAIL PartialResourceList.Count == 0\n");
+        ExFreePool(keyData); return FALSE;
+    }
+    if (resourceDescriptor->PartialResourceList.PartialDescriptors[0].Type !=
+        CmResourceTypeDeviceSpecific) {
+        HalDisplayString("BIOSgeom: FAIL PartialDescriptor[0].Type != DeviceSpecific\n");
+        ExFreePool(keyData); return FALSE;
+    }
+    if (resourceDescriptor->PartialResourceList.PartialDescriptors[0]
+            .u.DeviceSpecificData.DataSize < sizeof(ULONG)) {
+        HalDisplayString("BIOSgeom: FAIL DeviceSpecificData.DataSize < sizeof(ULONG)\n");
+        ExFreePool(keyData); return FALSE;
     }
 
     length = resourceDescriptor->PartialResourceList.PartialDescriptors[0]
@@ -1405,6 +1437,7 @@ Return Value:
     //
 
     if (numberOfDrives <= DiskNumber) {
+        HalDisplayString("BIOSgeom: numberOfDrives <= DiskNumber\n");
         ExFreePool(keyData);
         return FALSE;
     }
@@ -1612,6 +1645,7 @@ Return Value:
 
 
     if (!NT_SUCCESS(status)) {
+        HalDisplayString("BIOSgeom: ZwOpenKey failed\n");
         return FALSE;
     }
 
@@ -1636,6 +1670,7 @@ Return Value:
     ZwClose(biosKey);
 
     if (!NT_SUCCESS(status)) {
+        HalDisplayString("BIOSgeom: ZwQueryValueKey(ConfigurationData) failed\n");
         ExFreePool(keyData);
         return FALSE;
     }
@@ -1648,16 +1683,43 @@ Return Value:
     // and that the last resouce list is device-specific and long enough.
     //
 
-    if (keyData->DataLength < sizeof(CM_FULL_RESOURCE_DESCRIPTOR) ||
-        resourceDescriptor->PartialResourceList.Count == 0 ||
-        resourceDescriptor->PartialResourceList.PartialDescriptors[0].Type !=
-        CmResourceTypeDeviceSpecific ||
-        resourceDescriptor->PartialResourceList.PartialDescriptors[0]
-            .u.DeviceSpecificData.DataSize < sizeof(ULONG)
-            ) {
-
-        ExFreePool(keyData);
-        return FALSE;
+    {
+        char msg[128];
+        ULONG i;
+        PUCHAR raw = (PUCHAR)resourceDescriptor;
+        HalDisplayString("BIOSgeom: raw[0..39]:");
+        for (i = 0; i < 40 && i < keyData->DataLength; i++) {
+            sprintf(msg, " %02x", raw[i]);
+            HalDisplayString(msg);
+        }
+        HalDisplayString("\n");
+        sprintf(msg, "BIOSgeom: DataLength=%lu fullDescSize=%lu\n",
+                keyData->DataLength,
+                (ULONG)sizeof(CM_FULL_RESOURCE_DESCRIPTOR));
+        HalDisplayString(msg);
+        sprintf(msg, "BIOSgeom: Count=%lu Type=0x%02x DataSize=%lu\n",
+                resourceDescriptor->PartialResourceList.Count,
+                resourceDescriptor->PartialResourceList.PartialDescriptors[0].Type,
+                resourceDescriptor->PartialResourceList.PartialDescriptors[0].u.DeviceSpecificData.DataSize);
+        HalDisplayString(msg);
+    }
+    if (keyData->DataLength < sizeof(CM_FULL_RESOURCE_DESCRIPTOR)) {
+        HalDisplayString("BIOSgeom: FAIL DataLength < sizeof(CM_FULL_RESOURCE_DESCRIPTOR)\n");
+        ExFreePool(keyData); return FALSE;
+    }
+    if (resourceDescriptor->PartialResourceList.Count == 0) {
+        HalDisplayString("BIOSgeom: FAIL PartialResourceList.Count == 0\n");
+        ExFreePool(keyData); return FALSE;
+    }
+    if (resourceDescriptor->PartialResourceList.PartialDescriptors[0].Type !=
+        CmResourceTypeDeviceSpecific) {
+        HalDisplayString("BIOSgeom: FAIL PartialDescriptor[0].Type != DeviceSpecific\n");
+        ExFreePool(keyData); return FALSE;
+    }
+    if (resourceDescriptor->PartialResourceList.PartialDescriptors[0]
+            .u.DeviceSpecificData.DataSize < sizeof(ULONG)) {
+        HalDisplayString("BIOSgeom: FAIL DeviceSpecificData.DataSize < sizeof(ULONG)\n");
+        ExFreePool(keyData); return FALSE;
     }
 
     length = resourceDescriptor->PartialResourceList.PartialDescriptors[0]
@@ -1680,6 +1742,7 @@ Return Value:
     //
 
     if (numberOfDrives <= DiskNumber) {
+        HalDisplayString("BIOSgeom: numberOfDrives <= DiskNumber\n");
         ExFreePool(keyData);
         return FALSE;
     }

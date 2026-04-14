@@ -65,6 +65,17 @@ EFI_STATUS loaderblock_stage_pe(const void *file_blob, UINTN file_size,
 void loaderblock_set_nls(EFI_PHYSICAL_ADDRESS base_phys,
                          UINTN ansi_off, UINTN oem_off, UINTN uni_off);
 
+/* Must be called before loaderblock_build(). Carries everything the
+ * kernel needs to identify our boot disk:
+ *   - total_blocks/block_size: CHS geometry for atdisk's INT13 params
+ *   - mbr_signature: DWORD at MBR offset 0x1B8 (the disk identifier)
+ *   - mbr_checksum: sum of the first 128 DWORDs of the MBR. The
+ *     kernel's IopCreateArcNames (NTOS/IO/IOINIT.C:1355) matches by
+ *     (our_signature == drive_layout_signature) AND
+ *     (our_checksum + kernel_sum == 0) — so we pass the two's-complement. */
+void loaderblock_set_boot_disk(UINT64 total_blocks, UINT32 block_size,
+                               UINT32 mbr_signature, UINT32 mbr_checksum);
+
 EFI_STATUS loaderblock_build(void);
 
 /* After build() + all images staged, wire LoadOrderList and BootDriverList

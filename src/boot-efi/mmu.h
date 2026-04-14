@@ -56,6 +56,15 @@ EFI_STATUS mmu_alloc_at(UINTN pages, PageKind kind,
                         EFI_PHYSICAL_ADDRESS preferred,
                         EFI_PHYSICAL_ADDRESS *out_phys);
 
+/* Allocate `pages` at the highest available physical address below
+ * `max_addr` (UEFI AllocateMaxAddress). Used for data that must live in
+ * the first 16 MiB of phys so KSEG0 access survives a CR3 switch to a
+ * new process — NT 3.5's MmCreateProcessAddressSpace only copies PDEs
+ * for virt 0x80000000..0x80FFFFFF (see NTOS/MM/PROCSUP.C:52). */
+EFI_STATUS mmu_alloc_below(UINTN pages, PageKind kind,
+                           EFI_PHYSICAL_ADDRESS max_addr,
+                           EFI_PHYSICAL_ADDRESS *out_phys);
+
 /* Read-only registry access for memmap.c. */
 UINTN             mmu_registry_count(void);
 const AllocEntry *mmu_registry_entry(UINTN i);

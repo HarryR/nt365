@@ -208,7 +208,11 @@ EFI_STATUS pe_stage(const void *blob, UINTN blob_size,
             com1_puts("[pe] preferred phys busy, falling back for ");
             com1_puts(name);
             com1_puts("\n");
-            status = mmu_alloc(pages, kind, &phys);
+            /* Force below 16 MiB: driver/kernel images must live at phys
+             * < 16 MiB so their KSEG0 aliases survive a process switch
+             * (only PDE[512..515] get copied by MmCreateProcessAddressSpace
+             * per NTOS/MM/PROCSUP.C:52,297). */
+            status = mmu_alloc_below(pages, kind, 0x01000000, &phys);
             if (EFI_ERROR(status)) return status;
         }
     }

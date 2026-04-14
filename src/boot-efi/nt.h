@@ -111,6 +111,53 @@ typedef struct _CONFIGURATION_COMPONENT_DATA {
     void *ConfigurationData;
 } CONFIGURATION_COMPONENT_DATA;
 
+/* NT's kernel-visible resource descriptor wire format (NTIFS.H). Used
+ * for "Configuration Data" values under \Registry\Machine\Hardware\...
+ * Must match binary layout NT expects. pshpack4 for CM_PARTIAL_*. */
+
+typedef enum {
+    NT_InterfaceTypeInternal = 0, NT_InterfaceTypeIsa = 1,
+} NT_INTERFACE_TYPE;
+
+/* CmResourceType enum positions (NTIFS.H _CM_RESOURCE_TYPE). */
+#define NT_CmResourceTypeDeviceSpecific  5
+
+typedef struct __attribute__((packed, aligned(4))) _NT_CM_PARTIAL_RESOURCE_DESCRIPTOR {
+    UINT8  Type;
+    UINT8  ShareDisposition;
+    UINT16 Flags;
+    struct {
+        UINT32 DataSize;
+        UINT32 Reserved1;
+        UINT32 Reserved2;
+    } DeviceSpecificData;
+    /* Extra padding: the union in NT's struct is 12 bytes (DataSize + two
+     * Reserved ULONGs), but other arms (Memory/Port with LARGE_INTEGER
+     * Start + ULONG Length) are also 12 bytes @ align 4. Total struct = 16. */
+} NT_CM_PARTIAL_RESOURCE_DESCRIPTOR;
+
+typedef struct __attribute__((aligned(4))) _NT_CM_PARTIAL_RESOURCE_LIST {
+    UINT16 Version;
+    UINT16 Revision;
+    UINT32 Count;
+    NT_CM_PARTIAL_RESOURCE_DESCRIPTOR PartialDescriptors[1];
+} NT_CM_PARTIAL_RESOURCE_LIST;
+
+typedef struct __attribute__((aligned(4))) _NT_CM_FULL_RESOURCE_DESCRIPTOR {
+    NT_INTERFACE_TYPE         InterfaceType;
+    UINT32                    BusNumber;
+    NT_CM_PARTIAL_RESOURCE_LIST PartialResourceList;
+} NT_CM_FULL_RESOURCE_DESCRIPTOR;
+
+/* Byte-packed (see pshpack1.h before the struct in ntifs.h:5148). */
+typedef struct __attribute__((packed)) _NT_CM_INT13_DRIVE_PARAMETER {
+    UINT16 DriveSelect;
+    UINT32 MaxCylinders;
+    UINT16 SectorsPerTrack;
+    UINT16 MaxHeads;
+    UINT16 NumberDrives;
+} NT_CM_INT13_DRIVE_PARAMETER;
+
 typedef struct _LDR_DATA_TABLE_ENTRY {
     NT_LIST_ENTRY InLoadOrderLinks;
     NT_LIST_ENTRY InMemoryOrderLinks;

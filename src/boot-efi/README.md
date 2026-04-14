@@ -41,16 +41,22 @@ GDB=1 ./boot.sh # same, but freezes CPU and listens on :1234 for gdb
 ```
 Virtual                      Physical (QEMU default 128 MB)
 ┌─────────────────────────┐
-│ 0x00000000..0xFFFFFFFF  │  32-bit address space
+│ 0x00000000..0x0FFFFFFF  │  Identity map, torn down early in MM init.
 │                         │
-│ 0x00000000..0x0FFFFFFF  │  Identity map (low 256 MB)  — torn down by
-│                         │  MiInitMachineDependent early in MM init.
+│ 0x80000000..0x80FFFFFF  │  First 16 MiB of KSEG0 — the range NT 3.5
+│                         │  copies into every new process's PD. Anything
+│                         │  the kernel accesses after a CR3 switch
+│                         │  (kernel img, HAL, drivers, TSS, PCR, GDT,
+│                         │  IDT, PTs, idle stack) MUST live here.
+│                         │  Enforced via mmu_alloc_below(.., 0x1000000).
 │                         │
-│ 0x80000000..0x8FFFFFFF  │  KSEG0 mirror of phys. **Only REGISTERED pages
-│                         │  are mapped.** Blanket-mapping causes
-│                         │  PFN_LIST_CORRUPT — see "The KSEG0 trap" below.
+│ 0x81000000..0x8FFFFFFF  │  KSEG0 of phys ≥ 16 MiB — ONLY the LPB arena,
+│                         │  NLS block, and Phase-0-only scratch. Kernel
+│                         │  touches none of this post-MmFreeLoaderBlock.
+│                         │  **Only REGISTERED pages are mapped** — see
+│                         │  "The KSEG0 trap".
 │                         │
-│ 0xC0000000..0xC03FFFFF  │  Self-map (PDE[768] = PD). PTE_BASE + PDE_BASE.
+│ 0xC0000000..0xC03FFFFF  │  Self-map (PDE[768] = PD).
 │ 0xFFC00000..0xFFFFFFFF  │  HAL PT (PDE[1023]). PCR at 0xFFDFF000, SUD at
 │                         │  0xFFDF0000.
 └─────────────────────────┘
@@ -156,6 +162,65 @@ Both traps above have the same root cause: the kernel assumes adjacency wherever
 - If the kernel walks a struct and follows a pointer, that pointer must be
   in a range we've mapped into KSEG0 (= in the registry).
 
+## The TSS-size trap (STOP 0x1E)
+
+NT's `KTSS` is **~8364 bytes**, not the classic 104-byte TSS. Layout (from `NTOS/INC/I386.H`):
+
+- `0x00..0x67` — standard 32-bit TSS header (104 B).
+- `0x68..0x208B` — one `KIIO_ACCESS_MAP` (32 B direction map + 8196 B I/O permission bitmap).
+- `0x208C..0x20AB` — `KINT_DIRECTION_MAP` (32 B).
+
+`KiInitializeTSS` fills the I/O bitmap with `rep stos` of `0xFFFFFFFF` over `0x801` dwords starting at `TSS+0x88`. A 2-page (8192 B) TSS allocation overflows by ~170 B into whatever is phys-adjacent. In our case that was fastfat's PE headers, which then made `PsLoadedModule` scan bugcheck at `RtlImageNtHeader` returning NULL on the corrupted image. **Always allocate at least 3 pages for TSS** and set the GDT limit accordingly.
+
+## The < 16 MiB trap (kernel-accessible data)
+
+NT 3.5's `MmCreateProcessAddressSpace` (`NTOS/MM/PROCSUP.C:52,297`) copies only these PDE ranges from the idle process's PD to every new process's PD:
+
+- **`CODE_START..CODE_END` = `0x80000000..0x80FFFFFF`** — the first 16 MiB of KSEG0.
+- `MmNonPagedSystemStart..NON_PAGED_SYSTEM_END` — nonpaged system PTE/pool area.
+- `MM_SYSTEM_CACHE_WORKING_SET..MmSystemCacheEnd` — system cache.
+
+Anything the kernel accesses via KSEG0 at phys ≥ 16 MiB (= KSEG0 virt ≥ `0x81000000`) becomes **unmapped** after `SwapContext` switches CR3 to a new process. This first bites at `mov [ecx+0x1C], eax` in `SwapContext` writing `CR3` into the TSS — if the TSS is at phys > 16 MiB its KSEG0 alias dies on the context switch, triple-faulting immediately.
+
+**Rule**: anything the kernel touches via KSEG0 at runtime (PD, PTs, TSS, PCR, GDT, IDT, idle stack, kernel image, HAL image, driver images) MUST live at phys < 16 MiB. `mmu_alloc_below(pages, kind, 0x01000000, &phys)` uses UEFI `AllocateMaxAddress` to enforce this. `mmu_alloc_reserved` + the `pe_stage` fallback path both use it.
+
+Things the kernel only touches during Phase 0/1 init (LPB arena, NLS block, the PE file blobs we keep around as `LoaderFirmwareTemporary`) don't need to be low — `MmFreeLoaderBlock` runs before any user process spawns, and Phase 0/1 runs under the idle process with our full KSEG0 PD still in place.
+
+## The NT-vs-UEFI struct-alignment trap
+
+gnu-efi's ia32 headers declare `EFI_LBA` as `UINT64`. GCC's default 32-bit ABI aligns `UINT64` to 4 bytes; UEFI's ABI (and OVMF's compiled layout) aligns to 8. Result: reading `bio->Media->LastBlock` reads 4 bytes early, landing in `IoAlign` + first half of `LastBlock`. Symptom: `LastBlock.lo = 0, LastBlock.hi = <real value>`.
+
+Compile with `-malign-double` so our `UINT64` alignment matches OVMF's. Required for `EFI_BLOCK_IO_MEDIA`, `LARGE_INTEGER`, and any UEFI struct containing a `UINT64`.
+
+## The ARC name match (STOP 0x7B → success path)
+
+`IopCreateArcNames` (`NTOS/IO/IOINIT.C:1355`) matches each detected disk against `LoaderBlock->ArcDiskInformation->DiskSignatures` using **all three** of:
+
+- `diskBlock->Signature == driveLayout->Signature` — DWORD at MBR offset `0x1B8`.
+- `(diskBlock->CheckSum + sum_of_first_128_dwords_of_MBR) == 0` — we store two's complement.
+- `diskBlock->ValidPartitionTable == TRUE`.
+
+All three must hold or no `\ArcName\multi(0)disk(0)rdisk(0)partition(1)` → `\Device\Harddisk0\Partition1` symlink gets created, and the boot volume can't be resolved. `main.c` reads sector 0 via `fs_boot_disk_read_sector0`, computes the checksum, and passes `(signature, negsum)` to `loaderblock_set_boot_disk`.
+
+## The INT 13 drive-parameter blob (STOP 0x7B → Configuration Data)
+
+atdisk's geometry init (`NTOS/DD/HARDDISK/I386/ATD_CONF.C:1278 UpdateGeometryFromBios`) opens `\Registry\Machine\Hardware\Description\System` and reads its `"Configuration Data"` value. The value is constructed by `CmpInitializeRegistryNode` (`NTOS/CONFIG/CMCONFIG.C:657`) from `ConfigurationData` pointer on the node — **which must point at a `CM_PARTIAL_RESOURCE_LIST`** (starting with `Version`), NOT a full `CM_FULL_RESOURCE_DESCRIPTOR`. The kernel prepends the `InterfaceType + BusNumber` header itself.
+
+`CmResourceTypeDeviceSpecific` is enum position **5**, not `0x80`. Confusing it with the INT 13h drive-select value (also `0x80`) silently bakes a wrong `Type` field into the PartialDescriptor and the kernel rejects the blob.
+
+CHS geometry is fabricated from the real disk size (queried via `fs_boot_disk_size` → BlockIo `LastBlock`): heads=16, sectors/track=63, `cyls = ceil(blocks / (16*63))`. atdisk derives `PartitionLength = cyl * heads * spt * 512` and uses that to bound reads.
+
+## The CMOS drive-type trap
+
+atdisk won't even probe the IDE controller unless CMOS byte `0x12` has the high nibble non-zero (indicates "drive 0 present"). Legacy BIOSes write this at POST; OVMF doesn't. We poke CMOS directly before `ExitBootServices`:
+
+```c
+// CMOS[0x12] = 0xF0  → drive 0 = extended type, drive 1 = none
+// CMOS[0x19] = 47    → extended type value (arbitrary non-zero)
+```
+
+The actual value at `0x19` doesn't matter because atdisk's `IssueIdentify` queries the drive for real geometry — but byte `0x12` gating is a hard prerequisite.
+
 ## Debugging
 
 ### Reading NT bugcheck output
@@ -166,9 +231,12 @@ Common codes:
 
 | Code | Meaning                               | Hints                                |
 |------|---------------------------------------|--------------------------------------|
-| 0x1E | `KMODE_EXCEPTION_NOT_HANDLED`         | arg1=exc_code, arg2=EIP, arg4=fault VA. Often flagged as `MM_NONPAGED_POOL_END` in some NT docs — it just means the kernel faulted and no handler caught it. |
+| 0x1E | `KMODE_EXCEPTION_NOT_HANDLED`         | arg1=exc_code, arg2=EIP, arg4=fault VA. Often flagged as `MM_NONPAGED_POOL_END` in some NT docs — it just means the kernel faulted and no handler caught it. Common cause: TSS-size overrun (see "TSS-size trap"). |
 | 0x4E | `PFN_LIST_CORRUPT`                    | arg3=`MmAvailablePages` — 0 means no pages reached free list. See "KSEG0 trap". |
 | 0x50 | `PAGE_FAULT_IN_NONPAGED_AREA`         | arg1=VA. Often NLS-offset bug. See "NLS-contiguity trap". |
+| 0x6B | `PROCESS1_INITIALIZATION_FAILED`      | arg1=NTSTATUS from smss launch. `0xC000003A` = `STATUS_OBJECT_PATH_NOT_FOUND` → check `NtBootPathName` matches the on-disk layout. |
+| 0x7B | `INACCESSIBLE_BOOT_DEVICE`            | arg1=addr of boot device path ptr, arg2 = NTSTATUS. `0xC0000034` = `STATUS_OBJECT_NAME_NOT_FOUND` → ARC name match failed (see "ARC name match"). Watch for intermediate fails: atdisk not seeing the disk (CMOS trap), `IoReadPartitionTable` returning `STATUS_INVALID_PARAMETER` (disk geometry zeroed — INT 13 blob trap), or the partition table itself missing (esp.img needs MBR). |
+| _triple_ | Uncaught fault, QEMU `-no-reboot` bails. | Grab `qemu.log` with `-d int,cpu_reset` — it prints the last trap frame + faulting instruction. Common cause: KSEG0 access to phys ≥ 16 MiB after `SwapContext` (see "< 16 MiB trap"). |
 | 0xC0000005 | (as arg1 of 0x1E) Access violation | arg2 has the EIP of the faulting instruction. |
 
 ### gdb stub workflow
@@ -216,8 +284,8 @@ Check these when a bugcheck points at LPB dereference:
 |--------------------|-----------------------------------------------------|
 | `main.c`           | `efi_main` orchestrator                             |
 | `com1.[ch]`        | Raw COM1 serial (post-ExitBootServices survival)    |
-| `fs.[ch]`          | ESP reads: `fs_read`, `fs_read_into`, `fs_file_size` |
-| `mmu.[ch]`         | Page alloc registry, PD/PT/GDT/IDT build            |
+| `fs.[ch]`          | ESP reads: `fs_read`, `fs_read_into`, `fs_file_size`, `fs_boot_disk_size`, `fs_boot_disk_read_sector0` |
+| `mmu.[ch]`         | Page alloc registry, `mmu_alloc{,_at,_below}`, PD/PT/GDT/IDT build |
 | `pe.[ch]`          | PE32 staging + import resolution                    |
 | `memmap.[ch]`      | UEFI → NT memory descriptor translation             |
 | `loaderblock.[ch]` | LPB arena + LDR entries                             |

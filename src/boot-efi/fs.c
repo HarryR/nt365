@@ -28,6 +28,7 @@ static EFI_FILE_PROTOCOL *g_root = NULL;
 static const EFI_GUID g_loaded_image_guid = LOADED_IMAGE_PROTOCOL;
 static const EFI_GUID g_sfs_guid          = SIMPLE_FILE_SYSTEM_PROTOCOL;
 static const EFI_GUID g_file_info_guid    = EFI_FILE_INFO_ID;
+static const EFI_GUID g_block_io_guid     = BLOCK_IO_PROTOCOL;
 
 EFI_STATUS fs_init(EFI_HANDLE ImageHandle) {
     EFI_LOADED_IMAGE_PROTOCOL        *loaded_image;
@@ -151,6 +152,66 @@ free_info_err:
 close_err:
     uefi_call_wrapper(file->Close, 1, file);
     return status;
+}
+
+/* Walk BlockIo handles and return the first whole-disk (non-partition,
+ * media-present) one, picking the one with the most blocks. Separated
+ * from fs_boot_disk_size so multiple callers can re-locate the disk. */
+static EFI_BLOCK_IO_PROTOCOL *find_whole_disk_bio(void) {
+    EFI_HANDLE *handles = NULL;
+    UINTN       n_handles = 0;
+    EFI_BLOCK_IO_PROTOCOL *chosen = NULL;
+    UINT64                 chosen_blocks = 0;
+    if (uefi_call_wrapper(BS->LocateHandleBuffer, 5,
+                          ByProtocol, (EFI_GUID *)&g_block_io_guid,
+                          NULL, &n_handles, &handles) != EFI_SUCCESS) return 0;
+    for (UINTN i = 0; i < n_handles; i++) {
+        EFI_BLOCK_IO_PROTOCOL *bio;
+        if (uefi_call_wrapper(BS->HandleProtocol, 3,
+                              handles[i], (EFI_GUID *)&g_block_io_guid,
+                              (void **)&bio) != EFI_SUCCESS) continue;
+        if (!bio->Media) continue;
+        if (bio->Media->LogicalPartition) continue;
+        if (!bio->Media->MediaPresent) continue;
+        UINT64 blocks = bio->Media->LastBlock + 1;
+        if (blocks > chosen_blocks) { chosen = bio; chosen_blocks = blocks; }
+    }
+    uefi_call_wrapper(BS->FreePool, 1, handles);
+    return chosen;
+}
+
+EFI_STATUS fs_boot_disk_read_sector0(void *out, UINTN out_size) {
+    EFI_BLOCK_IO_PROTOCOL *bio = find_whole_disk_bio();
+    if (!bio) return EFI_NOT_FOUND;
+    if (out_size < bio->Media->BlockSize) return EFI_BUFFER_TOO_SMALL;
+    return uefi_call_wrapper(bio->ReadBlocks, 5,
+                             bio, bio->Media->MediaId, 0,
+                             (UINTN)bio->Media->BlockSize, out);
+}
+
+EFI_STATUS fs_boot_disk_size(UINT64 *out_blocks, UINT32 *out_block_size) {
+    EFI_BLOCK_IO_PROTOCOL *chosen = find_whole_disk_bio();
+    if (!chosen) {
+        com1_puts("[fs] no whole-disk BlockIo found\n");
+        return EFI_NOT_FOUND;
+    }
+
+    *out_blocks     = chosen->Media->LastBlock + 1;
+    *out_block_size = chosen->Media->BlockSize;
+
+    com1_puts("[fs] boot disk: ");
+    com1_put_dec((unsigned long)*out_blocks);
+    com1_puts(" x ");
+    com1_put_dec((unsigned long)*out_block_size);
+    com1_puts(" bytes = ");
+    {
+        /* Total in MiB. Force 64-bit multiply + shift so we don't wrap on
+         * ia32 when a large block count meets 512 B sectors. */
+        UINT64 total = (UINT64)*out_blocks * (UINT64)*out_block_size;
+        com1_put_dec((unsigned long)(total >> 20));
+    }
+    com1_puts(" MiB\n");
+    return EFI_SUCCESS;
 }
 
 EFI_STATUS fs_file_size(const CHAR16 *path, UINTN *out_size) {
