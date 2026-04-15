@@ -79,6 +79,16 @@ src/NT/PUBLIC/OAK/BIN/I386/midlpg.exe
 src/NT/PUBLIC/OAK/BIN/I386/midl.exe
 # MIDL20 static libs (intermediate link inputs for midl.exe).
 src/NT/PRIVATE/RPC/MIDL20/lib/
+# MIDL FRONT pre-generated sources (midlyacc + midlpg + midleb output).
+src/NT/PRIVATE/RPC/MIDL20/FRONT/grammar.cxx
+src/NT/PRIVATE/RPC/MIDL20/FRONT/acfgram.cxx
+src/NT/PRIVATE/RPC/MIDL20/FRONT/extable.h1
+src/NT/PRIVATE/RPC/MIDL20/FRONT/extable.h2
+src/NT/PRIVATE/RPC/MIDL20/FRONT/extable.h3
+src/NT/PRIVATE/RPC/MIDL20/INCLUDE/grammar.h
+src/NT/PRIVATE/RPC/MIDL20/INCLUDE/acfgram.h
+src/NT/PRIVATE/RPC/MIDL20/INCLUDE/idlerec.h
+src/NT/PRIVATE/RPC/MIDL20/INCLUDE/acferec.h
 # Prebuilt .exe shipped in stuff/ — we bootstrap everything from source,
 # so reject any .exe under the MIDL tree (build outputs live elsewhere).
 src/NT/PRIVATE/RPC/MIDL20/**/*.exe

@@ -212,6 +212,43 @@ build_midl_expr()    { _midl20_lib_prep; run_nmake "$NT_ROOT/PRIVATE/RPC/MIDL20/
 build_midl_analysis(){ _midl20_lib_prep; run_nmake "$NT_ROOT/PRIVATE/RPC/MIDL20/ANALYSIS" "MIDL20/ANALYSIS - analysis.lib"; }
 build_midl_codegen() { _midl20_lib_prep; run_nmake "$NT_ROOT/PRIVATE/RPC/MIDL20/CODEGEN"  "MIDL20/CODEGEN - codegen.lib"; }
 
+# FRONT pre-generation: midlyacc → midlpg → midleb. Originally driven by
+# MAKEFILE.INC inside nmake, but the rules used `qgrep` (resource-kit grep)
+# to strip #line directives. We patched midlyacc to gate #line behind a -L
+# flag (default off), so the pipeline is now: yacc → pg → midleb, no filter.
+# Generates grammar.cxx, acfgram.cxx (compiled by FRONT) and
+# include/{idlerec.h, acferec.h} (consumed by FRONT sources).
+_midl_front_gen() {
+    local front="$NT_ROOT/PRIVATE/RPC/MIDL20/FRONT"
+    # Use existing uppercase INCLUDE — Linux is case-sensitive, wine isn't,
+    # and creating a sibling lowercase `include/` makes wine see two dirs.
+    local inc="$NT_ROOT/PRIVATE/RPC/MIDL20/INCLUDE"
+    local oak="D:\\PUBLIC\\OAK\\BIN\\I386"
+    echo ">>> MIDL/FRONT gen: midlyacc + midlpg + midleb"
+    (
+        cd "$front" || exit 1
+        # midlyacc emits FOO.C/FOO.H/FOO.I (uppercase). Wine's case-
+        # insensitive FS lets cl pick up FOO.C when SOURCES says foo.cxx,
+        # so we delete the .C/.H/.I after midlpg consumes them.
+        wine "$oak\\midlyacc.exe" -his -t "YYSTATIC " grammar.y       || exit 1
+        wine "$oak\\midlpg.exe"   grammar.C   > grammar.cxx           || exit 1
+        wine "$oak\\midleb.exe"   - xlatidl.dat IDL > "$inc/idlerec.h" || exit 1
+        # Keep grammar.h (lex.cxx includes it) by moving into INCLUDE; drop .C/.I
+        # so cl doesn't pick up grammar.C instead of grammar.cxx on wine FS.
+        mv -f grammar.H "$inc/grammar.h" && rm -f grammar.C grammar.I
+        wine "$oak\\midlyacc.exe" -hi  -t "YYSTATIC " acfgram.y       || exit 1
+        wine "$oak\\midlpg.exe"   acfgram.C  > acfgram.cxx            || exit 1
+        wine "$oak\\midleb.exe"   - xlatacf.dat ACF > "$inc/acferec.h" || exit 1
+        mv -f acfgram.H "$inc/acfgram.h" && rm -f acfgram.C acfgram.I
+    ) || { echo "!!! MIDL/FRONT gen failed"; return 1; }
+    echo ">>> MIDL/FRONT gen: OK (grammar.cxx, acfgram.cxx, idlerec.h, acferec.h)"
+}
+build_midl() {
+    _midl_front_gen || return 1
+    run_nmake "$NT_ROOT/PRIVATE/RPC/MIDL20/FRONT" "MIDL20/FRONT - midl.exe (compiler driver)"
+    install_host_tool "$NT_ROOT/PRIVATE/RPC/MIDL20/lib/i386/midl.exe" "midl.exe"
+}
+
 # --- GUI-side drivers (input + video) ----------------------------------------
 # Input: PS/2 port driver (i8042prt) sits under the class drivers
 # (kbdclass + mouclass). kbdclass/mouclass are the public NT driver
