@@ -277,10 +277,12 @@ build_lsa_idl()  {
         wine cmd /c "$env&& midl $flags -acf lsacli.acf -header lsarpc_c.h lsarpc.idl" || exit 1
         wine cmd /c "$env&& midl $flags -acf lsasrv.acf -header lsarpc.h   lsarpc.idl" || exit 1
     ) || return 1
-    # Client stub header is consumed by UCLIENT and SERVER via #include
-    # "lsarpc_c.h" — copy into LSA/INC (both dirs have /I ..\inc in their
-    # SOURCES) alongside the hand-written headers there.
+    # lsarpc_c.h is consumed by UCLIENT + SERVER via #include "lsarpc_c.h"
+    # (LSA/INC is on their /I ..\inc path). lsarpc.h (server header) is
+    # pulled via <lsarpc.h> from NEWSAM and other components that talk
+    # to the LSA server interface, so drop both into PRIVATE/INC too.
     cp -f "$NT_ROOT/PRIVATE/LSA/lsarpc_c.h" "$NT_ROOT/PRIVATE/LSA/INC/"
+    cp -f "$NT_ROOT/PRIVATE/LSA/lsarpc.h"   "$NT_ROOT/PRIVATE/INC/"
 }
 build_lsacomm()  { build_lsa_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/COMMON" "LSA/COMMON - lsacomm.lib"; }
 build_lsaudll()  { build_lsa_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/UCLIENT" "LSA/UCLIENT - lsaudll.lib"; }
@@ -291,6 +293,88 @@ build_lsaudll()  { build_lsa_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/UC
 build_crypt_engine() { run_nmake "$NT_ROOT/PRIVATE/LSA/CRYPT/ENGINE" "LSA/CRYPT/ENGINE - engine.lib (DES/RC4/ECB/MD4)"; }
 build_sys003()       { build_crypt_engine || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/CRYPT/DLL" "LSA/CRYPT/DLL - sys003.lib (crypt wrapper)"; }
 build_rpcutil()  { run_nmake "$NT_ROOT/PRIVATE/RPCUTIL" "RPC/RPCUTIL - rpcutil.lib (MIDL user helpers)"; }
+build_nlrepl()   {
+    build_sam_idl || return 1
+    run_nmake "$NT_ROOT/PRIVATE/NLSECUTL" "NLSECUTL - nlrepl.lib (NetLogon helpers)"
+}
+# SAM (Security Account Manager). Dual MIDL pass per NEWSAM/MAKEFIL0 —
+# client + server each with their own ACF. samrpc_c.h / samrpc.h are
+# consumed by NLSECUTL, LSA/SERVER, NEWSAM/CLIENT and /SERVER.
+build_sam_idl()  {
+    local dir="$NT_ROOT/PRIVATE/NEWSAM"
+    local oak="D:\\PUBLIC\\OAK\\BIN\\I386"
+    local env="set PATH=$oak&& set INCLUDE=D:\\PUBLIC\\SDK\\INC;D:\\PUBLIC\\OAK\\INC;D:\\PUBLIC\\SDK\\INC\\CRT"
+    local flags="/D MIDL_PASS /D _M_IX86 /D _X86_ /D _WCHAR_T_DEFINED -mode c_port -oldnames -error allocation -error ref /I ..\\inc"
+    (
+        cd "$dir" || exit 1
+        wine cmd /c "$env&& midl $flags -acf samcli.acf -header samrpc_c.h samrpc.idl" || exit 1
+        wine cmd /c "$env&& midl $flags -acf samsrv.acf -header samrpc.h   samrpc.idl" || exit 1
+    ) || return 1
+    # Drop samrpc headers into PRIVATE/INC where other components expect them.
+    cp -f "$NT_ROOT/PRIVATE/NEWSAM/samrpc_c.h" "$NT_ROOT/PRIVATE/INC/"
+    cp -f "$NT_ROOT/PRIVATE/NEWSAM/samrpc.h"   "$NT_ROOT/PRIVATE/INC/"
+}
+build_samlib()   { build_sam_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/NEWSAM/CLIENT" "NEWSAM/CLIENT - samlib.dll" makedll=1; }
+build_samsrv()   {
+    build_sam_idl || return 1
+    build_lsasrv_imports || return 1  # samsrv links against lsasrv.lib
+    run_nmake "$NT_ROOT/PRIVATE/NEWSAM/SERVER" "NEWSAM/SERVER - samsrv.dll" makedll=1
+}
+# LSA/SERVER builds lsasrv.dll + lsass.exe (UMAPPL=lsass in its SOURCES).
+# It links against samsrv.lib and samsrv links against lsasrv.lib — a
+# circular DLL dep. Break it by pre-generating the import libs from
+# their .def files before either DLL gets linked.
+# Build an import lib from a .def file. When given an obj dir that's
+# already been populated by a compile pass, lib -def picks up the
+# stdcall @N decorations from the obj symbols, producing a proper
+# decorated import lib. Without the objs, @N is stripped, which
+# breaks cross-DLL references for any stdcall-exported function.
+_lib_from_def() {
+    local libname="$1"
+    local def_path="$2"
+    local objs_glob="${3:-}"
+    local oak="D:\\PUBLIC\\OAK\\BIN\\I386"
+    local defwin="$(echo "$def_path" | sed 's|.*/NT/|D:\\|; s|/|\\|g')"
+    local libwin="D:\\PUBLIC\\SDK\\LIB\\I386\\$libname"
+    local objarg=""
+    if [ -n "$objs_glob" ]; then
+        objarg="$(echo "$objs_glob" | sed 's|.*/NT/|D:\\|; s|/|\\|g')"
+    fi
+    echo ">>> pre-generating $libname from $(basename "$def_path")${objarg:+ + objs}"
+    wine cmd /c "set PATH=$oak&& lib -nologo -machine:i386 -def:$defwin $objarg -out:$libwin" \
+        || { echo "!!! lib -def on $def_path failed"; return 1; }
+}
+# The samsrv<->lsasrv circular import is broken by compiling each DLL's
+# obj files once (no link), then using `lib -def:X.def obj/*.obj` to
+# produce decorated import libs. After that, both DLLs can link.
+_nmake_only_compile() {
+    # Force nmake to stop at the compile step (before link) by requesting
+    # the obj dir as the target. Easiest way: run normal nmake but accept
+    # link failure. The obj files are what we care about.
+    run_nmake "$1" "$2" 2>&1 | tail -3 || true
+}
+build_lsasrv_imports() {
+    # Force compile-only pass on both DLLs so the obj files exist, then
+    # synthesize import libs with proper @N decorations from the objs.
+    local sam_obj="$NT_ROOT/PRIVATE/NEWSAM/SERVER/obj/i386/*.obj"
+    local lsa_obj="$NT_ROOT/PRIVATE/LSA/SERVER/obj/i386/*.obj"
+    if ! compgen -G "$sam_obj" > /dev/null; then
+        _nmake_only_compile "$NT_ROOT/PRIVATE/NEWSAM/SERVER" "NEWSAM/SERVER compile-only (pre-imports)"
+    fi
+    if ! compgen -G "$lsa_obj" > /dev/null; then
+        _nmake_only_compile "$NT_ROOT/PRIVATE/LSA/SERVER" "LSA/SERVER compile-only (pre-imports)"
+    fi
+    _lib_from_def lsasrv.lib "$NT_ROOT/PRIVATE/LSA/SERVER/LSASRV.DEF"    "$lsa_obj" || return 1
+    _lib_from_def samsrv.lib "$NT_ROOT/PRIVATE/NEWSAM/SERVER/SAMSRV.DEF" "$sam_obj" || return 1
+}
+build_lsasrv() {
+    build_lsa_idl || return 1
+    build_sam_idl || return 1
+    # Break the samsrv<->lsasrv circular import by generating both .lib
+    # import stubs from .def first.
+    build_lsasrv_imports || return 1
+    run_nmake "$NT_ROOT/PRIVATE/LSA/SERVER" "LSA/SERVER - lsasrv.dll + lsass.exe" makedll=1
+}
 build_advapi32() { build_rpcutil || return 1; run_nmake "$NT_ROOT/PRIVATE/WINDOWS/BASE/ADVAPI" "advapi32.dll" makedll=1; }
 
 # --- Host tools (sdktools bootstrap phase) -----------------------------------
@@ -653,6 +737,13 @@ USERLAND_TARGETS=(
     crypt_engine sys003
     rpcutil
     advapi32
+    # Security subsystem: SAM + LSA + NetLogon helpers → lsass.exe.
+    # samsrv<->lsasrv have a circular DLL dep that's resolved inside
+    # build_lsasrv_imports (compile-only pass, then `lib -def:X.def
+    # obj/*.obj` to produce decorated import stubs).
+    nlrepl
+    samlib samsrv
+    lsasrv
 )
 
 # GUI userland: pulls in the whole Win32 window/drawing stack. advapi32

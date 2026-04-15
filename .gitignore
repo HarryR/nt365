@@ -36,15 +36,23 @@ src/NT/PUBLIC/SDK/LIB/I386/hal.lib
 src/NT/PUBLIC/SDK/LIB/I386/hal.exp
 src/NT/PUBLIC/SDK/LIB/I386/tmp.lib
 src/NT/PUBLIC/SDK/LIB/I386/tmp.exp
-# ntdll is built from our sources — keep .lib tracked, ignore .dll/.exp
+# ntdll, kernel32, hal, advapi32 are all built from source — their .lib
+# import stubs are produced by each DLL's link step and consumed only by
+# later build steps, so nothing tracked in the tree is load-bearing for
+# bootstrap. Ignore the whole set.
 src/NT/PUBLIC/SDK/LIB/I386/ntdll.dll
 src/NT/PUBLIC/SDK/LIB/I386/ntdll.exp
+src/NT/PUBLIC/SDK/LIB/I386/ntdll.lib
+src/NT/PUBLIC/SDK/LIB/I386/kernel32.dll
+src/NT/PUBLIC/SDK/LIB/I386/kernel32.exp
+src/NT/PUBLIC/SDK/LIB/I386/KERNEL32.LIB
+src/NT/PUBLIC/SDK/LIB/I386/HAL.LIB
+src/NT/PUBLIC/SDK/LIB/I386/advapi32.dll
+src/NT/PUBLIC/SDK/LIB/I386/advapi32.exp
+src/NT/PUBLIC/SDK/LIB/I386/ADVAPI32.LIB
 # nt.lib (URTL) + smdll.lib (SM/CLIENT) — built from source
 src/NT/PUBLIC/SDK/LIB/I386/nt.lib
 src/NT/PUBLIC/SDK/LIB/I386/smdll.lib
-# kernel32.dll is built from source — keep .lib import lib, ignore outputs
-src/NT/PUBLIC/SDK/LIB/I386/kernel32.dll
-src/NT/PUBLIC/SDK/LIB/I386/kernel32.exp
 # csrsrv.dll + basesrv.dll — built from CSR/SERVER + WINDOWS/BASE/SERVER.
 # Unlike kernel32.lib / ntdll.lib / smdll.lib (which are linked against
 # by lots of in-tree components so we track the .lib import stubs),
@@ -117,11 +125,8 @@ src/NT/PRIVATE/LSA/lsarpc_c.h
 src/NT/PRIVATE/LSA/lsarpc_s.c
 src/NT/PRIVATE/LSA/INC/lsarpc_c.h
 
-# advapi32.dll is built from source — keep .lib import lib tracked,
-# ignore the rebuilt DLL + .exp. mc.exe generates win31evt.h/.rc and
-# MSG00001.bin from ADVAPI/WIN31EVT.MC each build.
-src/NT/PUBLIC/SDK/LIB/I386/advapi32.dll
-src/NT/PUBLIC/SDK/LIB/I386/advapi32.exp
+# mc.exe generates win31evt.h/.rc and MSG00001.bin from
+# ADVAPI/WIN31EVT.MC each build.
 src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/win31evt.h
 src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/win31evt.rc
 src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/MSG00001.bin
@@ -136,6 +141,35 @@ src/NT/PRIVATE/NTOS/INIT/msg00001.bin
 
 # rpcutil is a 3-file static lib linked into advapi32.
 src/NT/PUBLIC/SDK/LIB/I386/rpcutil.lib
+
+# LSA / SAM / NetLogon stack — lsass.exe's security subsystem.
+# Follows the kernel32/advapi32 pattern: import .lib tracked, .dll + .exp
+# regenerated each build. nlrepl is purely static.
+src/NT/PUBLIC/SDK/LIB/I386/nlrepl.lib
+src/NT/PUBLIC/SDK/LIB/I386/lsasrv.dll
+src/NT/PUBLIC/SDK/LIB/I386/lsasrv.exp
+src/NT/PUBLIC/SDK/LIB/I386/lsasrv.lib
+src/NT/PUBLIC/SDK/LIB/I386/samsrv.dll
+src/NT/PUBLIC/SDK/LIB/I386/samsrv.exp
+src/NT/PUBLIC/SDK/LIB/I386/samsrv.lib
+src/NT/PUBLIC/SDK/LIB/I386/samlib.dll
+src/NT/PUBLIC/SDK/LIB/I386/samlib.exp
+src/NT/PUBLIC/SDK/LIB/I386/samlib.lib
+
+# midl-generated LSA/SAM stubs, copied into PRIVATE/INC as central
+# include root (NEWSAM/LSA/NLSECUTL all consume them).
+src/NT/PRIVATE/INC/lsarpc.h
+src/NT/PRIVATE/INC/samrpc.h
+src/NT/PRIVATE/INC/samrpc_c.h
+# NEWSAM midl stubs.
+src/NT/PRIVATE/NEWSAM/samrpc.h
+src/NT/PRIVATE/NEWSAM/samrpc_c.h
+src/NT/PRIVATE/NEWSAM/samrpc_c.c
+src/NT/PRIVATE/NEWSAM/samrpc_s.c
+# LSA/SERVER mc.exe output from LSAPMSGS.MC.
+src/NT/PRIVATE/LSA/SERVER/lsapmsgs.h
+src/NT/PRIVATE/LSA/SERVER/lsapmsgs.rc
+src/NT/PRIVATE/LSA/SERVER/MSG00001.bin
 # WINREG/LOCAL is built by copying files from WINREG/SERVER via MAKEFILE.INC.
 src/NT/PRIVATE/WINDOWS/SCREG/WINREG/LOCAL/PREDEFH.C
 src/NT/PRIVATE/WINDOWS/SCREG/WINREG/LOCAL/REGDKEY.C

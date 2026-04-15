@@ -1,0 +1,67 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  headless:
+    name: headless profile
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      WINEDEBUG: "-all"
+
+    steps:
+      - name: install build deps
+        # Plain ubuntu:24.04 has no git / ca-certificates / sudo — add
+        # those for actions/checkout.
+        # NT's MS toolchain (CL 8.50, ML 6.11d, LINK.EXE, MIDL.EXE) is
+        # strictly 32-bit; wine needs the i386 DPKG architecture enabled
+        # to run it. gnu-efi for src/boot-efi/, build-essential for the
+        # native Linux side, python3 for tools/*.py (stdlib only).
+        run: |
+          dpkg --add-architecture i386
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git sudo \
+            build-essential \
+            gnu-efi \
+            python3 \
+            wine \
+            wine32:i386
+
+      - uses: actions/checkout@v4
+
+      - name: create wine prefix (D:\ = src/NT/)
+        run: |
+          cd src
+          bash createwineprefix.sh
+
+      - name: build headless
+        run: |
+          cd src
+          ./build.sh headless
+
+      - name: inventory outputs
+        run: |
+          echo "=== SDK libs ==="
+          ls -la src/NT/PUBLIC/SDK/LIB/I386/ | head -40
+          echo "=== OAK host tools ==="
+          ls -la src/NT/PUBLIC/OAK/BIN/I386/*.exe 2>/dev/null || true
+          echo "=== disk image ==="
+          ls -la src/boot/data/ src/boot-efi/BOOTIA32.EFI src/boot-efi/esp.img 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headless-disk
+          path: |
+            src/boot/data/disk.raw
+            src/boot/data/disk.h
+            src/boot-efi/BOOTIA32.EFI
+            src/boot-efi/esp.img
+          retention-days: 14
