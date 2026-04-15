@@ -157,6 +157,23 @@ build_atdisk() { run_nmake "$NTOS/DD/HARDDISK" "ATDISK - IDE disk driver"; }
 build_null()   { run_nmake "$NTOS/DD/NULL"     "NULL - null device driver"; }
 build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"; }
 build_hello()  { run_nmake "$NTOS/DD/HELLO"    "HELLO - MicroNT visibility driver"; }
+
+# --- GUI-side drivers (input + video) ----------------------------------------
+# Input: PS/2 port driver (i8042prt) sits under the class drivers
+# (kbdclass + mouclass). kbdclass/mouclass are the public NT driver
+# interface; i8042prt is the hardware-specific back-end.
+build_i8042prt() { run_nmake "$NTOS/DD/I8042PRT" "I8042PRT - PS/2 port driver (kb + mouse)"; }
+build_kbdclass() { run_nmake "$NTOS/DD/KBDCLASS" "KBDCLASS - keyboard class driver"; }
+build_mouclass() { run_nmake "$NTOS/DD/MOUCLASS" "MOUCLASS - mouse class driver"; }
+
+# Video: videoprt.sys is the common miniport framework that VGA.SYS
+# (and all other video drivers in real NT) links against. Build order
+# matters — videoprt first because vga imports videoprt.lib.
+build_videoprt()    { run_nmake "$NTOS/VIDEO/PORT" "VIDEOPRT - video miniport framework"; }
+build_vga_miniport(){
+    build_videoprt
+    run_nmake "$NTOS/VIDEO/VGA" "VGA - VGA miniport driver"
+}
 build_gensrv() {
     KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/SDKTOOLS/GENSRV" "GENSRV - NT syscall stub generator"
     # Install into OAK/BIN/I386 so nmake rules can invoke it by bare name.
@@ -341,6 +358,22 @@ fi
 #
 # Order matters within each array (deps build first).
 
+#
+# Target split: headless vs GUI.
+#
+#   headless = kernel + storage/fs drivers + Win32-subsystem base
+#              (csrss + csrsrv + basesrv + kernel32 + advapi32 + small
+#              client DLLs that don't need USER or GDI).
+#   gui      = headless + input drivers + VGA + usersrv/user32/gdisrv/
+#              gdi32/consrv/winsrv/winlogon/userinit.
+#
+# The build-time split only gates what gets COMPILED. Disk-image
+# composition (mkdisk.py + mkhive.py) chooses which of the compiled
+# binaries to stage. That means you can build `all` (== gui) once and
+# then flip between headless-boot and gui-boot at disk-build time.
+#
+# Order inside each array matters — deps first.
+
 NTOSKRNL_TARGETS=(
     geni386
     ke rtl ex ob se ps mm cache config lpc dbgk io kd fsrtl raw vdm
@@ -348,23 +381,67 @@ NTOSKRNL_TARGETS=(
     hal
 )
 
+# Drivers needed regardless of mode — disk, FS, visibility/null stubs.
 DRIVER_TARGETS=(
     atdisk null fastfat hello
 )
 
-USERLAND_TARGETS=(
+# Drivers only useful with the GUI (input + video).
+DRIVER_GUI_TARGETS=(
+    i8042prt kbdclass mouclass
+    vga_miniport
+)
+
+# micront = minimum-viable NT kernel + smss only, NO Win32 subsystem.
+# smss comes up, looks for its initial command, done. Useful for
+# validating the native-NT boot chain with zero GUI/subsystem weight.
+MICRONT_USERLAND_TARGETS=(
     gensrv
     rtl_user
     ntdll
     urtl
     smlib
     smss
+    # kernel32/basesrv/csrss etc. are not built in micront — it's
+    # just the NT kernel + session manager. Any "init" program must
+    # be a native NT binary linked against nt.lib (no Win32).
+)
+
+# headless = micront + the Win32 base subsystem (csrss, basesrv,
+# kernel32 + its support libs). No USER/GDI, no console server.
+# This is what we have working today.
+USERLAND_TARGETS=(
+    "${MICRONT_USERLAND_TARGETS[@]}"
     baselib nlslib conlib nlsmsg
     kernel32
     # Win32 subsystem: csrsrv + csrss.exe first, then basesrv.dll which
     # depends on csrsrv.lib + baselib.
     csrss
     basesrv
+)
+
+# GUI userland: pulls in the whole Win32 window/drawing stack. advapi32
+# lives here, not in headless, because its SOURCES links against 14
+# .libs from RPC/LSA/SCM/eventlog/remote-registry — effectively the
+# whole Win32 security/services infrastructure, which isn't tractable
+# for a "small DLL" port. winlogon is the main caller.
+USERLAND_GUI_TARGETS=(
+    # advapi32 + its dependency chain (RPC runtime, LSA, SCM, eventlog,
+    # winreg) — would need a dedicated porting sub-group before we can
+    # land this. Left as TODO; winlogon blocks on it.
+    # advapi32
+    # USER subsystem server + user32 client
+    usersrv user32
+    # GDI server + client + font drivers
+    gdisrv  gdi32
+    # Console server (needs USER for console window)
+    consrv
+    # winsrv.dll — aggregator that links usersrv + gdisrv + consrv + basesrv
+    winsrv
+    # VGA user-mode display driver (talks to vga_miniport)
+    vga_display
+    # Login + shell bootstrap — needs advapi32 too
+    # winlogon userinit
 )
 
 build_group() {
@@ -378,9 +455,12 @@ build_group() {
     done
 }
 
-build_ntoskrnl() { build_group ntoskrnl "${NTOSKRNL_TARGETS[@]}"; }
-build_drivers()  { build_group drivers  "${DRIVER_TARGETS[@]}"; }
-build_userland() { build_group userland "${USERLAND_TARGETS[@]}"; }
+build_ntoskrnl()         { build_group ntoskrnl         "${NTOSKRNL_TARGETS[@]}"; }
+build_drivers()          { build_group drivers          "${DRIVER_TARGETS[@]}"; }
+build_drivers_gui()      { build_group drivers_gui      "${DRIVER_GUI_TARGETS[@]}"; }
+build_userland_micront() { build_group userland_micront "${MICRONT_USERLAND_TARGETS[@]}"; }
+build_userland()         { build_group userland         "${USERLAND_TARGETS[@]}"; }
+build_userland_gui()     { build_group userland_gui     "${USERLAND_GUI_TARGETS[@]}"; }
 
 build_disk() {
     echo ""
@@ -391,23 +471,46 @@ build_disk() {
     python3 "$SCRIPT_DIR/tools/mkdisk.py"
 }
 
-build_all() {
+#
+# Profile builders. Each builds a strict superset of the previous,
+# then assembles the disk with the matching profile. Disk assembly
+# respects the $PROFILE env var — see boot-efi/Makefile and
+# tools/mkhive.py --profile. A previous `./build.sh gui` + later
+# `PROFILE=micront ./build.sh disk` is a valid flow (compile once,
+# assemble many ways), but the top-level targets set PROFILE for you.
+#
+
+build_micront() {
+    PROFILE=micront
+    export PROFILE
+    build_ntoskrnl
+    build_drivers
+    build_userland_micront
+    build_disk
+}
+
+build_headless() {
+    PROFILE=headless
+    export PROFILE
     build_ntoskrnl
     build_drivers
     build_userland
     build_disk
-    echo ""
-    echo "========================================"
-    echo "Build complete."
-    echo "  NTOSKRNL: $NTOS/INIT/UP/obj/i386/ntoskrnl.exe"
-    echo "  HAL:      $NTOS/NTHALS/HAL/obj/i386/hal.dll"
-    echo "  KERNEL32: $NT_ROOT/PUBLIC/SDK/LIB/I386/kernel32.dll"
-    echo "  NTDLL:    $NT_ROOT/PUBLIC/SDK/LIB/I386/ntdll.dll"
-    echo "  SMSS:     $NT_ROOT/PRIVATE/SM/SERVER/obj/i386/smss.exe"
-    echo "  DRIVERS:  atdisk null fastfat hello"
-    echo "  DISK:     $SCRIPT_DIR/boot/data/disk.raw"
-    echo "========================================"
 }
+
+build_gui() {
+    PROFILE=gui
+    export PROFILE
+    build_ntoskrnl
+    build_drivers
+    build_drivers_gui
+    build_userland
+    build_userland_gui
+    build_disk
+}
+
+# `all` == compile everything, then assemble the GUI profile disk.
+build_all() { build_gui; }
 
 # --- Main dispatch -----------------------------------------------------------
 
@@ -416,23 +519,34 @@ COMPONENT="${1:-all}"
 # Everything callable: individual component functions + group targets + all/disk.
 # If a matching build_<name> function exists, invoke it. Otherwise complain.
 case "$COMPONENT" in
-    all)      build_all ;;
-    ntoskrnl) build_ntoskrnl ;;
-    drivers)  build_drivers ;;
-    userland) build_userland ;;
-    disk)     build_disk ;;
+    all)               build_all ;;
+    gui)               build_gui ;;
+    headless)          build_headless ;;
+    micront)           build_micront ;;
+    ntoskrnl)          build_ntoskrnl ;;
+    drivers)           build_drivers ;;
+    drivers-gui)       build_drivers_gui ;;
+    userland-micront)  build_userland_micront ;;
+    userland)          build_userland ;;
+    userland-gui)      build_userland_gui ;;
+    disk)              build_disk ;;
     *)
         if declare -F "build_$COMPONENT" > /dev/null; then
             "build_$COMPONENT"
         else
             echo "Unknown component: $COMPONENT"
             echo ""
-            echo "Group targets: all, ntoskrnl, drivers, userland, disk"
+            echo "Profile targets: all (=gui), gui, headless, micront"
+            echo "Group targets:   ntoskrnl, drivers, drivers-gui,"
+            echo "                 userland-micront, userland, userland-gui, disk"
             echo ""
             echo "Individual components (in build order):"
-            echo "  ntoskrnl:  ${NTOSKRNL_TARGETS[*]}"
-            echo "  drivers:   ${DRIVER_TARGETS[*]}"
-            echo "  userland:  ${USERLAND_TARGETS[*]}"
+            echo "  ntoskrnl:          ${NTOSKRNL_TARGETS[*]}"
+            echo "  drivers:           ${DRIVER_TARGETS[*]}"
+            echo "  drivers-gui:       ${DRIVER_GUI_TARGETS[*]}"
+            echo "  userland-micront:  ${MICRONT_USERLAND_TARGETS[*]}"
+            echo "  userland:          ${USERLAND_TARGETS[*]}"
+            echo "  userland-gui:      ${USERLAND_GUI_TARGETS[*]}"
             exit 1
         fi
         ;;

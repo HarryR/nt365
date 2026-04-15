@@ -9,8 +9,9 @@
 
 # Build artifacts in NT source tree
 **/obj/
-*.sys
 _objects.mac
+# .sys driver outputs (all built from in-tree sources)
+*.sys
 
 # Generated files
 src/NT/PRIVATE/NTOS/RTL/error.h
@@ -44,11 +45,28 @@ src/NT/PUBLIC/SDK/LIB/I386/smdll.lib
 # kernel32.dll is built from source — keep .lib import lib, ignore outputs
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.dll
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.exp
-# csrsrv.dll + basesrv.dll — built from CSR/SERVER + WINDOWS/BASE/SERVER
+# csrsrv.dll + basesrv.dll — built from CSR/SERVER + WINDOWS/BASE/SERVER.
+# Unlike kernel32.lib / ntdll.lib / smdll.lib (which are linked against
+# by lots of in-tree components so we track the .lib import stubs),
+# csrsrv.lib and basesrv.lib are used only by the server DLLs
+# themselves at link time and get rebuilt from .def every run — no
+# reason to version them.
 src/NT/PUBLIC/SDK/LIB/I386/csrsrv.dll
 src/NT/PUBLIC/SDK/LIB/I386/csrsrv.exp
+src/NT/PUBLIC/SDK/LIB/I386/csrsrv.lib
 src/NT/PUBLIC/SDK/LIB/I386/basesrv.dll
 src/NT/PUBLIC/SDK/LIB/I386/basesrv.exp
+src/NT/PUBLIC/SDK/LIB/I386/basesrv.lib
+
+# GUI-side drivers + their export libs. Like csrsrv/basesrv, these are
+# all built from in-tree sources on every run.
+src/NT/PUBLIC/SDK/LIB/I386/i8042prt.sys
+src/NT/PUBLIC/SDK/LIB/I386/kbdclass.sys
+src/NT/PUBLIC/SDK/LIB/I386/mouclass.sys
+src/NT/PUBLIC/SDK/LIB/I386/vga.sys
+src/NT/PUBLIC/SDK/LIB/I386/videoprt.sys
+src/NT/PUBLIC/SDK/LIB/I386/videoprt.lib
+src/NT/PUBLIC/SDK/LIB/I386/videoprt.exp
 
 # mc.exe-generated message resources. WINERROR.MC is the source;
 # winerror.h / winerror.rc / MSG00001.bin are rebuilt each time.

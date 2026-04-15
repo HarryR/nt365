@@ -24,7 +24,6 @@ NT 3.5 format notes:
 """
 
 import struct
-import sys
 import time
 
 # --- Registry value types (REG_*) ---
@@ -394,8 +393,21 @@ class Hive:
 # Minimal boot hive for MicroNT
 # ============================================================================
 
-def build_micront_system_hive() -> Hive:
+PROFILES = ("micront", "headless", "gui")
+
+
+def build_micront_system_hive(profile: str = "headless") -> Hive:
     """Return a Hive populated with the minimum NT 3.5 needs to boot.
+
+    `profile` selects how much of the Win32 subsystem gets wired up:
+
+      micront   — no Win32 subsystem at all. smss comes up but has
+                  nothing to hand off to. Any init program is a
+                  native NT binary (linked against nt.lib).
+      headless  — Win32 base: csrss + basesrv (kernel32-only, no
+                  user32/gdi32/console).
+      gui       — headless + winsrv (USER, GDI, console servers) +
+                  winlogon.
 
     The kernel searches this hive during Phase 0/1 for:
       Select\\{current,default,lastknowngood,failed}
@@ -404,6 +416,8 @@ def build_micront_system_hive() -> Hive:
     Names are lowercase to match the kernel's case-insensitive lookups
     without depending on NLS case tables being fully live.
     """
+    if profile not in PROFILES:
+        raise ValueError(f"profile must be one of {PROFILES}, got {profile!r}")
     h = Hive("SYSTEM")
 
     h["Select"] \
@@ -417,8 +431,10 @@ def build_micront_system_hive() -> Hive:
     # Session Manager minimal config so smss.exe doesn't try to spawn
     # programs we don't have (autochk.exe, csrss.exe, etc.).
     sm = h["ControlSet001\\Control\\Session Manager"]
+
     # Empty BootExecute — skip autocheck.
     sm.set_multi_sz("BootExecute", [])
+
     # SystemDrive gets set by the full NTLDR/OSLOADER at boot time from
     # the ARC boot device — under our UEFI loader it stays unset, so we
     # hardcode it here matching the DOS Devices C: symlink below.
@@ -428,6 +444,7 @@ def build_micront_system_hive() -> Hive:
         .set_sz("SystemDrive", "C:") \
         .set_expand_sz("SystemRoot", "%SystemDrive%\\") \
         .set_expand_sz("Path", "%SystemRoot%\\System32")
+
     # Win32 subsystem registration. smss reads SubSystems\Required at
     # SmpInit, and for each name it resolves SubSystems\<Name> as the
     # command line to launch. The launch string's first token is the
@@ -446,31 +463,57 @@ def build_micront_system_hive() -> Hive:
     #                             "CsrServerInitialization" is the
     #                             csrsrv-side default.
     sm_sub = h["ControlSet001\\Control\\Session Manager\\SubSystems"]
-    sm_sub.set_multi_sz("Required", ["Windows"])
+
+    # Required subsystems: smss loads these by name before any app runs.
+    # Micront profile has none — smss just sails past SmpLoadSubSystems
+    # and falls straight through to Execute/InitialCommand.
+    if profile == "micront":
+        sm_sub.set_multi_sz("Required", [])
+    else:
+        sm_sub.set_multi_sz("Required", ["Windows"])
     sm_sub.set_multi_sz("Optional", [])
-    sm_sub.set_expand_sz(
-        "Windows",
-        "%SystemRoot%\\system32\\csrss.exe "
-        "ObjectDirectory=\\Windows "
-        "SharedSection=1024,3072,512 "
-        "Windows=On "
-        "SubSystemType=Windows "
-        "ServerDll=basesrv,1 "
-        "ServerDllInitialization=CsrServerInitialization "
-        "ProfileControl=Off "
-        "MaxRequestThreads=16"
-    )
+
+    if profile != "micront":
+        # Win32 subsystem registration. The launch string's first token
+        # is the image path; the rest are arguments csrsrv parses:
+        #   ObjectDirectory  — NT object-namespace dir for csrss's LPC
+        #                       ports (unrelated to filesystem layout)
+        #   SharedSection    — three sizes (KB) for the 3 shared sections
+        #   ServerDll=N,I    — per-server DLL; basesrv owns slot 1. GUI
+        #                       profile adds winsrv with slots 2+3 for
+        #                       USER and Console.
+        server_dlls = "ServerDll=basesrv,1 "
+        if profile == "gui":
+            server_dlls += (
+                "ServerDll=winsrv:UserServerDllInitialization,2 "
+                "ServerDll=winsrv:ConServerDllInitialization,3 "
+            )
+        sm_sub.set_expand_sz(
+            "Windows",
+            "%SystemRoot%\\system32\\csrss.exe "
+            "ObjectDirectory=\\Windows "
+            "SharedSection=1024,3072,512 "
+            "Windows=On "
+            "SubSystemType=Windows "
+            + server_dlls +
+            "ServerDllInitialization=CsrServerInitialization "
+            "ProfileControl=Off "
+            "MaxRequestThreads=16"
+        )
+
     # DOS Devices — smss creates \DosDevices\<Name> symlinks pointing at the
     # given NT device path. Without a C: symlink, RtlDosPathNameToNtPathName_U
     # fails to resolve "C:\System32" and SmpInitializeKnownDlls returns
     # STATUS_OBJECT_PATH_NOT_FOUND (c000003a).
     h["ControlSet001\\Control\\Session Manager\\DOS Devices"] \
         .set_sz("C:", "\\Device\\Harddisk0\\Partition1")
+
     # KnownDlls: SmpInitializeKnownDlls reads DllDirectory to locate the
     # KnownDlls filesystem directory. Missing => conversion of NULL path
     # returns STATUS_OBJECT_NAME_INVALID (c0000033). Point at System32.
     h["ControlSet001\\Control\\Session Manager\\KnownDlls"] \
         .set_expand_sz("DllDirectory", "%SystemRoot%\\System32")
+
     # Memory Management + FileRenameOperations subkeys — SmpRegistryConfigurationTable
     # queries both via RTL_QUERY_REGISTRY_SUBKEY with no OPTIONAL flag; any
     # missing subkey => STATUS_OBJECT_NAME_NOT_FOUND and SmpInit aborts.
@@ -500,6 +543,7 @@ def build_micront_system_hive() -> Hive:
         .set_dword("Type",         2) \
         .set_dword("Start",        0) \
         .set_dword("ErrorControl", 1)
+
     # hello.sys — loaded from disk at Phase 1 (SERVICE_SYSTEM_START) as a
     # visibility test that the kernel is driving the filesystem correctly.
     services["hello"] \
@@ -512,10 +556,16 @@ def build_micront_system_hive() -> Hive:
 
 
 def main() -> None:
-    out = sys.argv[1] if len(sys.argv) > 1 else "SYSTEM"
-    h = build_micront_system_hive()
-    size = h.write(out)
-    print(f"SYSTEM hive: {size} bytes -> {out}")
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("output", nargs="?", default="SYSTEM",
+                    help="path to write the hive to")
+    ap.add_argument("--profile", choices=PROFILES, default="headless",
+                    help="which registry layout to emit (default: headless)")
+    args = ap.parse_args()
+    h = build_micront_system_hive(profile=args.profile)
+    size = h.write(args.output)
+    print(f"SYSTEM hive ({args.profile}): {size} bytes -> {args.output}")
 
 
 if __name__ == "__main__":

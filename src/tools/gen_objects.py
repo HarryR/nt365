@@ -69,8 +69,11 @@ def extract_var(lines: list[str], varname: str) -> list[str]:
     backslash continuations) and return the concatenated list of tokens.
     Handles `VAR=$(VAR) extra` by stripping the self-reference."""
     tokens: list[str] = []
-    pattern = re.compile(rf"^{re.escape(varname)}\s*=\s*(.*)$")
-    self_ref = re.compile(rf"^\$\({re.escape(varname)}\)\s*")
+    # Case-insensitive: real NT SOURCES files mix `I386_SOURCES=` and
+    # `i386_SOURCES=` across components (e.g. NTOS/VIDEO/PORT/I386 uses
+    # uppercase, most drivers lowercase). nmake is insensitive; we match it.
+    pattern = re.compile(rf"^{re.escape(varname)}\s*=\s*(.*)$", re.IGNORECASE)
+    self_ref = re.compile(rf"^\$\({re.escape(varname)}\)\s*", re.IGNORECASE)
 
     in_var = False
     for line in lines:

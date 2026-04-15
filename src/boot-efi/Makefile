@@ -53,26 +53,54 @@ ESP_IMG_SIZE_MB := 64
 ESP_PART_OFFSET_MB := 1
 ESP_PART_SIZE_MB   := $(shell echo $$(( $(ESP_IMG_SIZE_MB) - $(ESP_PART_OFFSET_MB) )))
 
+# Which subset of binaries goes onto the ESP. Three profiles:
+#   micront   — just kernel + smss; no Win32 subsystem at all.
+#   headless  — micront + kernel32 + csrss + basesrv. (default)
+#   gui       — headless + USER/GDI/console/VGA/winlogon (not yet built).
+#
+# Set via `PROFILE=micront make esp.img` or driven by `./build.sh micront`.
+PROFILE ?= headless
+
 # Repo-relative paths to the NT build outputs that belong on the ESP.
-# Each line is "<dest-on-esp>:<source-in-tree>". The order here determines
-# copy order (and thus the root-dir listing order).
-NT_ROOT       := ../NT
-NTOS          := $(NT_ROOT)/PRIVATE/NTOS
-SYSTEM_FILES := \
+# Each line is "<dest-on-esp>:<source-in-tree>". Order determines the
+# mcopy sequence (and thus the root-dir listing order).
+NT_ROOT := ../NT
+NTOS    := $(NT_ROOT)/PRIVATE/NTOS
+
+# Files every profile needs: kernel, HAL, smss, NLS, hive, storage/FS.
+SYSTEM_FILES_MICRONT := \
     System32/ntoskrnl.exe:$(NTOS)/INIT/UP/obj/i386/ntoskrnl.exe \
     System32/hal.dll:$(NTOS)/NTHALS/HAL/obj/i386/hal.dll \
     System32/ntdll.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/ntdll.dll \
-    System32/kernel32.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/kernel32.dll \
     System32/smss.exe:$(NT_ROOT)/PRIVATE/SM/SERVER/obj/i386/smss.exe \
-    System32/csrss.exe:$(NT_ROOT)/PRIVATE/CSR/SERVER/obj/i386/csrss.exe \
-    System32/csrsrv.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/csrsrv.dll \
-    System32/basesrv.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/basesrv.dll \
     System32/c_1252.nls:$(NT_ROOT)/PRIVATE/WINDOWS/WINNLS/DATA/C_1252.NLS \
     System32/c_437.nls:$(NT_ROOT)/PRIVATE/WINDOWS/WINNLS/DATA/C_437.NLS \
     System32/l_intl.nls:$(NT_ROOT)/PRIVATE/WINDOWS/WINNLS/DATA/L_INTL.NLS \
     System32/config/SYSTEM:./SYSTEM \
     System32/Drivers/atdisk.sys:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/atdisk.sys \
     System32/Drivers/fastfat.sys:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/fastfat.sys
+
+# Additional files for headless (Win32-base) profile.
+SYSTEM_FILES_HEADLESS_EXTRA := \
+    System32/kernel32.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/kernel32.dll \
+    System32/csrss.exe:$(NT_ROOT)/PRIVATE/CSR/SERVER/obj/i386/csrss.exe \
+    System32/csrsrv.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/csrsrv.dll \
+    System32/basesrv.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/basesrv.dll
+
+# Additional files for GUI — not wired up yet (user32/gdi32/winsrv/
+# winlogon not ported). Placeholder for the future extension point:
+# input drivers + VGA miniport would also go here.
+SYSTEM_FILES_GUI_EXTRA :=
+
+ifeq ($(PROFILE),micront)
+SYSTEM_FILES := $(SYSTEM_FILES_MICRONT)
+else ifeq ($(PROFILE),headless)
+SYSTEM_FILES := $(SYSTEM_FILES_MICRONT) $(SYSTEM_FILES_HEADLESS_EXTRA)
+else ifeq ($(PROFILE),gui)
+SYSTEM_FILES := $(SYSTEM_FILES_MICRONT) $(SYSTEM_FILES_HEADLESS_EXTRA) $(SYSTEM_FILES_GUI_EXTRA)
+else
+$(error PROFILE must be one of: micront, headless, gui (got '$(PROFILE)'))
+endif
 
 # Extract just the <source> paths for prerequisites. Build the source list by
 # splitting each mapping at the ':' — second half via $(word 2,$(subst :, ,X)).
@@ -100,9 +128,17 @@ loader.so: $(OBJS) $(EFI_CRT0)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Regenerate the SYSTEM hive from tools/mkhive.py whenever that script
-# changes. The hive is tiny; rebuilding it every image run is fine.
-SYSTEM: ../tools/mkhive.py
-	python3 ../tools/mkhive.py $@
+# changes OR the profile changes. Hive content differs per profile
+# (SubSystems\Windows only set for headless/gui), so we force a rebuild
+# if the target was produced under a different profile. Marker file
+# `.profile.stamp` holds the last-built profile.
+SYSTEM: ../tools/mkhive.py .profile.stamp
+	python3 ../tools/mkhive.py --profile $(PROFILE) $@
+
+.profile.stamp: FORCE
+	@echo "$(PROFILE)" | cmp -s - $@ 2>/dev/null || echo "$(PROFILE)" > $@
+
+.PHONY: FORCE
 
 esp.img: BOOTIA32.EFI $(SYSTEM_SRCS)
 	@# Verify every required source exists before touching the image
