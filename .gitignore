@@ -116,6 +116,26 @@ src/NT/PRIVATE/LSA/lsarpc_c.c
 src/NT/PRIVATE/LSA/lsarpc_c.h
 src/NT/PRIVATE/LSA/lsarpc_s.c
 src/NT/PRIVATE/LSA/INC/lsarpc_c.h
+
+# advapi32.dll is built from source — keep .lib import lib tracked,
+# ignore the rebuilt DLL + .exp. mc.exe generates win31evt.h/.rc and
+# MSG00001.bin from ADVAPI/WIN31EVT.MC each build.
+src/NT/PUBLIC/SDK/LIB/I386/advapi32.dll
+src/NT/PUBLIC/SDK/LIB/I386/advapi32.exp
+src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/win31evt.h
+src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/win31evt.rc
+src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/MSG00001.bin
+
+# NTOS bugcodes — mc compiles NLS/BUGCODES.MC to .h/.rc/.bin; build.sh
+# copies the outputs into INIT and INC.
+src/NT/PRIVATE/NTOS/NLS/BUGCODES.h
+src/NT/PRIVATE/NTOS/NLS/BUGCODES.rc
+src/NT/PRIVATE/NTOS/NLS/MSG00001.bin
+src/NT/PRIVATE/NTOS/INIT/bugcodes.rc
+src/NT/PRIVATE/NTOS/INIT/msg00001.bin
+
+# rpcutil is a 3-file static lib linked into advapi32.
+src/NT/PUBLIC/SDK/LIB/I386/rpcutil.lib
 # WINREG/LOCAL is built by copying files from WINREG/SERVER via MAKEFILE.INC.
 src/NT/PRIVATE/WINDOWS/SCREG/WINREG/LOCAL/PREDEFH.C
 src/NT/PRIVATE/WINDOWS/SCREG/WINREG/LOCAL/REGDKEY.C

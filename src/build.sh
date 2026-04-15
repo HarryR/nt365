@@ -136,7 +136,31 @@ build_geni386() {
 # --- Kernel library components (each produces a .lib in NTOS/obj/i386/) ---
 
 build_ke()     { run_nmake "$NTOS/KE/UP"      "KE - Kernel Core"; }
-build_rtl()    { run_nmake "$NTOS/RTL/UP"      "RTL - Runtime Library"; }
+# RTL needs NTSTATUS→DOS error tables (error.h) generated from GENERR.C
+# before error.c compiles. tools/generr.py is a Python port of the
+# original generr.exe.
+_ensure_error_h() {
+    python3 "$SCRIPT_DIR/tools/generr.py" "$NTOS/RTL/error.h"
+}
+build_rtl()    { _ensure_error_h; run_nmake "$NTOS/RTL/UP"      "RTL - Runtime Library"; }
+# bugcodes.rc / bugcodes.h are generated from NTOS/NLS/BUGCODES.MC by
+# mc.exe. ntoskrnl.rc #includes bugcodes.rc; NTOS/INC/bugcodes.h is
+# referenced by NTOS.H / NTDDK.H / NTHAL.H / NTIFS.H.
+_ensure_bugcodes() {
+    local nls="$NTOS/NLS"
+    if [ -f "$nls/bugcodes.rc" ] && [ -f "$NTOS/INC/bugcodes.h" ] \
+       && [ "$nls/bugcodes.rc" -nt "$nls/BUGCODES.MC" ]; then
+        return 0
+    fi
+    echo ">>> mc bugcodes.mc -> bugcodes.h/.rc"
+    ( cd "$nls" && wine cmd /c "set PATH=D:\\PUBLIC\\OAK\\BIN\\I386&& mc BUGCODES.MC" ) \
+        || { echo "!!! mc on BUGCODES.MC failed"; return 1; }
+    # mc.exe emits BUGCODES.rc / BUGCODES.h in the case of the .MC input; Linux
+    # is case-sensitive, so match explicitly.
+    cp -f "$nls/BUGCODES.rc" "$NTOS/INIT/bugcodes.rc"
+    cp -f "$nls/BUGCODES.h"  "$NTOS/INC/bugcodes.h"
+    cp -f "$nls/MSG00001.bin" "$NTOS/INIT/msg00001.bin"
+}
 build_ex()     { run_nmake "$NTOS/EX/UP"       "EX - Executive"; }
 build_ob()     { run_nmake "$NTOS/OB/UP"       "OB - Object Manager"; }
 build_se()     { run_nmake "$NTOS/SE/UP"       "SE - Security"; }
@@ -260,6 +284,14 @@ build_lsa_idl()  {
 }
 build_lsacomm()  { build_lsa_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/COMMON" "LSA/COMMON - lsacomm.lib"; }
 build_lsaudll()  { build_lsa_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/UCLIENT" "LSA/UCLIENT - lsaudll.lib"; }
+# LSA crypto. CRYPT/ENGINE shipped only as .OBJ in the original leak
+# (export-controlled); DES/RC4/ECB source restored from the nt35_patches
+# tree. CRYPT/DLL is the public wrapper exposed as sys003.lib (alias for
+# crypt.lib, per its MAKEFILE.INC).
+build_crypt_engine() { run_nmake "$NT_ROOT/PRIVATE/LSA/CRYPT/ENGINE" "LSA/CRYPT/ENGINE - engine.lib (DES/RC4/ECB/MD4)"; }
+build_sys003()       { build_crypt_engine || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/CRYPT/DLL" "LSA/CRYPT/DLL - sys003.lib (crypt wrapper)"; }
+build_rpcutil()  { run_nmake "$NT_ROOT/PRIVATE/RPCUTIL" "RPC/RPCUTIL - rpcutil.lib (MIDL user helpers)"; }
+build_advapi32() { build_rpcutil || return 1; run_nmake "$NT_ROOT/PRIVATE/WINDOWS/BASE/ADVAPI" "advapi32.dll" makedll=1; }
 
 # --- Host tools (sdktools bootstrap phase) -----------------------------------
 # These are wine-executable host tools consumed by later build steps — not
@@ -336,7 +368,12 @@ _midl_front_gen() {
     echo ">>> MIDL/FRONT gen: OK (grammar.cxx, acfgram.cxx, idlerec.h, acferec.h)"
 }
 build_midl() {
-    _midl_front_gen || return 1
+    # FRONT links against all four static libs — build them first.
+    build_midl_support  || return 1
+    build_midl_expr     || return 1
+    build_midl_analysis || return 1
+    build_midl_codegen  || return 1
+    _midl_front_gen     || return 1
     run_nmake "$NT_ROOT/PRIVATE/RPC/MIDL20/FRONT" "MIDL20/FRONT - midl.exe (compiler driver)"
     install_host_tool "$NT_ROOT/PRIVATE/RPC/MIDL20/lib/i386/midl.exe" "midl.exe"
 }
@@ -368,6 +405,7 @@ build_gensrv() {
     fi
 }
 build_rtl_user() {
+    _ensure_error_h
     # TARGETPATH=..\obj puts rtl.lib at RTL/obj/i386/ — ensure it exists.
     mkdir -p "$NTOS/RTL/obj/i386"
     run_nmake "$NTOS/RTL/USER" "RTL_USER - user-mode runtime library"
@@ -460,6 +498,7 @@ build_kernel32() {
 # --- INIT: links all libs into NTOSKRNL.EXE ---
 
 build_init() {
+    _ensure_bugcodes || return 1
     # INIT is special: NTTEST=ntoskrnl builds the kernel EXE via MAKEFILE.DEF
     # We must NOT override NTTEST for this component
     local linux_dir="$NTOS/INIT/UP"
@@ -601,6 +640,19 @@ USERLAND_TARGETS=(
     # depends on csrsrv.lib + baselib.
     csrss
     basesrv
+    # RPC runtime + advapi32 stack. MIDL is bootstrapped from source
+    # (MIDL20) via build_midl; rpcrt4 depends on it. advapi32 pulls in
+    # LSA + EventLog + SCM + registry — the full security/services
+    # fabric the headless profile needs.
+    midleb midlyacc midlpg midl
+    rpcndrp rpcndr rpcndr20 rpcrt4
+    wrlib perflib localreg winreg
+    sclib svcctrl
+    elfapi
+    lsacomm lsaudll
+    crypt_engine sys003
+    rpcutil
+    advapi32
 )
 
 # GUI userland: pulls in the whole Win32 window/drawing stack. advapi32

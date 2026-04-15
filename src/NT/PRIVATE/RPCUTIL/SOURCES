@@ -16,25 +16,28 @@ Abstract:
 
 Author:
 
-    Steve Wood (stevewo) 12-Apr-1990
+    Jim Kelly (JimK) 3-July-1991
 
 NOTE:   Commented description of this file is in \nt\bak\bin\sources.tpl
 
-
 !ENDIF
 
-MAJORCOMP=CRYPT
-MINORCOMP=ENGINE
+MAJORCOMP=rpcutil
+MINORCOMP=_
 
-TARGETNAME=ENGINE
-TARGETPATH=obj
+TARGETNAME=rpcutil
+TARGETPATH=$(BASEDIR)\public\sdk\lib
 TARGETTYPE=LIBRARY
-TARGETLIBS=
 
-#SOURCES=md4c.c des.c cbc.c ecb.c rc4c.c
-SOURCES=md4c.c des.c ecb.c rc4c.c
+INCLUDES=..\inc
 
-UMTYPE=console
-UMAPPL=
-UMLIBS=
+NTLEGO=1
 
+SOURCES=midluser.c \
+        client.c   \
+        server.c
+
+C_DEFINES=-DRPC_NO_WINDOWS_H
+UMTYPE=nt
+UMTEST=
+OPTIONAL_UMTEST=
