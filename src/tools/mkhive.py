@@ -419,15 +419,47 @@ def build_micront_system_hive() -> Hive:
     sm = h["ControlSet001\\Control\\Session Manager"]
     # Empty BootExecute — skip autocheck.
     sm.set_multi_sz("BootExecute", [])
+    # SystemDrive gets set by the full NTLDR/OSLOADER at boot time from
+    # the ARC boot device — under our UEFI loader it stays unset, so we
+    # hardcode it here matching the DOS Devices C: symlink below.
+    # Without SystemDrive, SystemRoot expands to a literal "%SystemDrive%\"
+    # and every subsequent expansion (e.g. csrss.exe's image path) fails.
     sm["Environment"] \
+        .set_sz("SystemDrive", "C:") \
         .set_expand_sz("SystemRoot", "%SystemDrive%\\") \
         .set_expand_sz("Path", "%SystemRoot%\\System32")
-    # No required subsystems — smss won't try to load csrss.exe / debug
-    # subsystem. Without this the default "Debug\0Windows\0" kicks in and
-    # smss crashes looking for a SubSystems\Windows value.
+    # Win32 subsystem registration. smss reads SubSystems\Required at
+    # SmpInit, and for each name it resolves SubSystems\<Name> as the
+    # command line to launch. The launch string's first token is the
+    # image path; the rest are arguments csrsrv parses:
+    #   ObjectDirectory  — NT object-namespace dir for csrss's LPC ports
+    #                       (unrelated to filesystem layout)
+    #   SharedSection    — three comma-separated sizes (KB) for the 3
+    #                       shared sections csrss creates (SB, SM, View)
+    #   Windows=On       — enable the Windows subsystem
+    #   ServerDll=N,I    — per-server DLL to load at startup; index I is
+    #                       the API-table slot. basesrv owns slot 1
+    #                       (kernel32's base services). We skip winsrv
+    #                       (slots 2+3 = USER/GDI/Console) entirely —
+    #                       headless Win32 doesn't need it.
+    #   ServerDllInitialization — entry-point fn each ServerDll exports;
+    #                             "CsrServerInitialization" is the
+    #                             csrsrv-side default.
     sm_sub = h["ControlSet001\\Control\\Session Manager\\SubSystems"]
-    sm_sub.set_multi_sz("Required", [])
+    sm_sub.set_multi_sz("Required", ["Windows"])
     sm_sub.set_multi_sz("Optional", [])
+    sm_sub.set_expand_sz(
+        "Windows",
+        "%SystemRoot%\\system32\\csrss.exe "
+        "ObjectDirectory=\\Windows "
+        "SharedSection=1024,3072,512 "
+        "Windows=On "
+        "SubSystemType=Windows "
+        "ServerDll=basesrv,1 "
+        "ServerDllInitialization=CsrServerInitialization "
+        "ProfileControl=Off "
+        "MaxRequestThreads=16"
+    )
     # DOS Devices — smss creates \DosDevices\<Name> symlinks pointing at the
     # given NT device path. Without a C: symlink, RtlDosPathNameToNtPathName_U
     # fails to resolve "C:\System32" and SmpInitializeKnownDlls returns

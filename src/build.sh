@@ -189,6 +189,29 @@ build_smss()   {
     NT_ENV="$NT_ENV_SAVED"
 }
 
+# --- Client-Server Runtime Subsystem ---
+#
+# CSR/SERVER builds BOTH csrsrv.dll (TARGETNAME) AND csrss.exe (UMAPPL) in
+# a single nmake pass. csrsrv is the subsystem runtime (LPC port listener,
+# process/thread bookkeeping, registration). csrss.exe is the hosting
+# process — tiny, just calls into csrsrv's ServerDllInitialization loop.
+#
+# basesrv.dll is the kernel32 server-side: CreateProcess, heap base-named
+# objects, NLS server-side, atom table. Loaded by csrss at startup via
+# the registry's ServerDll entries under Session Manager\SubSystems.
+build_csrss()   {
+    # Two toggles needed:
+    #   KEEP_UMAPPL=1  — link the EXE (csrss.exe) half of the SOURCES,
+    #                    otherwise SOURCES' UMAPPL= directive gets stripped
+    #                    by our wrapper and the EXE is skipped.
+    #   makedll=1      — tell MAKEFILE.DEF to actually LINK csrsrv.dll,
+    #                    not just emit the import lib (same quirk as ntdll).
+    KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/CSR/SERVER" "CSRSS + CSRSRV - Client-Server Runtime" makedll=1
+}
+build_basesrv() {
+    run_nmake "$NT_ROOT/PRIVATE/WINDOWS/BASE/SERVER" "BASESRV - kernel32 subsystem server" makedll=1
+}
+
 # --- Win32 user-mode libraries (kernel32.dll chain) ---
 #
 # Dependency order: baselib <- nlslib <- conlib <- kernel32.dll
@@ -338,6 +361,10 @@ USERLAND_TARGETS=(
     smss
     baselib nlslib conlib nlsmsg
     kernel32
+    # Win32 subsystem: csrsrv + csrss.exe first, then basesrv.dll which
+    # depends on csrsrv.lib + baselib.
+    csrss
+    basesrv
 )
 
 build_group() {

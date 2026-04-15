@@ -64,6 +64,9 @@ SYSTEM_FILES := \
     System32/ntdll.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/ntdll.dll \
     System32/kernel32.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/kernel32.dll \
     System32/smss.exe:$(NT_ROOT)/PRIVATE/SM/SERVER/obj/i386/smss.exe \
+    System32/csrss.exe:$(NT_ROOT)/PRIVATE/CSR/SERVER/obj/i386/csrss.exe \
+    System32/csrsrv.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/csrsrv.dll \
+    System32/basesrv.dll:$(NT_ROOT)/PUBLIC/SDK/LIB/I386/basesrv.dll \
     System32/c_1252.nls:$(NT_ROOT)/PRIVATE/WINDOWS/WINNLS/DATA/C_1252.NLS \
     System32/c_437.nls:$(NT_ROOT)/PRIVATE/WINDOWS/WINNLS/DATA/C_437.NLS \
     System32/l_intl.nls:$(NT_ROOT)/PRIVATE/WINDOWS/WINNLS/DATA/L_INTL.NLS \

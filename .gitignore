@@ -44,6 +44,11 @@ src/NT/PUBLIC/SDK/LIB/I386/smdll.lib
 # kernel32.dll is built from source — keep .lib import lib, ignore outputs
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.dll
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.exp
+# csrsrv.dll + basesrv.dll — built from CSR/SERVER + WINDOWS/BASE/SERVER
+src/NT/PUBLIC/SDK/LIB/I386/csrsrv.dll
+src/NT/PUBLIC/SDK/LIB/I386/csrsrv.exp
+src/NT/PUBLIC/SDK/LIB/I386/basesrv.dll
+src/NT/PUBLIC/SDK/LIB/I386/basesrv.exp
 
 # mc.exe-generated message resources. WINERROR.MC is the source;
 # winerror.h / winerror.rc / MSG00001.bin are rebuilt each time.
