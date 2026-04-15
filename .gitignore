@@ -68,9 +68,37 @@ src/NT/PUBLIC/SDK/LIB/I386/videoprt.sys
 src/NT/PUBLIC/SDK/LIB/I386/videoprt.lib
 src/NT/PUBLIC/SDK/LIB/I386/videoprt.exp
 
-# RPC runtime static libs — built from RPC/NDRLIB and RPC/NDR20.
+# RPC runtime static libs — built from RPC/NDRLIB, RPC/NDR20, RPC/NDRMEM.
 src/NT/PUBLIC/SDK/LIB/I386/RpcNdrp.lib
 src/NT/PUBLIC/SDK/LIB/I386/rpcndr20.lib
+src/NT/PUBLIC/SDK/LIB/I386/RpcNdr.lib
+# rpcrt4.dll + import lib + exports — built from RPC/RUNTIME/MTRT.
+src/NT/PUBLIC/SDK/LIB/I386/rpcrt4.dll
+src/NT/PUBLIC/SDK/LIB/I386/rpcrt4.exp
+src/NT/PUBLIC/SDK/LIB/I386/rpcrt4.lib
+# midl-generated stubs from RPC/RUNTIME/RTIFS/*.idl. Generated in RTIFS,
+# then copied into MTRT where SOURCES expects them. NBASE.H in MTRT is
+# the hand-written one (kept tracked).
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/nbase.h
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/conv.h
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/conv_c.c
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/conv_s.c
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/epmp.h
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/epmp_c.c
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/epmp_s.c
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/mgmt.h
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/mgmt_c.c
+src/NT/PRIVATE/RPC/RUNTIME/RTIFS/mgmt_s.c
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/conv.h
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/conv_c.c
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/conv_s.c
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/epmp.h
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/epmp_c.c
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/mgmt.h
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/mgmt_c.c
+src/NT/PRIVATE/RPC/RUNTIME/MTRT/mgmt_s.c
+# NDRMEM build copies linklist.cxx from MTRT (per its MAKEFILE.INC).
+src/NT/PRIVATE/RPC/NDRMEM/LINKLIST.CXX
 
 # MIDL host-tool bootstrap outputs (built by build.sh sdktools phase).
 src/NT/PUBLIC/OAK/BIN/I386/midleb.exe

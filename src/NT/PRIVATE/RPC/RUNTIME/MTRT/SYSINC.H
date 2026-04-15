@@ -25,6 +25,23 @@ mikemon    10-31-91    Moved system dependent stuff from util.hxx to
 
 #define PAPI __RPC_FAR
 
+/* MicroNT: MIDL 2.x emits versioned ifspec names + bare function names,
+   but the MTRT .cxx code (dgclnt/dgsvr/dcesvr/etc.) was written against
+   the older MIDL 1.x convention of "_<iface>_ClientIfHandle" and
+   "_<func>". Map old → new at preprocessor level so we don't have to
+   touch the runtime sources. */
+#define _conv_ClientIfHandle             conv_v3_0_c_ifspec
+#define _conv_who_are_you                conv_who_are_you
+#define mgmt_ClientIfHandle              mgmt_v1_0_c_ifspec
+#define mgmt_ServerIfHandle              mgmt_v1_0_s_ifspec
+#define epmp_ClientIfHandle              epmp_v3_0_c_ifspec
+#define epmp_ServerIfHandle              epmp_v3_0_s_ifspec
+#define _rpc_mgmt_inq_if_ids             rpc_mgmt_inq_if_ids
+#define _rpc_mgmt_inq_princ_name         rpc_mgmt_inq_princ_name
+#define _rpc_mgmt_inq_stats              rpc_mgmt_inq_stats
+#define _rpc_mgmt_is_server_listening    rpc_mgmt_is_server_listening
+#define _rpc_mgmt_stop_server_listening  rpc_mgmt_stop_server_listening
+
 #ifdef __cplusplus
 #define START_C_EXTERN	    extern "C" {
 #define END_C_EXTERN	    }

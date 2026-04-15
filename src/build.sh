@@ -166,8 +166,37 @@ build_hello()  { run_nmake "$NTOS/DD/HELLO"    "HELLO - MicroNT visibility drive
 #
 # rpcndrp.lib is the "ndr private" lib linked into rpcrt4.dll itself.
 build_rpcndrp() { run_nmake "$NT_ROOT/PRIVATE/RPC/NDRLIB" "RPC/NDRLIB - NDR marshaling primitives"; }
+build_rpcndr()  { run_nmake "$NT_ROOT/PRIVATE/RPC/NDRMEM" "RPC/NDRMEM - NDR 1.0 stub helpers (rpcndr.lib)"; }
 build_rpcndr20(){ run_nmake "$NT_ROOT/PRIVATE/RPC/NDR20"  "RPC/NDR20 - NDR 2.0 client/server support"; }
-build_rpcrt4()  { run_nmake "$NT_ROOT/PRIVATE/RPC/RUNTIME/MTRT" "RPC/RUNTIME/MTRT - rpcrt4.dll (main RPC runtime)" makedll=1; }
+build_rpcrt4_idls() {
+    # Run our home-bootstrapped midl on the RTIFS interfaces. Generates
+    # {nbase,conv,epmp,mgmt}.h + _c.c + _s.c. Order matters: conv/epmp/mgmt
+    # are processed first while nbase.h does not yet exist in the RTIFS dir,
+    # so midl falls back to ../mtrt/nbase.h (the hand-written, properly-
+    # guarded one). nbase.idl is processed last to emit its own nbase.h.
+    local rtifs="$NT_ROOT/PRIVATE/RPC/RUNTIME/RTIFS"
+    echo ">>> RPC/RTIFS midl: generating conv/epmp/mgmt/nbase stubs"
+    (
+        cd "$rtifs" || exit 1
+        rm -f nbase.h {conv,epmp,mgmt}.h {conv,epmp,mgmt}_{c,s}.c
+        local env='set PATH=D:\\PUBLIC\\OAK\\BIN\\I386&& set INCLUDE=D:\\PUBLIC\\SDK\\INC;D:\\PUBLIC\\OAK\\INC;D:\\PUBLIC\\SDK\\INC\\CRT'
+        for idl in conv epmp mgmt nbase; do
+            wine cmd /c "$env&& midl /ms_ext /c_ext /app_config /D MIDL_PASS /I ..\\mtrt $idl.idl" || exit 1
+        done
+    ) || { echo "!!! RPC/RTIFS midl gen failed"; return 1; }
+    # Drop generated headers + stubs into MTRT (where SOURCES expects them).
+    # MTRT keeps its hand-written NBASE.H (has guards midl's doesn't), so we
+    # don't copy nbase.h.
+    local mtrt="$NT_ROOT/PRIVATE/RPC/RUNTIME/MTRT"
+    cp -f "$rtifs"/{conv,epmp,mgmt}.h "$mtrt/"
+    cp -f "$rtifs"/{conv,mgmt,epmp}_c.c "$mtrt/"
+    cp -f "$rtifs"/{conv,mgmt}_s.c "$mtrt/"
+    echo ">>> RPC/RTIFS midl: OK (stubs copied into MTRT)"
+}
+build_rpcrt4()  {
+    build_rpcrt4_idls || return 1
+    run_nmake "$NT_ROOT/PRIVATE/RPC/RUNTIME/MTRT" "RPC/RUNTIME/MTRT - rpcrt4.dll (main RPC runtime)" makedll=1
+}
 
 # --- Host tools (sdktools bootstrap phase) -----------------------------------
 # These are wine-executable host tools consumed by later build steps — not
