@@ -46,21 +46,16 @@ jobs:
           chmod +x wibo-x86_64
           ./wibo-x86_64 --version
 
-      - name: build headless
+      - name: build
         # First invocation auto-provisions src/wibo-tools/ (symlinks into
         # PUBLIC/OAK/BIN/I386 + CRTDLL.DLL) and builds the cmd-stub. Every
         # subsequent target runs under wibo.
         run: |
           cd src
-          ./build.sh headless
-
-      - name: inventory outputs
-        run: |
-          echo "=== disk image ==="
-          ls -la build/headless/ 2>/dev/null || true
+          ./build.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: headless-disk
-          path: build/headless/
-          retention-days: 14
+          name: gui-disk
+          path: build/gui/
+          retention-days: 3

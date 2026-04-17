@@ -4,8 +4,9 @@
 # Builds NT 3.5 kernel components using the original Microsoft toolchain
 # under wibo (a minimal Win32 PE runner).
 #
-# Usage: ./build.sh [component]
-#   component: ke, rtl, ex, ob, se, ps, mm, cache, config, init, hal, all
+# Usage: ./build.sh [--debug] [component]
+#   --debug:    enable WIBO_DEBUG tracing
+#   component:  ke, rtl, ex, ob, se, ps, mm, cache, config, init, hal, all
 #   If no component specified, builds all
 #
 # Prerequisites: wibo-x86_64 binary at repo root, src/wibo-tools/ populated
@@ -123,7 +124,7 @@ run_nmake() {
         umappl_override=""
     fi
 
-    env -i HOME="$HOME" TERM="${TERM:-dumb}" \
+    env -i HOME="$HOME" TERM="${TERM:-dumb}" ${WIBO_DEBUG:+"WIBO_DEBUG=$WIBO_DEBUG"} \
         "${NT_ENV_ARR[@]}" "MAKEDIR=${makedir_win}" \
         "$WIBO_BIN" --chdir "$linux_dir" \
             "${WIBO_TOOLS}/NMAKE.EXE" /NOLOGO NTTEST= UMTEST= \
@@ -174,7 +175,7 @@ run_wibo_cmd() {
     fi
     local args=("${tokens[@]:1}")
 
-    env -i HOME="$HOME" TERM="${TERM:-dumb}" \
+    env -i HOME="$HOME" TERM="${TERM:-dumb}" ${WIBO_DEBUG:+"WIBO_DEBUG=$WIBO_DEBUG"} \
         "${NT_ENV_ARR[@]}" \
         "$WIBO_BIN" --chdir "$cwd" "$tool_path" "${args[@]}"
 
@@ -199,7 +200,7 @@ run_wibo_tool() {
         return 1
     fi
     local args=("$@")
-    env -i HOME="$HOME" TERM="${TERM:-dumb}" \
+    env -i HOME="$HOME" TERM="${TERM:-dumb}" ${WIBO_DEBUG:+"WIBO_DEBUG=$WIBO_DEBUG"} \
         "${NT_ENV_ARR[@]}" \
         "$WIBO_BIN" --chdir "$cwd" "$tool_path" "${args[@]}"
 }
@@ -241,7 +242,7 @@ build_geni386() {
         "${NT_ROOT_WIN}\\PUBLIC\\SDK\\LIB\\I386\\LIBC.LIB" \
         "${NT_ROOT_WIN}\\PUBLIC\\SDK\\LIB\\I386\\KERNEL32.LIB" || return 1
 
-    env -i HOME="$HOME" TERM="${TERM:-dumb}" \
+    env -i HOME="$HOME" TERM="${TERM:-dumb}" ${WIBO_DEBUG:+"WIBO_DEBUG=$WIBO_DEBUG"} \
         "${NT_ENV_ARR[@]}" \
         "$WIBO_BIN" --chdir "$SCRIPT_DIR" \
             "$geni_dir/geni386.exe" \
@@ -358,11 +359,18 @@ _midl_advapi_idl() {
             "${extra_inc_args[@]}" "$idl.idl" || return 1
     done
 }
-build_winreg_idl(){ _midl_advapi_idl "$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG" "" regrpc; }
+build_winreg_idl(){
+    # -oldnames so MIDL generates winreg_ServerIfHandle (not winreg_v1_0_s_ifspec)
+    # which is what WINREG/SERVER/INIT.C references.
+    local dir="$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG"
+    run_wibo_tool "$dir" midl /ms_ext /c_ext /app_config /D MIDL_PASS /D _M_IX86 /D _X86_ \
+        -oldnames regrpc.idl || return 1
+}
 build_wrlib()    { build_winreg_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG/LIB"  "WINREG/LIB - wrlib.lib"; }
 build_perflib()  { run_nmake "$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG/PERFLIB" "WINREG/PERFLIB - perflib.lib"; }
 build_localreg() { build_winreg_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG/LOCAL"    "WINREG/LOCAL - localreg.lib"; }
 build_winreg()   { build_winreg_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG/CLIENT"   "WINREG/CLIENT - winreg.lib"; }
+build_winregsrv(){ build_winreg_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG/SERVER"   "WINREG/SERVER - winreg.lib (server)"; }
 build_sc_idl()   {
     _midl_advapi_idl "$NT_ROOT/PRIVATE/WINDOWS/SCREG/SC" "/I inc" svcctl || return 1
     # sclib + svcctrl #include <svcctl.h>; their INCLUDES point at SC/INC but
@@ -396,6 +404,7 @@ build_lsa_idl()  {
 }
 build_lsacomm()  { build_lsa_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/COMMON" "LSA/COMMON - lsacomm.lib"; }
 build_lsaudll()  { build_lsa_idl || return 1; run_nmake "$NT_ROOT/PRIVATE/LSA/UCLIENT" "LSA/UCLIENT - lsaudll.lib"; }
+build_lsadll()   { run_nmake "$NT_ROOT/PRIVATE/LSA/CLIENT/USER" "LSA/CLIENT/USER - lsadll.lib"; }
 # LSA crypto. CRYPT/ENGINE shipped only as .OBJ in the original leak
 # (export-controlled); DES/RC4/ECB source restored from the nt35_patches
 # tree. CRYPT/DLL is the public wrapper exposed as sys003.lib (alias for
@@ -571,7 +580,7 @@ build_cmdstub() {
     # Use inline env — we can't call run_wibo_tool yet; COMSPEC isn't wired
     # until after cmd.exe exists. CL's combined compile+link via -link
     # handles both stages in a single wibo invocation.
-    env -i HOME="$HOME" TERM="${TERM:-dumb}" \
+    env -i HOME="$HOME" TERM="${TERM:-dumb}" ${WIBO_DEBUG:+"WIBO_DEBUG=$WIBO_DEBUG"} \
         "INCLUDE=${NT_ROOT_WIN}\\PUBLIC\\SDK\\INC;${NT_ROOT_WIN}\\PUBLIC\\SDK\\INC\\CRT" \
         "LIB=${NT_ROOT_WIN}\\PUBLIC\\SDK\\LIB\\I386" \
         "PATH=${WIBO_TOOLS_WIN}" \
@@ -700,6 +709,107 @@ build_vga_miniport(){
     build_videoprt
     run_nmake "$NTOS/VIDEO/VGA" "VGA - VGA miniport driver"
 }
+# --- GUI userland (USER + GDI + console + winsrv + winlogon) ----------------
+#
+# GDI dependency chain: efloat (FP math) + font drivers (fscaler, ttfd, bmfd,
+# vtfd) + halftone → gdisrvl.lib (GRE engine) → gdi32.dll (client).
+# USER: usersrvl.lib (server) → user32.dll (client).
+# Console: consrvl.lib (server).
+# winsrv.dll aggregates usersrvl + gdisrvl + consrvl + basesrv.
+
+GDI="$NT_ROOT/PRIVATE/WINDOWS/GDI"
+USER="$NT_ROOT/PRIVATE/WINDOWS/USER"
+
+_ensure_user_headers() {
+    # Generate USER client/server dispatch files from .TPL + .LST via listmung.
+    local inc="$USER/INC"
+    local svr="$USER/SERVER"
+    local cli="$USER/CLIENT"
+
+    if [ ! -f "$inc/callback.h" ] || [ "$inc/CB.LST" -nt "$inc/callback.h" ]; then
+        echo ">>> listmung: generating USER dispatch headers + source"
+        # listmung writes to stdout — redirect to target file.
+        # INC headers
+        run_wibo_tool "$inc" listmung CB.LST CALLBACK.TPL  > "$inc/callback.h" || return 1
+        run_wibo_tool "$inc" listmung CF.LST CSUSER.TPL    > "$inc/csuser.h"   || return 1
+        run_wibo_tool "$inc" listmung SCF.LST CSCALL.TPL   > "$inc/cscall.h"   || return 1
+        # SERVER generated .c files
+        run_wibo_tool "$svr" listmung ..\\inc\\CF.LST DISPCF.TPL  > "$svr/dispcf.c"  || return 1
+        run_wibo_tool "$svr" listmung ..\\inc\\SCF.LST CALLCF.TPL > "$svr/callcf.c"  || return 1
+        # CLIENT generated .c files
+        run_wibo_tool "$cli" listmung ..\\inc\\CB.LST DISPCB.TPL  > "$cli/dispcb.c"   || return 1
+    fi
+}
+
+build_gdi_efloat()   { run_nmake "$GDI/MATH"               "GDI/MATH - efloat.lib (FP for GDI)"; }
+build_gdi_fscaler()  { run_nmake "$GDI/FONDRV/TT/SCALER"   "GDI/FONDRV/TT/SCALER - fscaler.lib"; }
+build_gdi_ttfd()     { run_nmake "$GDI/FONDRV/TT/TTFD"     "GDI/FONDRV/TT/TTFD - ttfd.lib"; }
+build_gdi_bmfd()     { run_nmake "$GDI/FONDRV/BMFD"        "GDI/FONDRV/BMFD - bmfd.lib"; }
+build_gdi_vtfd()     { run_nmake "$GDI/FONDRV/VTFD"        "GDI/FONDRV/VTFD - vtfd.lib"; }
+build_gdi_halftone() { run_nmake "$GDI/HALFTONE/HT"        "GDI/HALFTONE - halftone.lib"; }
+build_gdisrv()       { run_nmake "$GDI/GRE"                "GDI/GRE - gdisrvl.lib (GDI engine)"; }
+
+# user32 ↔ gdi32 have a circular import dependency (user32 links
+# gdi32p.lib, gdi32 links user32p.lib). Break the cycle by pre-
+# generating both private import libs from their DEF files before
+# either DLL links — same pattern as samsrv ↔ lsasrv.
+build_gui_import_stubs() {
+    # user32 ↔ gdi32 circular import. Compile both to .obj (no link),
+    # then generate decorated import libs from DEF + objs. Same pattern
+    # as build_lsasrv_imports for samsrv ↔ lsasrv.
+    _ensure_user_headers
+    echo ">>> GUI import stubs: compile-only pass"
+    local user_obj="$USER/CLIENT/obj/i386/*.obj"
+    local gdi_obj="$GDI/CLIENT/obj/i386/*.obj"
+    if ! compgen -G "$user_obj" > /dev/null 2>&1; then
+        run_nmake "$USER/CLIENT" "USER/CLIENT compile-only (pre-imports)" NTTARGETFILE0= NTTARGETFILE1= 2>&1 | tail -3 || true
+    fi
+    if ! compgen -G "$gdi_obj" > /dev/null 2>&1; then
+        run_nmake "$GDI/CLIENT" "GDI/CLIENT compile-only (pre-imports)" NTTARGETFILE0= NTTARGETFILE1= 2>&1 | tail -3 || true
+    fi
+    echo ">>> GUI import stubs: generating user32p.lib + gdi32p.lib"
+    # NT generates user32p.def from USER32.DEF via `cl -EP -DPRIVATE=`,
+    # stripping the PRIVATE keyword so those exports become normal import
+    # stubs. Without this, `lib -def:` skips PRIVATE exports entirely.
+    sed 's/  *PRIVATE\b//' "$USER/CLIENT/USER32.DEF" > "$USER/CLIENT/user32p.def"
+    _lib_from_def user32p.lib "$USER/CLIENT/user32p.def" "$user_obj" || return 1
+    _lib_from_def gdi32p.lib "$GDI/CLIENT/gdi32p.def"  "$gdi_obj"  || return 1
+}
+
+build_gdi32() {
+    build_gui_import_stubs || return 1
+    run_nmake "$GDI/CLIENT" "GDI/CLIENT - gdi32.dll" makedll=1
+}
+
+build_usersrv() {
+    _ensure_user_headers
+    run_nmake "$USER/SERVER" "USER/SERVER - usersrvl.lib"
+}
+build_user32() {
+    build_gui_import_stubs || return 1
+    run_nmake "$USER/CLIENT" "USER/CLIENT - user32.dll" makedll=1
+}
+
+build_consrv()       { run_nmake "$NT_ROOT/PRIVATE/WINDOWS/WINCON/SERVER/DAYTONA" "WINCON/SERVER - consrvl.lib"; }
+
+build_winsrv() {
+    mkdir -p "$NT_ROOT/PRIVATE/WINDOWS/WINSRV/DAYTONA/obj/i386"
+    run_nmake "$NT_ROOT/PRIVATE/WINDOWS/WINSRV/DAYTONA" "WINSRV - winsrv.dll (USER+GDI+console aggregator)" makedll=1
+}
+
+build_winlogon() {
+    KEEP_UMAPPL=1 run_nmake "$USER/WINLOGON/DAYTONA" "WINLOGON - winlogon.exe"
+}
+
+build_userinit() {
+    KEEP_UMAPPL=1 run_nmake "$USER/USERINIT" "USERINIT - userinit.exe"
+}
+
+build_listmung() {
+    KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/SDKTOOLS/LISTMUNG" "LISTMUNG - template list expander"
+    install_host_tool "$NT_ROOT/PRIVATE/SDKTOOLS/LISTMUNG/obj/i386/listmung.exe" "listmung.exe"
+}
+
 build_gensrv() {
     KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/SDKTOOLS/GENSRV" "GENSRV - NT syscall stub generator"
     install_host_tool "$NT_ROOT/PRIVATE/SDKTOOLS/GENSRV/obj/i386/gensrv.exe" "gensrv.exe"
@@ -835,7 +945,7 @@ build_init() {
     local rel_path="${linux_dir#$NT_ROOT}"
     local makedir_win="${NT_ROOT_WIN}$(echo "$rel_path" | sed 's|/|\\|g')"
 
-    env -i HOME="$HOME" TERM="${TERM:-dumb}" \
+    env -i HOME="$HOME" TERM="${TERM:-dumb}" ${WIBO_DEBUG:+"WIBO_DEBUG=$WIBO_DEBUG"} \
         "${NT_ENV_ARR[@]}" "MAKEDIR=${makedir_win}" \
         "$WIBO_BIN" --chdir "$linux_dir" \
             "${WIBO_TOOLS}/NMAKE.EXE" /NOLOGO UMTEST= UMAPPL=
@@ -894,14 +1004,13 @@ if [ ! -f "$WIBO_TOOLS/cmd.exe" ] \
     build_cmdstub || exit $?
 fi
 
-# Multi-arg support: `build.sh kd init` builds both in order.
-# No args → build all.
-if [ $# -gt 1 ]; then
-    for arg in "$@"; do
-        bash "$SCRIPT_DIR/build.sh" "$arg" || exit $?
-    done
-    exit 0
-fi
+# Parse flags.
+while [[ "${1:-}" == -* ]]; do
+    case "$1" in
+        --debug) export WIBO_DEBUG=1; shift ;;
+        *) echo "Unknown flag: $1"; exit 1 ;;
+    esac
+done
 
 # --- Group targets -----------------------------------------------------------
 #
@@ -933,6 +1042,7 @@ fi
 TOOL_TARGETS=(
     link
     mc
+    listmung
     midleb midlyacc midlpg
     midl_support midl_expr midl_analysis midl_codegen midl
     gensrv
@@ -1008,22 +1118,20 @@ USERLAND_TARGETS=(
 # whole Win32 security/services infrastructure, which isn't tractable
 # for a "small DLL" port. winlogon is the main caller.
 USERLAND_GUI_TARGETS=(
-    # advapi32 + its dependency chain (RPC runtime, LSA, SCM, eventlog,
-    # winreg) — would need a dedicated porting sub-group before we can
-    # land this. Left as TODO; winlogon blocks on it.
-    # advapi32
-    # USER subsystem server + user32 client
+    # GDI support libs (font drivers + math) — built before gdisrvl
+    gdi_efloat gdi_fscaler gdi_ttfd gdi_bmfd gdi_vtfd gdi_halftone
+    # GDI server (engine) + client DLL
+    gdisrv gdi32
+    # USER server + client DLL
     usersrv user32
-    # GDI server + client + font drivers
-    gdisrv  gdi32
-    # Console server (needs USER for console window)
+    # Console server
     consrv
-    # winsrv.dll — aggregator that links usersrv + gdisrv + consrv + basesrv
+    # winsrv.dll — aggregator (usersrv + gdisrv + consrv + basesrv)
     winsrv
-    # VGA user-mode display driver (talks to vga_miniport)
-    vga_display
-    # Login + shell bootstrap — needs advapi32 too
-    # winlogon userinit
+    # LSA client stub + winreg server lib (winlogon links both)
+    lsadll winregsrv
+    # Login + shell
+    winlogon userinit
 )
 
 build_group() {
@@ -1127,40 +1235,47 @@ build_all() { build_gui; }
 
 # --- Main dispatch -----------------------------------------------------------
 
-COMPONENT="${1:-all}"
+_dispatch_one() {
+    local comp="$1"
+    case "$comp" in
+        all)               build_all ;;
+        gui)               build_gui ;;
+        headless)          build_headless ;;
+        micront)           build_micront ;;
+        ntoskrnl)          build_ntoskrnl ;;
+        drivers)           build_drivers ;;
+        drivers-gui)       build_drivers_gui ;;
+        userland-micront)  build_userland_micront ;;
+        userland)          build_userland ;;
+        userland-gui)      build_userland_gui ;;
+        disk)              build_disk ;;
+        *)
+            if declare -F "build_$comp" > /dev/null; then
+                "build_$comp"
+            else
+                echo "Unknown component: $comp"
+                echo ""
+                echo "Profile targets: all (=gui), gui, headless, micront"
+                echo "Group targets:   ntoskrnl, drivers, drivers-gui,"
+                echo "                 userland-micront, userland, userland-gui, disk"
+                echo ""
+                echo "Individual components (in build order):"
+                echo "  ntoskrnl:          ${NTOSKRNL_TARGETS[*]}"
+                echo "  drivers:           ${DRIVER_TARGETS[*]}"
+                echo "  drivers-gui:       ${DRIVER_GUI_TARGETS[*]}"
+                echo "  userland-micront:  ${MICRONT_USERLAND_TARGETS[*]}"
+                echo "  userland:          ${USERLAND_TARGETS[*]}"
+                echo "  userland-gui:      ${USERLAND_GUI_TARGETS[*]}"
+                exit 1
+            fi
+            ;;
+    esac
+}
 
-# Everything callable: individual component functions + group targets + all/disk.
-# If a matching build_<name> function exists, invoke it. Otherwise complain.
-case "$COMPONENT" in
-    all)               build_all ;;
-    gui)               build_gui ;;
-    headless)          build_headless ;;
-    micront)           build_micront ;;
-    ntoskrnl)          build_ntoskrnl ;;
-    drivers)           build_drivers ;;
-    drivers-gui)       build_drivers_gui ;;
-    userland-micront)  build_userland_micront ;;
-    userland)          build_userland ;;
-    userland-gui)      build_userland_gui ;;
-    disk)              build_disk ;;
-    *)
-        if declare -F "build_$COMPONENT" > /dev/null; then
-            "build_$COMPONENT"
-        else
-            echo "Unknown component: $COMPONENT"
-            echo ""
-            echo "Profile targets: all (=gui), gui, headless, micront"
-            echo "Group targets:   ntoskrnl, drivers, drivers-gui,"
-            echo "                 userland-micront, userland, userland-gui, disk"
-            echo ""
-            echo "Individual components (in build order):"
-            echo "  ntoskrnl:          ${NTOSKRNL_TARGETS[*]}"
-            echo "  drivers:           ${DRIVER_TARGETS[*]}"
-            echo "  drivers-gui:       ${DRIVER_GUI_TARGETS[*]}"
-            echo "  userland-micront:  ${MICRONT_USERLAND_TARGETS[*]}"
-            echo "  userland:          ${USERLAND_TARGETS[*]}"
-            echo "  userland-gui:      ${USERLAND_GUI_TARGETS[*]}"
-            exit 1
-        fi
-        ;;
-esac
+if [ $# -eq 0 ]; then
+    _dispatch_one all
+else
+    for comp in "$@"; do
+        _dispatch_one "$comp"
+    done
+fi

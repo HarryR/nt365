@@ -330,6 +330,7 @@ BOOL WINAPI EnumProfiles(HDC,FARPROC,DWORD);
 
 #endif  /* NOICM */
 #endif /* WINVER < 0x0400 */
+#ifndef NOICM
 #if(WINVER < 0x0400)
 #define EMR_ENABLEICM                   98
 #define EMR_CREATECOLORSPACE            99
@@ -352,6 +353,7 @@ typedef struct tagEMRCREATECOLORSPACE
     LOGCOLORSPACE lcs;
 } EMRCREATECOLORSPACE, *PEMRCREATECOLORSPACE;
 #endif /* WINVER < 0x0400 */
+#endif /* NOICM */
 #ifdef __cplusplus
 }
 #endif

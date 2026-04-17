@@ -1,0 +1,32 @@
+MAJORCOMP=opengl
+MINORCOMP=perf
+TARGETNAME=ogpt
+TARGETPATH=obj
+TARGETTYPE=LIBRARY
+
+INCLUDES=$(BASEDIR)\public\sdk\inc\gl
+
+NTLEGO=1
+NTPROFILEINPUT=yes
+
+MIPS_OPTIONS=-float -Olimit 2000 -nodwalign
+
+!IFNDEF NTDEBUGTYPE
+NTDEBUGTYPE=coff
+!ENDIF
+
+
+SOURCES=
+
+UMTYPE=console
+UMAPPL=ogpt
+
+
+UMLIBS=\
+       $(BASEDIR)\public\sdk\lib\*\gdi32.lib       \
+       $(BASEDIR)\public\sdk\lib\*\pwin32.lib      \
+       $(BASEDIR)\public\sdk\lib\*\comdlg32.lib    \
+       $(BASEDIR)\public\sdk\lib\*\user32.lib      \
+       $(BASEDIR)\public\sdk\lib\*\opengl32.lib    \
+       $(BASEDIR)\public\sdk\lib\*\glu32.lib       \
+       $(BASEDIR)\public\sdk\lib\*\glaux.lib

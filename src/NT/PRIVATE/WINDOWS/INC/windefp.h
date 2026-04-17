@@ -22,14 +22,19 @@ Abstract:
                                                                          
 */                                                                     
 
-#ifndef _WINDEF_        
+/* windefp.h is a SUPERSET of windef.h — common base types (RECT, POINT,
+   etc.) plus private GDI extensions (LBOOL, PDEVBRUSH, COLOR, etc.).
+   The common block is guarded by _WINDEF_ so it's skipped when the
+   public SDK windef.h was already included. The private extensions
+   are guarded by _WINDEFP_ and always compile. */
+#ifndef _WINDEFP_
+#define _WINDEFP_
+
+#ifndef _WINDEF_
 #define _WINDEF_
 
-#ifndef _WINDEFP_       
-#define _WINDEFP_       
-
-#ifdef __cplusplus      
-extern "C" {            
+#ifdef __cplusplus
+extern "C" {
 #endif                  
 
 /*
@@ -303,9 +308,13 @@ typedef struct tagPOINTS
 #define DC_ORIENTATION      17
 #define DC_COPIES           18
 
-#ifdef __cplusplus  
-}                   
-#endif              
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _WINDEF_ — end of common types shared with windef.h */
+
+/* Private GDI extensions — always compiled regardless of _WINDEF_ state. */
 
 #ifndef _WINDEFP_NO_PDEVBRUSH
 typedef PVOID   PDEVBRUSH;
@@ -393,6 +402,4 @@ typedef PVOID *PPVOID;
 /* DEFAULT MAX DISTANCE SUM FOR FONT MAPPER */
 
 #define FM_DISTSETSUM_MAX       1000
-#endif /* _WINDEFP_ */ 
-
-#endif /* _WINDEF_ */   
+#endif /* _WINDEFP_ */   
