@@ -11,12 +11,12 @@ Abstract:
     This is the standard makefile for the components of the NT project.
     It includes the following files:
 
-        .\sources.      - developer supplies this file.  It defines the
+        .\sources      - developer supplies this file.  It defines the
                           required TARGETNAME, TARGETPATH, TARGETTYPE and
                           SOURCES as well as optional macros that control
                           the behavior of the compiler and linker:
 
-        obj\_objects.mac  - built by BUILD.EXE from .\sources.
+        obj\_objects.mac  - built by BUILD.EXE from .\sources
 
 
 Targets:
@@ -123,25 +123,25 @@ EXAMPLE:  To compile with codeview symbols for windbg:
 # TARGETTYPE and SOURCES macros.  Make sure it defines them.
 #
 
-!INCLUDE .\sources.
+!INCLUDE .\sources
 SOURCES_USED=.\sources
 
 #
 # Attempt to include the sources file from the target subdirectory.
 #
 
-!IF EXIST(.\$(TARGET_DIRECTORY)\sources.)
-!INCLUDE .\$(TARGET_DIRECTORY)\sources.
-SOURCES_USED=$(SOURCES_USED) .\$(TARGET_DIRECTORY)\sources.
+!IF EXIST(.\$(TARGET_DIRECTORY)\sources)
+!INCLUDE .\$(TARGET_DIRECTORY)\sources
+SOURCES_USED=$(SOURCES_USED) .\$(TARGET_DIRECTORY)\sources
 !ENDIF
 
 #
 # Attempt to include the sources file from the parent target subdirectory.
 #
 
-!IF EXIST(..\$(TARGET_DIRECTORY)\sources.)
-!INCLUDE ..\$(TARGET_DIRECTORY)\sources.
-SOURCES_USED=$(SOURCES_USED) ..\$(TARGET_DIRECTORY)\sources.
+!IF EXIST(..\$(TARGET_DIRECTORY)\sources)
+!INCLUDE ..\$(TARGET_DIRECTORY)\sources
+SOURCES_USED=$(SOURCES_USED) ..\$(TARGET_DIRECTORY)\sources
 !ENDIF
 
 !IF "$(_NT_LEGO_ON_THIS_MACHINE)" == ""
@@ -149,19 +149,19 @@ SOURCES_USED=$(SOURCES_USED) ..\$(TARGET_DIRECTORY)\sources.
 !ENDIF
 
 !IFNDEF TARGETNAME
-!ERROR Your .\sources. file must define the TARGETNAME= macro
+!ERROR Your .\sources file must define the TARGETNAME= macro
 !ENDIF
 
 !IFNDEF TARGETPATH
-!ERROR Your .\sources. file must define the TARGETPATH= macro
+!ERROR Your .\sources file must define the TARGETPATH= macro
 !ENDIF
 
 !IFNDEF TARGETTYPE
-!ERROR Your .\sources. file must define the TARGETTYPE= macro
+!ERROR Your .\sources file must define the TARGETTYPE= macro
 !ENDIF
 
 !IFNDEF SOURCES
-!ERROR Your .\sources. file must define the SOURCES= macro
+!ERROR Your .\sources file must define the SOURCES= macro
 !ENDIF
 
 !IFNDEF UMTYPE

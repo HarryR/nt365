@@ -14,35 +14,43 @@ jobs:
       image: ubuntu:24.04
     env:
       DEBIAN_FRONTEND: noninteractive
-      WINEDEBUG: "-all"
+      # URL for the MicroNT-patched wibo binary. Override per-workflow if
+      # bumping to a newer wibo fork release.
+      WIBO_URL: https://github.com/HarryR/wibo/releases/download/v1.1.0-micront.2/wibo-x86_64
 
     steps:
       - name: install build deps
-        # Plain ubuntu:24.04 has no git / ca-certificates / sudo — add
-        # those for actions/checkout.
-        # NT's MS toolchain (CL 8.50, ML 6.11d, LINK.EXE, MIDL.EXE) is
-        # strictly 32-bit; wine needs the i386 DPKG architecture enabled
-        # to run it. gnu-efi for src/boot-efi/, build-essential for the
-        # native Linux side, python3 for tools/*.py (stdlib only).
+        # Minimal set — no wine, no build-essential. Everything Windows-side
+        # runs through wibo (downloaded below). Only thing needing native
+        # compilation is src/boot-efi/, which uses gcc -m32 + gnu-efi's
+        # ia32 crt0/lds to produce BOOTIA32.EFI.
+        #
+        # Required by boot-efi's Makefile: gcc (pulls in binutils = ld +
+        # objcopy), gcc-multilib (-m32 support), gnu-efi, make. Plus curl
+        # to fetch wibo, ca-certificates for HTTPS, git for checkout.
         run: |
-          dpkg --add-architecture i386
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git sudo \
-            build-essential \
+            ca-certificates curl git \
+            gcc gcc-multilib make \
             gnu-efi \
             python3 \
-            wine \
-            wine32:i386
+            fdisk mtools
 
       - uses: actions/checkout@v4
 
-      - name: create wine prefix (D:\ = src/NT/)
+      - name: download wibo (MicroNT fork)
+        # Fetch the release asset from the patched wibo fork. build.sh
+        # expects wibo-x86_64 at the repo root and chmod +x.
         run: |
-          cd src
-          bash createwineprefix.sh
+          curl -fL --retry 3 "$WIBO_URL" -o wibo-x86_64
+          chmod +x wibo-x86_64
+          ./wibo-x86_64 --version
 
       - name: build headless
+        # First invocation auto-provisions src/wibo-tools/ (symlinks into
+        # PUBLIC/OAK/BIN/I386 + CRTDLL.DLL) and builds the cmd-stub. Every
+        # subsequent target runs under wibo.
         run: |
           cd src
           ./build.sh headless

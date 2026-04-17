@@ -36,20 +36,17 @@ src/NT/PUBLIC/SDK/LIB/I386/hal.lib
 src/NT/PUBLIC/SDK/LIB/I386/hal.exp
 src/NT/PUBLIC/SDK/LIB/I386/tmp.lib
 src/NT/PUBLIC/SDK/LIB/I386/tmp.exp
-# ntdll, kernel32, hal, advapi32 are all built from source — their .lib
-# import stubs are produced by each DLL's link step and consumed only by
-# later build steps, so nothing tracked in the tree is load-bearing for
-# bootstrap. Ignore the whole set.
+# ntdll, kernel32, advapi32 DLLs + .exp are generated each build.
+# The .LIB import stubs (KERNEL32.LIB, ADVAPI32.LIB, HAL.LIB) are
+# SEED files — tools link against them before we build the DLL.
+# They're tracked, not ignored. Build overwrites them; clean.sh restores.
 src/NT/PUBLIC/SDK/LIB/I386/ntdll.dll
 src/NT/PUBLIC/SDK/LIB/I386/ntdll.exp
 src/NT/PUBLIC/SDK/LIB/I386/ntdll.lib
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.dll
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.exp
-src/NT/PUBLIC/SDK/LIB/I386/KERNEL32.LIB
-src/NT/PUBLIC/SDK/LIB/I386/HAL.LIB
 src/NT/PUBLIC/SDK/LIB/I386/advapi32.dll
 src/NT/PUBLIC/SDK/LIB/I386/advapi32.exp
-src/NT/PUBLIC/SDK/LIB/I386/ADVAPI32.LIB
 # nt.lib (URTL) + smdll.lib (SM/CLIENT) — built from source
 src/NT/PUBLIC/SDK/LIB/I386/nt.lib
 src/NT/PUBLIC/SDK/LIB/I386/smdll.lib
@@ -243,3 +240,10 @@ README-UEFI.md
 # QEMU/test artifacts
 *.log
 *.gdb
+
+# wibo PE runner (downloaded binary + source checkout + auto-provisioned tools)
+/wibo/
+/wibo-x86_64
+/wibo-x86_64.stock
+/wibo-i686
+src/wibo-tools/

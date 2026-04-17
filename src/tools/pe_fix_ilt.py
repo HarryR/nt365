@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 
-def rva_to_offset(sections, rva):
+def rva_to_offset(sections:list[tuple[int,int,int,int]], rva:int):
     for vaddr, vsize, raw_off, raw_size in sections:
         if vaddr <= rva < vaddr + max(vsize, raw_size):
             return raw_off + (rva - vaddr)
@@ -50,9 +50,13 @@ def patch(path: Path) -> int:
 
     # Section table follows the optional header.
     sec_tab = opt + opt_size
-    sections = []
+    sections:list[tuple[int,int,int,int]] = []
     for i in range(num_sections):
         s = sec_tab + i * 40
+        vsize:int
+        vaddr:int
+        raw_size:int
+        raw_off:int
         vsize, vaddr, raw_size, raw_off = struct.unpack_from("<IIII", data, s + 8)
         sections.append((vaddr, vsize, raw_off, raw_size))
 

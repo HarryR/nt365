@@ -12,86 +12,96 @@ NTOS="$NT_ROOT/PRIVATE/NTOS"
 
 echo "Cleaning build artifacts..."
 
-# Component obj/ directories (where .obj, .lib, .res, _objects.mac go)
-COMP_DIRS=(
-    "$NTOS/KE/UP"
-    "$NTOS/RTL/UP"
-    "$NTOS/EX/UP"
-    "$NTOS/OB/UP"
-    "$NTOS/SE/UP"
-    "$NTOS/PS/UP"
-    "$NTOS/MM/UP"
-    "$NTOS/CACHE/UP"
-    "$NTOS/CONFIG/UP"
-    "$NTOS/LPC/UP"
-    "$NTOS/DBGK/UP"
-    "$NTOS/IO/UP"
-    "$NTOS/KD/UP"
-    "$NTOS/FSRTL/UP"
-    "$NTOS/RAW/UP"
-    "$NTOS/VDM/UP"
-    "$NTOS/INIT/UP"
-    "$NTOS/NTHALS/HAL"
-    "$NTOS/DD/HARDDISK"
-    "$NTOS/DD/NULL"
-    "$NTOS/FASTFAT"
-    "$NT_ROOT/PRIVATE/WINDOWS/BASE/RTL"
-    "$NT_ROOT/PRIVATE/WINDOWS/BASE/CLIENT/DAYTONA"
-    "$NT_ROOT/PRIVATE/WINDOWS/WINCON/CLIENT"
-    "$NT_ROOT/PRIVATE/WINDOWS/WINNLS"
-)
-
-# Shared Windows-subsystem obj/ (baselib.lib / conlib.lib / nlslib.lib land here
-# via TARGETPATH=..\obj or ..\..\obj).
-WIN_OBJS=(
-    "$NT_ROOT/PRIVATE/WINDOWS/BASE/obj"
-    "$NT_ROOT/PRIVATE/WINDOWS/obj"
-)
-for dir in "${WIN_OBJS[@]}"; do
-    if [ -d "$dir" ]; then
-        rm -rf "$dir"
-        echo "  cleaned $dir/"
-    fi
+# All obj/ directories under the NT source tree — covers every component's
+# build output (.obj, .lib, .res, .exe, .dll, _objects.mac, .def, etc.).
+# This replaces a hand-maintained COMP_DIRS list that was always lagging.
+find "$NT_ROOT/PRIVATE" -maxdepth 10 -type d -name 'obj' | while read -r d; do
+    rm -rf "$d"
+    echo "  cleaned ${d#$SCRIPT_DIR/}"
 done
 
-for dir in "${COMP_DIRS[@]}"; do
-    if [ -d "$dir/obj" ]; then
-        rm -rf "$dir/obj"
-        echo "  cleaned $dir/obj/"
-    fi
-done
-
-# Shared NTOS obj/ directory (where component .lib files are collected)
+# Shared NTOS obj/ (where component .lib files are collected via TARGETPATH)
 if [ -d "$NTOS/obj" ]; then
     rm -rf "$NTOS/obj"
-    echo "  cleaned $NTOS/obj/"
+    echo "  cleaned NTOS/obj/"
 fi
 
-# RC temp files (rc.exe leaves these behind on failure).
-# Pattern: R[CD][a-d]<5 digits> (matches .gitignore), nothing else.
-RC_TEMP_GLOB='R[CD][a-d][0-9][0-9][0-9][0-9][0-9]'
-find "$NTOS" -maxdepth 4 -name "$RC_TEMP_GLOB" -delete 2>/dev/null
-find "$NT_ROOT/PRIVATE/WINDOWS" -maxdepth 6 -name "$RC_TEMP_GLOB" -delete 2>/dev/null
-find "$NT_ROOT/PRIVATE/SM" -maxdepth 4 -name "$RC_TEMP_GLOB" -delete 2>/dev/null
+# Shared Windows-subsystem obj/ (baselib.lib / conlib.lib / nlslib.lib
+# via TARGETPATH=..\obj or ..\..\obj).
+for dir in "$NT_ROOT/PRIVATE/WINDOWS/BASE/obj" "$NT_ROOT/PRIVATE/WINDOWS/obj"; do
+    if [ -d "$dir" ]; then
+        rm -rf "$dir"
+        echo "  cleaned ${dir#$SCRIPT_DIR/}"
+    fi
+done
 
-# mc.exe-generated message resources (rebuilt each time).
+# Shared RTL obj/ (rtl.lib via TARGETPATH=..\obj)
+if [ -d "$NTOS/RTL/obj" ]; then
+    rm -rf "$NTOS/RTL/obj"
+    echo "  cleaned NTOS/RTL/obj/"
+fi
+
+# MIDL20 lib/ (midl support libs via TARGETPATH=..\lib)
+if [ -d "$NT_ROOT/PRIVATE/RPC/MIDL20/lib" ]; then
+    rm -rf "$NT_ROOT/PRIVATE/RPC/MIDL20/lib"
+    echo "  cleaned RPC/MIDL20/lib/"
+fi
+
+# RC temp files (rc.exe leaves R[CD]<letter><5digits> behind on failure)
+find "$NT_ROOT/PRIVATE" -maxdepth 10 -name 'R[CD][a-z][0-9][0-9][0-9][0-9][0-9]' -delete 2>/dev/null
+
+# NMAKE temp files (nm<pid>. trailing-dot convention)
+find "$NT_ROOT/PRIVATE" -maxdepth 10 -name 'nm[0-9]*' -delete 2>/dev/null
+
+# mc.exe-generated message resources (rebuilt each time)
 rm -f "$NT_ROOT/PRIVATE/WINDOWS/NLSMSG/winerror.h" \
       "$NT_ROOT/PRIVATE/WINDOWS/NLSMSG/winerror.rc" \
       "$NT_ROOT/PRIVATE/WINDOWS/NLSMSG/MSG00001.bin" \
       "$NT_ROOT/PRIVATE/WINDOWS/BASE/CLIENT/winerror.rc" \
       "$NT_ROOT/PRIVATE/WINDOWS/BASE/CLIENT/DAYTONA/MSG00001.bin" 2>/dev/null
 
-# Generated boot disk image
-rm -f "$SCRIPT_DIR/boot/data/disk.raw" 2>/dev/null && echo "  cleaned boot/data/disk.raw"
+# MIDL-generated stubs (rebuilt by build.sh's midl steps)
+for stub_dir in \
+    "$NT_ROOT/PRIVATE/RPC/RUNTIME/RTIFS" \
+    "$NT_ROOT/PRIVATE/RPC/RUNTIME/MTRT" \
+    "$NT_ROOT/PRIVATE/WINDOWS/SCREG/WINREG" \
+    "$NT_ROOT/PRIVATE/WINDOWS/SCREG/SC" \
+    "$NT_ROOT/PRIVATE/EVENTLOG" \
+    "$NT_ROOT/PRIVATE/LSA" \
+    "$NT_ROOT/PRIVATE/NEWSAM"; do
+    find "$stub_dir" -maxdepth 2 \( -name '*_c.c' -o -name '*_s.c' \
+        -o -name '*rpc.h' -o -name '*rpc_c.h' \) -delete 2>/dev/null
+done
 
-# Build products in PUBLIC/SDK/LIB that we generate
+# Build products in PUBLIC/SDK/LIB/I386 that we generate
 for f in ntoskrnl.lib ntoskrnl.exp hal.lib hal.exp tmp.lib tmp.exp \
-         atdisk.sys null.sys fastfat.sys \
-         kernel32.dll kernel32.exp; do
+         ntdll.dll ntdll.exp ntdll.lib \
+         kernel32.dll kernel32.exp kernel32.lib \
+         advapi32.dll advapi32.exp advapi32.lib \
+         rpcrt4.dll rpcrt4.exp rpcrt4.lib \
+         samlib.dll samlib.exp samlib.lib \
+         samsrv.dll samsrv.exp samsrv.lib \
+         lsasrv.dll lsasrv.exp lsasrv.lib \
+         csrsrv.dll csrsrv.exp csrsrv.lib \
+         basesrv.dll basesrv.exp basesrv.lib \
+         atdisk.sys null.sys fastfat.sys hello.sys; do
     if [ -f "$NT_ROOT/PUBLIC/SDK/LIB/I386/$f" ]; then
         rm -f "$NT_ROOT/PUBLIC/SDK/LIB/I386/$f"
         echo "  cleaned PUBLIC/SDK/LIB/I386/$f"
     fi
 done
+
+# cmd-stub build artifacts (rebuilt on demand by build.sh)
+rm -f "$SCRIPT_DIR/cmd-stub/cmd.obj" "$SCRIPT_DIR/cmd-stub/cmd.exe" 2>/dev/null
+
+# wibo-tools/ is auto-provisioned by build.sh; removing it forces
+# re-creation on next build (including cmd.exe rebuild).
+if [ -d "$SCRIPT_DIR/wibo-tools" ]; then
+    rm -rf "$SCRIPT_DIR/wibo-tools"
+    echo "  cleaned wibo-tools/"
+fi
+
+# Generated boot disk image + EFI artifacts
+rm -f "$SCRIPT_DIR/boot/data/disk.raw" 2>/dev/null && echo "  cleaned boot/data/disk.raw"
 
 echo "Clean complete."
