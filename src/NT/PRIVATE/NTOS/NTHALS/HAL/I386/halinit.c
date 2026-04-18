@@ -108,6 +108,8 @@ HalInitSystem(
 
     if (Phase == 1) {
 
+        HalpInitBusHandlers();
+
         HalpSerialPrint("HAL: Phase 1 - connecting clock...\r\n");
 
         /*

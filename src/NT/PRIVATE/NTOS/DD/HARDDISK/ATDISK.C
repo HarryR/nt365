@@ -7183,6 +7183,7 @@ Return Value:
     // Write to indentifier to sector count register.
     //
 
+    DbgPrint("ATDISK: AtControllerPresent base=%p\n", ControllerData->ControllerBaseAddress);
     WRITE_PORT_UCHAR(ControllerData->ControllerBaseAddress + SECTOR_COUNT_REGISTER,
                      0xAA);
 
@@ -7190,6 +7191,10 @@ Return Value:
     // Check if indentifier can be read back.
     //
 
+    {
+        UCHAR readback = READ_PORT_UCHAR(ControllerData->ControllerBaseAddress + SECTOR_COUNT_REGISTER);
+        DbgPrint("ATDISK: AtControllerPresent readback=%02x (expected AA)\n", readback);
+    }
     if (READ_PORT_UCHAR(ControllerData->ControllerBaseAddress + SECTOR_COUNT_REGISTER) == 0xAA) {
 
         //
@@ -7692,6 +7697,15 @@ Return Value:
 --*/
 
 {
+    /*
+     * MicroNT: skip PCI IDE detection. The PIIX3 IDE controller on Q35
+     * is a legacy-mode controller at ISA ports 0x1F0/0x170 — the standard
+     * ISA probe in AtControllerPresent handles it correctly. The PCI scan
+     * sets BadPciAdapter=TRUE which breaks the initialization path.
+     * Will be removed entirely when we switch to NVMe.
+     */
+    return;
+#if 0
     PCI_SLOT_NUMBER     SlotNumber;
     PPCI_COMMON_CONFIG  PciData;
     UCHAR               buffer[PCI_COMMON_HDR_LENGTH];
@@ -7833,4 +7847,5 @@ Return Value:
             }
         }
     }
+#endif
 }

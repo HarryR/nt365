@@ -5,6 +5,7 @@
  * These return success/zero to keep the kernel happy during early boot.
  */
 
+#define _NTSYSTEM_
 #include "halp.h"
 #include "ntdddisk.h"
 #include "ntddft.h"
@@ -101,96 +102,40 @@ HalSetRealTimeClock(
 
 /* ===== Bus / Resources ===== */
 
-BOOLEAN
-HalTranslateBusAddress(
-    IN INTERFACE_TYPE InterfaceType,
-    IN ULONG BusNumber,
-    IN PHYSICAL_ADDRESS BusAddress,
-    IN OUT PULONG AddressSpace,
-    OUT PPHYSICAL_ADDRESS TranslatedAddress
-    )
-{
-    *TranslatedAddress = BusAddress;
-    return TRUE;
-}
+/* HalTranslateBusAddress, HalGetBusData, HalSetBusData,
+ * HalAdjustResourceList, HalAssignSlotResources are now
+ * provided by ixbusdat.c (bus handler dispatch). */
 
-ULONG
-HalGetBusData(
-    IN BUS_DATA_TYPE BusDataType,
-    IN ULONG BusNumber,
-    IN ULONG SlotNumber,
-    IN PVOID Buffer,
-    IN ULONG Length
-    )
-{
-    return 0;
-}
+/* IDT usage tracking (referenced by ixsysbus.c) — stub for now */
+IDTUsage HalpIDTUsage[256] = {0};
 
-ULONG
-HalGetBusDataByOffset(
-    IN BUS_DATA_TYPE BusDataType,
-    IN ULONG BusNumber,
-    IN ULONG SlotNumber,
-    IN PVOID Buffer,
-    IN ULONG Offset,
-    IN ULONG Length
-    )
-{
-    return 0;
-}
-
-ULONG
-HalSetBusData(
-    IN BUS_DATA_TYPE BusDataType,
-    IN ULONG BusNumber,
-    IN ULONG SlotNumber,
-    IN PVOID Buffer,
-    IN ULONG Length
-    )
-{
-    return 0;
-}
-
-ULONG
-HalSetBusDataByOffset(
-    IN BUS_DATA_TYPE BusDataType,
-    IN ULONG BusNumber,
-    IN ULONG SlotNumber,
-    IN PVOID Buffer,
-    IN ULONG Offset,
-    IN ULONG Length
-    )
-{
-    return 0;
-}
-
+/* Resource list limits (referenced by ixpciint.c) — no ISA limits */
 NTSTATUS
-HalAdjustResourceList(
-    IN OUT PIO_RESOURCE_REQUIREMENTS_LIST *pResourceList
+HalpAdjustResourceListLimits(
+    IN PBUSHANDLER BusHandler,
+    IN PBUSHANDLER RootHandler,
+    IN OUT PIO_RESOURCE_REQUIREMENTS_LIST *pResourceList,
+    IN ULONG MinimumMemoryAddress,
+    IN ULONG MaximumMemoryAddress,
+    IN ULONG MinimumPrefetchMemoryAddress,
+    IN ULONG MaximumPrefetchMemoryAddress,
+    IN BOOLEAN LimitedIO,
+    IN ULONG MinimumIoAddress,
+    IN ULONG MaximumIoAddress,
+    IN PUCHAR IrqTable,
+    IN ULONG IrqTableSize,
+    IN ULONG MinimumDmaChannel,
+    IN ULONG MaximumDmaChannel
     )
 {
-    return 0;  /* STATUS_SUCCESS */
-}
-
-NTSTATUS
-HalAssignSlotResources(
-    IN PUNICODE_STRING RegistryPath,
-    IN PUNICODE_STRING DriverClassName OPTIONAL,
-    IN PDRIVER_OBJECT DriverObject,
-    IN PDEVICE_OBJECT DeviceObject OPTIONAL,
-    IN INTERFACE_TYPE BusType,
-    IN ULONG BusNumber,
-    IN ULONG SlotNumber,
-    IN OUT PCM_RESOURCE_LIST *AllocatedResources
-    )
-{
-    return 0xC0000001;  /* STATUS_UNSUCCESSFUL */
+    return STATUS_SUCCESS;
 }
 
 VOID
 HalReportResourceUsage(VOID)
 {
     HalpSerialPrint("HAL: ReportResourceUsage\r\n");
+    HalpInitializePciBus();
 }
 
 /* HalGetInterruptVector is in interrupt.c */
@@ -222,7 +167,7 @@ HalAllocateCommonBuffer(
 PVOID
 HalAllocateCrashDumpRegisters(
     IN PADAPTER_OBJECT AdapterObject,
-    IN PULONG NumberOfMapRegisters
+    IN ULONG NumberOfMapRegisters
     )
 {
     return NULL;
@@ -315,10 +260,10 @@ IoMapTransfer(
 
 VOID
 IoAssignDriveLetters(
-    IN PVOID LoaderBlock,
-    IN PVOID NtDeviceName,
-    OUT PVOID NtSystemPath,
-    OUT PVOID NtSystemPathString
+    IN PLOADER_PARAMETER_BLOCK LoaderBlock,
+    IN PSTRING NtDeviceName,
+    OUT PUCHAR NtSystemPath,
+    OUT PSTRING NtSystemPathString
     )
 {
 }
@@ -552,7 +497,7 @@ IoWritePartitionTable(
     IN ULONG SectorSize,
     IN ULONG SectorsPerTrack,
     IN ULONG NumberOfHeads,
-    IN PVOID PartitionBuffer
+    IN struct _DRIVE_LAYOUT_INFORMATION *PartitionBuffer
     )
 {
     return 0xC0000001;
@@ -569,8 +514,8 @@ HalAllProcessorsStarted(VOID)
 
 BOOLEAN
 HalStartNextProcessor(
-    IN PVOID LoaderBlock,
-    IN PVOID ProcessorState
+    IN PLOADER_PARAMETER_BLOCK LoaderBlock,
+    IN PKPROCESSOR_STATE ProcessorState
     )
 {
     return FALSE;
@@ -636,8 +581,8 @@ ULONG KdComPortInUse = 0;
 
 BOOLEAN
 KdPortInitialize(
-    IN PVOID DebugParameters,
-    IN PVOID LoaderBlock,
+    IN PDEBUG_PARAMETERS DebugParameters,
+    IN PLOADER_PARAMETER_BLOCK LoaderBlock,
     IN BOOLEAN Initialize
     )
 {

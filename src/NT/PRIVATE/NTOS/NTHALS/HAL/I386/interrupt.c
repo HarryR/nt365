@@ -73,7 +73,7 @@ BOOLEAN
 HalEnableSystemInterrupt(
     IN ULONG Vector,
     IN KIRQL Irql,
-    IN ULONG InterruptMode
+    IN KINTERRUPT_MODE InterruptMode
     )
 {
     ULONG irq;
@@ -127,23 +127,7 @@ HalDisableSystemInterrupt(
     }
 }
 
-/*
- * HalGetInterruptVector - translate bus interrupt to system vector
- */
-ULONG
-HalGetInterruptVector(
-    IN ULONG BusType,
-    IN ULONG BusNumber,
-    IN ULONG BusInterruptLevel,
-    IN ULONG BusInterruptVector,
-    OUT PKIRQL Irql,
-    OUT PULONG Affinity
-    )
-{
-    *Affinity = 1;
-    *Irql = (KIRQL)(HIGH_LEVEL - BusInterruptLevel);
-    return PRIMARY_VECTOR_BASE + BusInterruptVector;
-}
+/* HalGetInterruptVector is now provided by ixbusdat.c (bus handler dispatch) */
 
 /*
  * HalHandleNMI

@@ -50,6 +50,7 @@ typedef struct _BOCHS_DEVICE_EXTENSION {
     ULONG            FrameBufferLength;
     PUSHORT          DispiIndexPort;
     PUSHORT          DispiDataPort;
+    BOOLEAN          DispiIsMmio;
     ULONG            CurrentWidth;
     ULONG            CurrentHeight;
     ULONG            CurrentBpp;
@@ -63,17 +64,27 @@ BOOLEAN BochsInitialize(PVOID HwDeviceExtension);
 BOOLEAN BochsStartIO(PVOID HwDeviceExtension,
     PVIDEO_REQUEST_PACKET RequestPacket);
 
-/* Dispi register helpers */
+/* Dispi register helpers — MMIO uses direct memory access,
+ * legacy I/O uses port instructions */
 static VOID DispiWrite(PBOCHS_DEVICE_EXTENSION Ext, USHORT Index, USHORT Value)
 {
-    VideoPortWritePortUshort(Ext->DispiIndexPort, Index);
-    VideoPortWritePortUshort(Ext->DispiDataPort, Value);
+    if (Ext->DispiIsMmio) {
+        /* MMIO: each register at base + index*2 (flat layout) */
+        ((volatile USHORT *)Ext->DispiIndexPort)[Index] = Value;
+    } else {
+        VideoPortWritePortUshort(Ext->DispiIndexPort, Index);
+        VideoPortWritePortUshort(Ext->DispiDataPort, Value);
+    }
 }
 
 static USHORT DispiRead(PBOCHS_DEVICE_EXTENSION Ext, USHORT Index)
 {
-    VideoPortWritePortUshort(Ext->DispiIndexPort, Index);
-    return VideoPortReadPortUshort(Ext->DispiDataPort);
+    if (Ext->DispiIsMmio) {
+        return ((volatile USHORT *)Ext->DispiIndexPort)[Index];
+    } else {
+        VideoPortWritePortUshort(Ext->DispiIndexPort, Index);
+        return VideoPortReadPortUshort(Ext->DispiDataPort);
+    }
 }
 
 static VOID BochsSetMode(PBOCHS_DEVICE_EXTENSION Ext,
@@ -141,7 +152,13 @@ ULONG DriverEntry(PVOID Context1, PVOID Context2)
     return status;
 }
 
-/* BochsFindAdapter — locate PCI device 1234:1111 */
+/*
+ * BochsFindAdapter — locate PCI device 1234:1111
+ *
+ * Based on ReactOS/uintOS bochsmp.c pattern:
+ * - VideoPortGetAccessRanges with NULL vendor/device (slot from init)
+ * - BAR0 = framebuffer, BAR1/BAR2 = dispi MMIO (or fallback to legacy I/O)
+ */
 VP_STATUS BochsFindAdapter(
     PVOID HwDeviceExtension,
     PVOID HwContext,
@@ -151,60 +168,93 @@ VP_STATUS BochsFindAdapter(
 {
     PBOCHS_DEVICE_EXTENSION Ext = (PBOCHS_DEVICE_EXTENSION)HwDeviceExtension;
     VP_STATUS status;
-    VIDEO_ACCESS_RANGE AccessRanges[2];
+    VIDEO_ACCESS_RANGE AccessRanges[3];
     USHORT VendorId = BOCHS_VGA_VENDOR_ID;
     USHORT DeviceId = BOCHS_VGA_DEVICE_ID;
     ULONG Slot = 0;
     USHORT DispiId;
+    PVOID MappedDispi;
 
     DbgPrint("BochsVGA: BochsFindAdapter entered\n");
     VideoPortZeroMemory(AccessRanges, sizeof(AccessRanges));
 
-    /* Ask the video port to find our PCI device and return BARs */
+    /* Find PCI device 1234:1111 and get its BARs */
     status = VideoPortGetAccessRanges(HwDeviceExtension,
                                       0, NULL,
-                                      2, AccessRanges,
+                                      3, AccessRanges,
                                       &VendorId, &DeviceId, &Slot);
 
     if (status != NO_ERROR) {
-        DbgPrint("BochsVGA: PCI device 1234:1111 not found\n");
+        DbgPrint("BochsVGA: VideoPortGetAccessRanges failed %08lx\n", status);
         return ERROR_DEV_NOT_EXIST;
     }
 
-    /* BAR0 = framebuffer */
+    /* BAR0 = framebuffer (memory) */
     Ext->FrameBufferBase = AccessRanges[0].RangeStart;
     Ext->FrameBufferLength = AccessRanges[0].RangeLength;
+    DbgPrint("BochsVGA: BAR0 fb=%08lx len=%08lx io=%d\n",
+             AccessRanges[0].RangeStart.LowPart,
+             AccessRanges[0].RangeLength,
+             AccessRanges[0].RangeInIoSpace);
+    DbgPrint("BochsVGA: BAR1 start=%08lx len=%08lx io=%d\n",
+             AccessRanges[1].RangeStart.LowPart,
+             AccessRanges[1].RangeLength,
+             AccessRanges[1].RangeInIoSpace);
+    DbgPrint("BochsVGA: BAR2 start=%08lx len=%08lx io=%d\n",
+             AccessRanges[2].RangeStart.LowPart,
+             AccessRanges[2].RangeLength,
+             AccessRanges[2].RangeInIoSpace);
 
-    DbgPrint("BochsVGA: framebuffer at %08lx len %08lx\n",
-                     Ext->FrameBufferBase.LowPart, Ext->FrameBufferLength);
+    /* Dispi interface: prefer BAR2 MMIO if available,
+     * otherwise fall back to legacy I/O ports 0x1CE/0x1D0 */
+    if (AccessRanges[2].RangeLength >= 2) {
+        /* BAR2 = dispi registers (MMIO or I/O) */
+        MappedDispi = VideoPortGetDeviceBase(HwDeviceExtension,
+                                             AccessRanges[2].RangeStart,
+                                             AccessRanges[2].RangeLength,
+                                             AccessRanges[2].RangeInIoSpace);
+    } else if (AccessRanges[1].RangeLength >= 2) {
+        /* BAR1 = dispi registers */
+        MappedDispi = VideoPortGetDeviceBase(HwDeviceExtension,
+                                             AccessRanges[1].RangeStart,
+                                             AccessRanges[1].RangeLength,
+                                             AccessRanges[1].RangeInIoSpace);
+    } else {
+        /* Legacy I/O fallback */
+        PHYSICAL_ADDRESS DispiAddr;
+        DispiAddr.LowPart = VBE_DISPI_IOPORT_INDEX;
+        DispiAddr.HighPart = 0;
+        MappedDispi = VideoPortGetDeviceBase(HwDeviceExtension,
+                                             DispiAddr, 4, TRUE);
+    }
 
-    /* Map dispi I/O ports (0x1CE-0x1CF) via video port */
-    {
-        VIDEO_ACCESS_RANGE DispiRange;
-        PVOID MappedBase;
+    if (!MappedDispi) {
+        DbgPrint("BochsVGA: cannot map dispi interface\n");
+        return ERROR_DEV_NOT_EXIST;
+    }
 
-        DispiRange.RangeStart.LowPart = VBE_DISPI_IOPORT_INDEX;
-        DispiRange.RangeStart.HighPart = 0;
-        DispiRange.RangeLength = 4;
-        DispiRange.RangeInIoSpace = TRUE;
-        DispiRange.RangeVisible = FALSE;
-        DispiRange.RangeShareable = FALSE;
+    DbgPrint("BochsVGA: dispi mapped=%p\n", MappedDispi);
 
-        if (VideoPortVerifyAccessRanges(HwDeviceExtension, 1, &DispiRange) != NO_ERROR) {
-            DbgPrint("BochsVGA: cannot claim dispi I/O range\n");
-            return ERROR_DEV_NOT_EXIST;
+    /* For MMIO BARs (length >= 0x1000), the Bochs VGA dispi registers
+     * are at offset 0x500 within the MMIO region. Each register is at
+     * a fixed offset: 0x500 + (index * 2). No index/data port pair. */
+    if (AccessRanges[1].RangeLength >= 0x1000 ||
+        AccessRanges[2].RangeLength >= 0x1000) {
+        /* Dump first few words at offset 0x500 for debugging */
+        {
+            volatile USHORT *base = (volatile USHORT *)((PUCHAR)MappedDispi + 0x500);
+            DbgPrint("BochsVGA: MMIO@500: %04x %04x %04x %04x %04x\n",
+                     base[0], base[1], base[2], base[3], base[4]);
         }
-
-        MappedBase = VideoPortGetDeviceBase(HwDeviceExtension,
-                                            DispiRange.RangeStart,
-                                            DispiRange.RangeLength,
-                                            (UCHAR)DispiRange.RangeInIoSpace);
-        if (!MappedBase) {
-            DbgPrint("BochsVGA: cannot map dispi I/O ports\n");
-            return ERROR_DEV_NOT_EXIST;
-        }
-        Ext->DispiIndexPort = (PUSHORT)((PUCHAR)MappedBase + 0);
-        Ext->DispiDataPort  = (PUSHORT)((PUCHAR)MappedBase + 2);
+        Ext->DispiIndexPort = (PUSHORT)((PUCHAR)MappedDispi + 0x500);
+        Ext->DispiDataPort  = (PUSHORT)((PUCHAR)MappedDispi + 0x500);
+        Ext->DispiIsMmio = TRUE;
+        DbgPrint("BochsVGA: using MMIO dispi at offset 0x500\n");
+    } else {
+        /* Legacy I/O: index at +0, data at +2 */
+        Ext->DispiIndexPort = (PUSHORT)((PUCHAR)MappedDispi + 0);
+        Ext->DispiDataPort  = (PUSHORT)((PUCHAR)MappedDispi + 2);
+        Ext->DispiIsMmio = FALSE;
     }
 
     /* Verify the device responds */
