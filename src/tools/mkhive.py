@@ -525,7 +525,9 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
     # fails to resolve "C:\System32" and SmpInitializeKnownDlls returns
     # STATUS_OBJECT_PATH_NOT_FOUND (c000003a).
     h["ControlSet001\\Control\\Session Manager\\DOS Devices"] \
-        .set_sz("C:", "\\Device\\Harddisk0\\Partition1")
+        .set_sz("C:", "\\Device\\Harddisk0\\Partition1") \
+        .set_sz("PIPE", "\\Device\\NamedPipe") \
+        .set_sz("MAILSLOT", "\\Device\\Mailslot")
 
     # KnownDlls: SmpInitializeKnownDlls reads DllDirectory to locate the
     # KnownDlls filesystem directory. Missing => conversion of NULL path
@@ -545,6 +547,7 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
     h["ControlSet001\\Control\\ServiceGroupOrder"] \
         .set_multi_sz("List", [
             "Base",
+            "File System",
             "Video Init",
             "Video",
             "Keyboard Class",
@@ -578,6 +581,36 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
         .set_dword("Type",         2) \
         .set_dword("Start",        0) \
         .set_dword("ErrorControl", 1)
+    services["npfs"] \
+        .set_dword("Type",         2) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "File System")
+    services["msfs"] \
+        .set_dword("Type",         2) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "File System")
+
+    # LSA configuration — auth packages list and product options.
+    # LsapConfigurePackages reads Control\Lsa\Authentication Packages.
+    # msv1_0 is the standard NT LAN Manager auth package.
+    h["ControlSet001\\Control\\Lsa"] \
+        .set_multi_sz("Authentication Packages", [])
+
+    # LanmanWorkstation\Parameters — LsapDbInstallLsaDatabase reads
+    # the Domain value here. Empty key satisfies the NtOpenKey check.
+    services["LanmanWorkstation\\Parameters"]
+
+    # ProductOptions — LsapDbInitializeServer reads ProductType.
+    # "WinNt" = standalone workstation, "LanManNt" = domain controller.
+    h["ControlSet001\\Control\\ProductOptions"] \
+        .set_sz("ProductType", "WinNt")
+
+    # ComputerName — GetComputerNameW reads this; lsass calls it during
+    # LsapDbInitializeServer(2). Missing key = null deref in kernel32.
+    h["ControlSet001\\Control\\ComputerName\\ComputerName"] \
+        .set_sz("ComputerName", "MICRONT")
 
     # hello.sys — loaded from disk at Phase 1 (SERVICE_SYSTEM_START) as a
     # visibility test that the kernel is driving the filesystem correctly.

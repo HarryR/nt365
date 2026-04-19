@@ -299,6 +299,8 @@ build_vdm()    { run_nmake "$NTOS/VDM/UP"      "VDM - Virtual DOS Machine"; }
 build_atdisk() { run_nmake "$NTOS/DD/HARDDISK" "ATDISK - IDE disk driver"; }
 build_null()   { run_nmake "$NTOS/DD/NULL"     "NULL - null device driver"; }
 build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"; }
+build_npfs()   { run_nmake "$NTOS/NPFS"       "NPFS - Named Pipe filesystem driver"; }
+build_msfs()   { run_nmake "$NTOS/MAILSLOT"  "MSFS - Mailslot filesystem driver"; }
 build_hello()  { run_nmake "$NTOS/DD/HELLO"    "HELLO - MicroNT visibility driver"; }
 
 # --- RPC stack ---------------------------------------------------------------
@@ -337,6 +339,8 @@ build_rpcrt4()  {
     build_rpcrt4_idls || return 1
     run_nmake "$NT_ROOT/PRIVATE/RPC/RUNTIME/MTRT" "RPC/RUNTIME/MTRT - rpcrt4.dll (main RPC runtime)" makedll=1
 }
+build_rpclts1() { run_nmake "$NT_ROOT/PRIVATE/RPC/RUNTIME/TRANS/WIN32/SVRNP" "RPC transport - rpclts1.dll (named pipe server)" makedll=1; }
+build_rpcltc1() { run_nmake "$NT_ROOT/PRIVATE/RPC/RUNTIME/TRANS/WIN32/CLNTNP" "RPC transport - rpcltc1.dll (named pipe client)" makedll=1; }
 
 # --- advapi32 stack ----------------------------------------------------------
 # advapi32.dll is a façade over four subsystems:
@@ -1149,7 +1153,7 @@ NTOSKRNL_TARGETS=(
 
 # Drivers needed regardless of mode — disk, FS, visibility/null stubs.
 DRIVER_TARGETS=(
-    atdisk null fastfat
+    atdisk null fastfat npfs msfs
 )
 
 # Drivers only useful with the GUI (input + video).
@@ -1187,7 +1191,7 @@ USERLAND_TARGETS=(
     # phase; rpcrt4 depends on midl-generated stubs. advapi32 pulls in
     # LSA + EventLog + SCM + registry — the full security/services
     # fabric the headless profile needs.
-    rpcndrp rpcndr rpcndr20 rpcrt4
+    rpcndrp rpcndr rpcndr20 rpcrt4 rpclts1 rpcltc1
     wrlib perflib localreg winreg
     sclib svcctrl
     elfapi

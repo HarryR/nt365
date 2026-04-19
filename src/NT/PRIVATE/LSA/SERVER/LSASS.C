@@ -232,6 +232,8 @@ main ()
     // Define a top-level exception handler for the entire process.
     //
 
+    DbgPrint("LSASS: main() entered\n");
+
     (VOID) SetErrorMode( SEM_FAILCRITICALERRORS );
 
     (VOID) SetUnhandledExceptionFilter( &LsaTopLevelExceptionHandler );
@@ -305,7 +307,9 @@ main ()
     // something has gone wrong.
     //
 
+    DbgPrint("LSASS: calling LsapInitLsa\n");
     Status = LsapInitLsa();
+    DbgPrint("LSASS: LsapInitLsa returned %08lx\n", Status);
 
     if (!NT_SUCCESS(Status)) {
 
@@ -320,7 +324,9 @@ main ()
     // start successfully even if SAM takes a long time to initialize.
     //
 
+    DbgPrint("LSASS: calling ServiceInit\n");
     Status = ServiceInit();
+    DbgPrint("LSASS: ServiceInit returned %08lx\n", Status);
 
     if (!NT_SUCCESS(Status) ) {
 
@@ -331,7 +337,9 @@ main ()
     // Initialize SAM
     //
 
+    DbgPrint("LSASS: calling SamIInitialize\n");
     Status = SamIInitialize();
+    DbgPrint("LSASS: SamIInitialize returned %08lx\n", Status);
 
     if (!NT_SUCCESS(Status) ) {
 

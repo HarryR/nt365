@@ -469,6 +469,8 @@ _CORE_FILES: list[tuple[str, Path]] = [
     ("System32/Drivers/atdisk.sys", SDK_LIB / "atdisk.sys"),
     ("System32/Drivers/null.sys",   SDK_LIB / "null.sys"),
     ("System32/Drivers/fastfat.sys",SDK_LIB / "fastfat.sys"),
+    ("System32/Drivers/npfs.sys",   SDK_LIB / "npfs.sys"),
+    ("System32/Drivers/msfs.sys",   SDK_LIB / "msfs.sys"),
 ]
 
 # Headless adds the Win32 subsystem base.
@@ -477,6 +479,8 @@ _HEADLESS_FILES: list[tuple[str, Path]] = [
     ("System32/kernel32.dll",       SDK_LIB / "kernel32.dll"),
     ("System32/advapi32.dll",       SDK_LIB / "advapi32.dll"),
     ("System32/rpcrt4.dll",         SDK_LIB / "rpcrt4.dll"),
+    ("System32/rpclts1.dll",        SDK_LIB / "rpclts1.dll"),
+    ("System32/rpcltc1.dll",        SDK_LIB / "rpcltc1.dll"),
     ("System32/csrsrv.dll",         SDK_LIB / "csrsrv.dll"),
     ("System32/basesrv.dll",        SDK_LIB / "basesrv.dll"),
     ("System32/csrss.exe",          OBJ("CSR/SERVER") / "csrss.exe"),

@@ -248,22 +248,16 @@ Return Value:
 
     NtStatus = NtOpenKey(&hKey, KEY_READ, &ObjectAttributes);
 
-    if (NtStatus == STATUS_OBJECT_NAME_NOT_FOUND) {
+    if (!NT_SUCCESS(NtStatus)) {
 
         //
-        // This should never happen!  This key should have been created
-        // at setup, and protected by an ACL so that only the ADMIN could
-        // write to it.  Generate an event, and return a NULL computername.
+        // MicroNT: original code only checked STATUS_OBJECT_NAME_NOT_FOUND.
+        // STATUS_OBJECT_PATH_NOT_FOUND (parent key missing) fell through
+        // with hKey=NULL, crashing in GetNameFromValue. Handle any open
+        // failure by returning a NULL computername.
         //
 
-        //
-        // BUGBUG - generate an alert/event/???
-        //
-
-        //
-        // Return a NULL computername
-        //
-
+        DbgPrint("KERNEL32: GetComputerNameW — registry key missing, status=%08lx\n", NtStatus);
         lpBuffer[0] = L'\0';
         *nSize = 0;
         goto GoodReturn;
