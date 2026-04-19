@@ -750,10 +750,10 @@ HFF        *phff
 
     pff = PFF(*phff);
 
-// store the file name first:
-
+// MicroNT: moved filename store to after IFIMETRICS fill — the IFI
+// fill loop null-terminates its face name strings at the exact boundary,
+// overwriting the first bytes of the filename if stored here.
     pff->pwszFileName = (PWSZ)((BYTE*)pff + dpwszFileName);
-    wcscpy(pff->pwszFileName, pwszFileName);
 
 // Init fields of pff structure
 
@@ -894,6 +894,11 @@ HFF        *phff
 // Initialize the rest.
 
     pff->cRef = 0;
+
+// MicroNT: store filename AFTER IFIMETRICS fill to avoid overwrite.
+    wcscpy(pff->pwszFileName, pwszFileName);
+    DbgPrint("BMFD: bBmfdLoadFont — stored filename '%ws' at offset %d\n",
+             pff->pwszFileName, dpwszFileName);
 
     return TRUE;
 }

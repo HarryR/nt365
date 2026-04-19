@@ -299,21 +299,31 @@ BmfdOpenFontContext (
     DbgPrint("\n    )\n");
 #endif
 
-    if ( ((HFF) pfo->iFile) == HFF_INVALID)
+    DbgPrint("BMFD: OpenFontContext entered iFile=%p iFace=%d\n", pfo->iFile, pfo->iFace);
+    if ( ((HFF) pfo->iFile) == HFF_INVALID) {
+        DbgPrint("BMFD: OpenFontContext — iFile is HFF_INVALID\n");
         return(HFC_INVALID);
+    }
 
     pff = PFF((HFF) pfo->iFile);
 
-    if ((pfo->iFace < 1L) || (pfo->iFace > pff->cFntRes)) // pfo->iFace values are 1 based
+    if ((pfo->iFace < 1L) || (pfo->iFace > pff->cFntRes)) { // pfo->iFace values are 1 based
+        DbgPrint("BMFD: OpenFontContext — iFace %d out of range (cFntRes=%d)\n",
+                 pfo->iFace, pff->cFntRes);
         return(HFC_INVALID);
+    }
 
     pfai = &pff->afai[pfo->iFace - 1];
     pcvtfh = &(pfai->cvtfh);
 
-    if ((pfo->flFontType & FO_SIM_BOLD) && (pfai->pifi->fsSelection & FM_SEL_BOLD))
+    if ((pfo->flFontType & FO_SIM_BOLD) && (pfai->pifi->fsSelection & FM_SEL_BOLD)) {
+        DbgPrint("BMFD: OpenFontContext — bold simulation conflict\n");
         return HFC_INVALID;
-    if ((pfo->flFontType & FO_SIM_ITALIC) && (pfai->pifi->fsSelection & FM_SEL_ITALIC))
+    }
+    if ((pfo->flFontType & FO_SIM_ITALIC) && (pfai->pifi->fsSelection & FM_SEL_ITALIC)) {
+        DbgPrint("BMFD: OpenFontContext — italic simulation conflict\n");
         return HFC_INVALID;
+    }
 
 
 #ifdef DBCS_VERT // BmfdOpenFontContext():Get Rotate and compute XY scaling
@@ -327,7 +337,12 @@ BmfdOpenFontContext (
 
 // compute the horizontal and vertical scaling factors
 
-    vInitXform(&ptlScale, FONTOBJ_pxoGetXform(pfo));
+    {
+        XFORMOBJ *pxo = FONTOBJ_pxoGetXform(pfo);
+        DbgPrint("BMFD: OpenFontContext — pxoGetXform=%p\n", pxo);
+        vInitXform(&ptlScale, pxo);
+        DbgPrint("BMFD: OpenFontContext — ptlScale=%d,%d\n", ptlScale.x, ptlScale.y);
+    }
 
 #endif // DBCS_VERT
 
@@ -386,6 +401,7 @@ BmfdOpenFontContext (
             (ULONG)pcvtfh->usMaxWidth * ptlScale.x,
             (ULONG)pcvtfh->cy * ptlScale.y,
             &cxMax);
+    DbgPrint("BMFD: OpenFontContext — cjGlyphMax=%d cxMax=%d cjfc=%d\n", cjGlyphMax, cxMax, cjfc);
 #endif // DBCS_VERT
 
 // init stretch flags
@@ -416,6 +432,7 @@ BmfdOpenFontContext (
 
     if (!(pfc = PFC(hfcAlloc(cjfc))))
     {
+        DbgPrint("BMFD: OpenFontContext — hfcAlloc(%d) failed\n", cjfc);
         SAVE_ERROR_CODE(ERROR_NOT_ENOUGH_MEMORY);
         return(HFC_INVALID);
     }
@@ -449,15 +466,18 @@ BmfdOpenFontContext (
     // file to memory and make sure the pointers to FNT resources
     // are updated accordingly
 
+    DbgPrint("BMFD: OpenFontContext — iType=%d cRef=%d pwszFileName=%p '%ws'\n",
+             pff->iType, pff->cRef, pff->pwszFileName, pff->pwszFileName ? pff->pwszFileName : L"(null)");
     if ((pff->iType == TYPE_DLL16) || (pff->iType == TYPE_FNT))
     {
 
         if (pff->cRef == 0)
         {
             INT  i;
+            DbgPrint("BMFD: OpenFontContext — remapping '%ws'\n", pff->pwszFileName);
             if (!bMapFileUNICODE(pff->pwszFileName, &pff->u.fvw))
             {
-                WARNING("BMFD!somebody removed that bm font file!!!\n");
+                DbgPrint("BMFD: OpenFontContext — bMapFileUNICODE FAILED\n");
                 VRELEASESEM(ghsemBMFD);
                 vFreeFC(pfc);
                 return HFC_INVALID;

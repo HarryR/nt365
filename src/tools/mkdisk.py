@@ -451,18 +451,20 @@ OBJ       = lambda comp: NT / f"PRIVATE/{comp}/obj/i386"
 
 PROFILES = ("micront", "headless", "gui")
 
+NLS_DATA = NT / "PRIVATE/WINDOWS/WINNLS/DATA"
+
 # Core files present in every profile.
 _CORE_FILES: list[tuple[str, Path]] = [
     ("System32/ntoskrnl.exe",       OBJ("NTOS/INIT/UP") / "ntoskrnl.exe"),
     ("System32/hal.dll",            OBJ("NTOS/NTHALS/HAL") / "hal.dll"),
-    ("System32/c_1252.nls",         NT / "PRIVATE/WINDOWS/WINNLS/DATA/C_1252.NLS"),
-    ("System32/c_437.nls",          NT / "PRIVATE/WINDOWS/WINNLS/DATA/C_437.NLS"),
-    ("System32/l_intl.nls",         NT / "PRIVATE/WINDOWS/WINNLS/DATA/L_INTL.NLS"),
-    ("System32/unicode.nls",        NT / "PRIVATE/WINDOWS/WINNLS/DATA/UNICODE.NLS"),
-    ("System32/locale.nls",         NT / "PRIVATE/WINDOWS/WINNLS/DATA/LOCALE.NLS"),
-    ("System32/ctype.nls",          NT / "PRIVATE/WINDOWS/WINNLS/DATA/CTYPE.NLS"),
-    ("System32/sortkey.nls",        NT / "PRIVATE/WINDOWS/WINNLS/DATA/SORTKEY.NLS"),
-    ("System32/sorttbls.nls",       NT / "PRIVATE/WINDOWS/WINNLS/DATA/SORTTBLS.NLS"),
+    ("System32/c_1252.nls",         NLS_DATA / "C_1252.NLS"),
+    ("System32/c_437.nls",          NLS_DATA / "C_437.NLS"),
+    ("System32/l_intl.nls",         NLS_DATA / "L_INTL.NLS"),
+    ("System32/unicode.nls",        NLS_DATA / "UNICODE.NLS"),
+    ("System32/locale.nls",         NLS_DATA / "LOCALE.NLS"),
+    ("System32/ctype.nls",          NLS_DATA / "CTYPE.NLS"),
+    ("System32/sortkey.nls",        NLS_DATA / "SORTKEY.NLS"),
+    ("System32/sorttbls.nls",       NLS_DATA / "SORTTBLS.NLS"),
     # SYSTEM hive — path is rewritten per-profile in get_disk_files().
     ("System32/ntdll.dll",          SDK_LIB / "ntdll.dll"),
     ("System32/smss.exe",           OBJ("SM/SERVER") / "smss.exe"),
@@ -487,8 +489,12 @@ _HEADLESS_FILES: list[tuple[str, Path]] = [
     ("System32/lsasrv.dll",         SDK_LIB / "lsasrv.dll"),
     ("System32/samsrv.dll",         SDK_LIB / "samsrv.dll"),
     ("System32/samlib.dll",         SDK_LIB / "samlib.dll"),
+    ("System32/netapi32.dll",       SDK_LIB / "NETAPI32.DLL"),  # XXX: pre-built
+    ("System32/netrap.dll",         SDK_LIB / "NETRAP.DLL"),    # XXX: pre-built
     ("System32/lsass.exe",          OBJ("LSA/SERVER") / "lsass.exe"),
 ]
+
+FONTS = NT / "PRIVATE/WINDOWS/GDI/FONTS"
 
 # GUI adds the window/drawing stack.
 _GUI_FILES: list[tuple[str, Path]] = [
@@ -496,7 +502,7 @@ _GUI_FILES: list[tuple[str, Path]] = [
     ("System32/user32.dll",         SDK_LIB / "user32.dll"),
     ("System32/gdi32.dll",          SDK_LIB / "gdi32.dll"),
     ("System32/winsrv.dll",         SDK_LIB / "winsrv.dll"),
-    ("System32/WINSPOOL.DRV",       SDK_LIB / "WINSPOOL.DRV"),
+    ("System32/WINSPOOL.DRV",       SDK_LIB / "WINSPOOL.DRV"),  # XXX: pre-built
     # Video: port framework + Bochs VGA miniport + framebuffer display driver
     ("System32/Drivers/videoprt.sys", SDK_LIB / "videoprt.sys"),
     ("System32/Drivers/bochsvga.sys", SDK_LIB / "bochsvga.sys"),
@@ -508,6 +514,10 @@ _GUI_FILES: list[tuple[str, Path]] = [
     # Login
     ("System32/winlogon.exe",       OBJ("WINDOWS/USER/WINLOGON/DAYTONA") / "winlogon.exe"),
     ("System32/userinit.exe",       OBJ("WINDOWS/USER/USERINIT") / "userinit.exe"),
+    # VGA bitmap fonts — referenced by SOFTWARE hive GRE_Initialize
+    ("System32/vgasys.fon",         FONTS / "VGASYS.FON"),
+    ("System32/vgafix.fon",         FONTS / "VGAFIX.FON"),
+    ("System32/vgaoem.fon",         FONTS / "VGAOEM.FON"),
 ]
 
 
@@ -515,8 +525,9 @@ def get_disk_files(profile: str, output_dir: Path) -> list[tuple[str, Path]]:
     """Return the file list for *profile*, with the SYSTEM hive path
     pointing into *output_dir*."""
     files = list(_CORE_FILES)
-    # Insert the profile-specific SYSTEM hive.
+    # Insert the profile-specific hives.
     files.append(("System32/config/SYSTEM", output_dir / "SYSTEM"))
+    files.append(("System32/config/SOFTWARE", output_dir / "SOFTWARE"))
     if profile in ("headless", "gui"):
         files.extend(_HEADLESS_FILES)
     if profile == "gui":

@@ -443,7 +443,13 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
     if profile == "micront":
         sm.set_multi_sz("Execute", [])
     else:
-        sm.set_multi_sz("Execute", ["lsass.exe"])
+        # Empty Execute list — smss defaults to "winlogon.exe" as
+        # InitialCommand (SMINIT.C line 753). winlogon then launches
+        # lsass.exe via the "System" registry value in the SOFTWARE
+        # hive (Winlogon\System key). Note: the Execute list only
+        # accepts IMAGE_SUBSYSTEM_NATIVE binaries; lsass.exe is
+        # WINDOWS_GUI subsystem so it can't go here.
+        sm.set_multi_sz("Execute", [])
 
     # SystemDrive gets set by the full NTLDR/OSLOADER at boot time from
     # the ARC boot device — under our UEFI loader it stays unset, so we
@@ -678,6 +684,64 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
     return h
 
 
+def build_micront_software_hive(profile: str = "headless") -> Hive:
+    """Return a SOFTWARE hive with the minimum keys NT needs to boot.
+
+    The kernel loads this from %SystemRoot%\\System32\\config\\SOFTWARE
+    and mounts it at \\Registry\\Machine\\Software.
+
+    The most critical consumer is winlogon.exe which reads its startup
+    configuration from Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon
+    via GetProfileString("WINLOGON", ...).
+    """
+    h = Hive("SOFTWARE")
+
+    cv = h["Microsoft\\Windows NT\\CurrentVersion"]
+
+    cv.set_sz("CurrentVersion", "3.5") \
+      .set_sz("CurrentBuildNumber", "807") \
+      .set_sz("CurrentType", "Uniprocessor Free") \
+      .set_sz("SystemRoot", "C:\\")
+
+    # Winlogon configuration — winlogon reads these via GetProfileString
+    # (WINLOGON section → IniFileMapping → this registry path).
+    wl = cv["Winlogon"]
+
+    # "System" is the list of processes winlogon starts before auth init.
+    # lsass.exe is the security subsystem; must be running before
+    # LsaRegisterLogonProcess can succeed.
+    wl.set_sz("System", "lsass.exe")
+
+    # "Userinit" runs after a successful logon to set up the user env.
+    wl.set_sz("Userinit", "userinit.exe,")
+
+    # "Shell" is what userinit launches as the user's desktop shell.
+    # We don't have progman/explorer yet — leave empty for now.
+    wl.set_sz("Shell", "")
+
+    # ServiceControllerStart — winlogon starts this before lsass.
+    # We don't have services.exe yet; winlogon logs a warning but
+    # continues.
+    wl.set_sz("ServiceControllerStart", "")
+
+    if profile == "gui":
+        # GRE_Initialize — font file paths for the GDI engine.
+        # Without these, GRE falls back to the winsrv.dll embedded font.
+        gre = cv["GRE_Initialize"]
+        gre.set_sz("FONTS.FON", "C:\\System32\\vgasys.fon") \
+           .set_sz("FIXEDFON.FON", "C:\\System32\\vgafix.fon") \
+           .set_sz("OEMFONT.FON", "C:\\System32\\vgaoem.fon")
+
+        # Font substitution table — empty is fine for now.
+        cv["FontSubstitutes"]
+
+    # IniFileMapping — BaseSrvInitializeIniFileMappings opens this key.
+    # It can be empty but must exist to avoid STATUS_OBJECT_NAME_NOT_FOUND.
+    h["Microsoft\\Windows NT\\CurrentVersion\\IniFileMapping"]
+
+    return h
+
+
 def main() -> None:
     import argparse
     import sys
@@ -706,6 +770,11 @@ def main() -> None:
     h = build_micront_system_hive(profile=args.profile)
     size = h.write(args.output)
     print(f"SYSTEM hive ({args.profile}): {size} bytes -> {args.output}")
+
+    sw = build_micront_software_hive(profile=args.profile)
+    sw_path = args.output.replace("SYSTEM", "SOFTWARE") if "SYSTEM" in args.output else "SOFTWARE"
+    size = sw.write(sw_path)
+    print(f"SOFTWARE hive ({args.profile}): {size} bytes -> {sw_path}")
 
 
 if __name__ == "__main__":
