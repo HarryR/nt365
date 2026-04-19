@@ -239,9 +239,12 @@ CsrAllocateProcess( VOID )
 
     ProcessSize = QUAD_ALIGN(sizeof( CSR_PROCESS ) +
             (CSR_MAX_SERVER_DLL * sizeof(PVOID))) + CsrTotalPerProcessDataLength;
+    DbgPrint("CSRSRV: CsrAllocateProcess size=%d (CSR_PROCESS=%d, PerProcess=%d)\n",
+             ProcessSize, sizeof(CSR_PROCESS), CsrTotalPerProcessDataLength);
     Process = (PCSR_PROCESS)RtlAllocateHeap( CsrHeap, 0,
                                              ProcessSize
                                            );
+    DbgPrint("CSRSRV: CsrAllocateProcess heap=%p result=%p\n", CsrHeap, Process);
     ASSERT( Process != NULL );
     if (Process == NULL) {
         return( NULL );

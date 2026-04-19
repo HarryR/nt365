@@ -492,11 +492,21 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
         #   ServerDll=N,I    — per-server DLL; basesrv owns slot 1. GUI
         #                       profile adds winsrv with slots 2+3 for
         #                       USER and Console.
+        # IMPORTANT: these indices are ABI constants, not arbitrary. They
+        # must match the #defines in WINSS.H:
+        #   BASESRV_SERVERDLL_INDEX  = 1
+        #   CONSRV_SERVERDLL_INDEX   = 2
+        #   USERSRV_SERVERDLL_INDEX  = 3
+        #   GDISRV_SERVERDLL_INDEX   = 4
+        # Client DLLs (user32, kernel32) use these hardcoded indices to
+        # look up per-process and per-thread data. If the indices here
+        # don't match, the server DLL writes sizeof(PROCESSINFO) bytes
+        # into a smaller slot's allocation — silent heap corruption.
         server_dlls = "ServerDll=basesrv,1 "
         if profile == "gui":
             server_dlls += (
-                "ServerDll=winsrv:UserServerDllInitialization,2 "
-                "ServerDll=winsrv:ConServerDllInitialization,3 "
+                "ServerDll=winsrv:ConServerDllInitialization,2 "
+                "ServerDll=winsrv:UserServerDllInitialization,3 "
             )
         sm_sub.set_expand_sz(
             "Windows",
@@ -506,7 +516,6 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
             "Windows=On "
             "SubSystemType=Windows "
             + server_dlls +
-            "ServerDllInitialization=CsrServerInitialization "
             "ProfileControl=Off "
             "MaxRequestThreads=16"
         )

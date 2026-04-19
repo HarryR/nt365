@@ -694,6 +694,9 @@ NTSTATUS UserServerDllInitialization(
      */
     ghheapSharedRO = psrvdll->SharedStaticServerData;
 
+    { PVOID _t = RtlAllocateHeap(RtlProcessHeap(),0,64);
+      DbgPrint("USERSRV: heap-check-A=%p\n", _t);
+      if (_t) RtlFreeHeap(RtlProcessHeap(),0,_t); }
     DbgPrint("USERSRV: reading SharedSection profile\n");
     if (!FastGetProfileStringW(PMAP_SUBSYSTEMS, L"Windows", L"SharedSection,3072",
             achSubSystem, 512)) {
@@ -913,12 +916,18 @@ NTSTATUS UserServerDllInitialization(
      * Initialize GDI
      */
     OpenProfileUserMapping();
+    { PVOID _t = RtlAllocateHeap(RtlProcessHeap(),0,64);
+      DbgPrint("USERSRV: heap-check-B=%p\n", _t);
+      if (_t) RtlFreeHeap(RtlProcessHeap(),0,_t); }
     DbgPrint("USERSRV: calling Initialize() (GDI init)\n");
     if ( !Initialize() ) {
         DbgPrint("USERSRV: Initialize() FAILED\n");
         Status = STATUS_DLL_INIT_FAILED;
         goto LeaveCritExit;
     }
+    { PVOID _t = RtlAllocateHeap(RtlProcessHeap(),0,64);
+      DbgPrint("USERSRV: heap-check-C=%p\n", _t);
+      if (_t) RtlFreeHeap(RtlProcessHeap(),0,_t); }
     DbgPrint("USERSRV: Initialize() succeeded\n");
     CloseProfileUserMapping();
 
@@ -1508,8 +1517,14 @@ TryNewRefresh:
 
                 displayInstalled = TRUE;
 
-                DbgPrint("USERSRV: display installed, calling UserInitScreen\n");
+                { PVOID _t = RtlAllocateHeap(RtlProcessHeap(),0,64);
+      DbgPrint("USERSRV: heap-check-D=%p\n", _t);
+      if (_t) RtlFreeHeap(RtlProcessHeap(),0,_t); }
+    DbgPrint("USERSRV: display installed, calling UserInitScreen\n");
                 UserInitScreen();
+                { PVOID _t = RtlAllocateHeap(RtlProcessHeap(),0,64);
+                  DbgPrint("USERSRV: heap-check-E=%p\n", _t);
+                  if (_t) RtlFreeHeap(RtlProcessHeap(),0,_t); }
                 DbgPrint("USERSRV: UserInitScreen returned\n");
             }
         }
@@ -2533,6 +2548,12 @@ NTSTATUS UserAddProcess(
     BOOL fForceInherit;
 
     ppi = Process->ServerDllPerProcessData[USERSRV_SERVERDLL_INDEX];
+    if (ppi == NULL) {
+        DbgPrint("USERSRV: UserAddProcess — ServerDllPerProcessData[%d] is NULL. "
+                 "ServerDll index in registry must match USERSRV_SERVERDLL_INDEX in WINSS.H\n",
+                 USERSRV_SERVERDLL_INDEX);
+        return STATUS_INVALID_PARAMETER;
+    }
     RtlZeroMemory(ppi, sizeof(PROCESSINFO));
 
     /*

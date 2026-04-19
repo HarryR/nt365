@@ -403,6 +403,9 @@ public:
 // Cache useful glyph handles.
 
     WCHAR           wcDefault;
+    WCHAR           _wcPad;             // MicroNT: explicit alignment padding —
+                                        // CL 8.50 doesn't pad WCHAR→ULONG in
+                                        // C++ classes (original CL 8.00 did)
     HGLYPH          hgDefault;
     HGLYPH          hgBreak;
     FIX             fxBreak;

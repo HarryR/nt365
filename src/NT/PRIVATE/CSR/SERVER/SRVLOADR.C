@@ -240,6 +240,11 @@ CsrLoadServerDll(
         RtlFreeHeap( CsrHeap, 0, LoadedServerDll );
         }
 
+    {
+        PVOID _t = RtlAllocateHeap(CsrHeap, 0, 64);
+        DbgPrint("CSRSRV: CsrLoadServerDll('%s') done, heap test=%p\n", ModuleName, _t);
+        if (_t) RtlFreeHeap(CsrHeap, 0, _t);
+    }
     return( Status );
 }
 

@@ -49,8 +49,13 @@ CsrSbCreateSession(
     ThreadHandle = a->ProcessInformation.Thread;
 
     AcquireProcessStructureLock();
+    DbgPrint("CSRSRV: CsrSbCreateSession — allocating process for CID %x.%x\n",
+             a->ProcessInformation.ClientId.UniqueProcess,
+             a->ProcessInformation.ClientId.UniqueThread);
     Process = CsrAllocateProcess();
+    DbgPrint("CSRSRV: CsrSbCreateSession — Process=%p\n", Process);
     if (Process == NULL) {
+        DbgPrint("CSRSRV: CsrSbCreateSession — CsrAllocateProcess FAILED\n");
         Msg->ReturnedStatus = STATUS_NO_MEMORY;
         ReleaseProcessStructureLock();
         return( TRUE );
