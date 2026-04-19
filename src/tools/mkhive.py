@@ -735,9 +735,15 @@ def build_micront_software_hive(profile: str = "headless") -> Hive:
         # Font substitution table — empty is fine for now.
         cv["FontSubstitutes"]
 
-    # IniFileMapping — BaseSrvInitializeIniFileMappings opens this key.
-    # It can be empty but must exist to avoid STATUS_OBJECT_NAME_NOT_FOUND.
-    h["Microsoft\\Windows NT\\CurrentVersion\\IniFileMapping"]
+    # IniFileMapping — BaseSrvInitializeIniFileMappings reads this tree
+    # to map GetProfileString("section","key") calls to registry paths.
+    # Format: value "" (default) = "SYS:registrypath" maps the whole
+    # section. SYS: = HKLM, USR: = HKCU.
+    ifm = h["Microsoft\\Windows NT\\CurrentVersion\\IniFileMapping\\win.ini"]
+    ifm["windows"] \
+        .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows")
+    ifm["WINLOGON"] \
+        .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon")
 
     return h
 

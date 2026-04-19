@@ -71,10 +71,14 @@ int WINAPI WinMain(
     }
 #endif
 
+    DbgPrint("WINLOGON: WinMain entered\n");
+
     if (!SetProcessPriority()) {
+        DbgPrint("WINLOGON: SetProcessPriority failed\n");
         return(1);
     }
 
+    DbgPrint("WINLOGON: InitializeGlobals\n");
     InitializeGlobals(&Globals, (HANDLE)hInstance);
 
     if (!Globals.fExecuteSetup) {
@@ -83,17 +87,23 @@ int WINAPI WinMain(
 
     BootDOS();   // Do any Dos-specific initialization
 
+    DbgPrint("WINLOGON: calling InitializeSecurity\n");
     if ( !InitializeSecurity(&Globals) ) {
+        DbgPrint("WINLOGON: InitializeSecurity FAILED\n");
         return(1);
     }
+    DbgPrint("WINLOGON: InitializeSecurity succeeded\n");
 
 #ifdef LOGGING
     (VOID) WriteLog( LogFileHandle, TEXT("Winlogon: Before ExecSystemProcesses"));
 #endif
 
+    DbgPrint("WINLOGON: calling ExecSystemProcesses\n");
     if ( ! ExecSystemProcesses(& Globals) ) {
+        DbgPrint("WINLOGON: ExecSystemProcesses FAILED\n");
         return 1 ;
     }
+    DbgPrint("WINLOGON: ExecSystemProcesses succeeded\n");
 
 #ifdef LOGGING
     (VOID) WriteLog( LogFileHandle, TEXT("Winlogon: After ExecSystemProcesses"));

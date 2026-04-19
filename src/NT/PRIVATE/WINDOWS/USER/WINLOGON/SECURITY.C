@@ -561,30 +561,47 @@ ExecProcesses(
     if ((pchData = Alloc(sizeof(TCHAR)*(cb = 128))) == NULL)
         return(FALSE);
 
-    while (TRUE) {
-        /*
-         * Grab a buffer and load up the keydata under the keyname currently
-         * pointed to by pchKeyNames.
-         */
-        if ((cbCopied = GetProfileString(WINLOGON, pszKeyName, pszDefault,
-                (LPTSTR)pchData, cb)) == 0) {
+    // MicroNT: read directly from the registry instead of going through
+    // GetProfileString / IniFileMapping. The original code used
+    // GetProfileString("WINLOGON", key, default) which depends on
+    // IniFileMapping to redirect WIN.INI reads to the registry — a
+    // Win3.1 compatibility layer we don't fully implement.
+    {
+        HKEY hkWinlogon;
+        DWORD dwType, dwSize;
+        LONG rc;
+
+        rc = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                    L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon",
+                    0, KEY_READ, &hkWinlogon);
+        if (rc == ERROR_SUCCESS) {
+            dwSize = cb * sizeof(TCHAR);
+            rc = RegQueryValueExW(hkWinlogon, pszKeyName, NULL, &dwType,
+                                  (LPBYTE)pchData, &dwSize);
+            if (rc == ERROR_SUCCESS && dwType == REG_SZ && dwSize > sizeof(TCHAR)) {
+                cbCopied = (dwSize / sizeof(TCHAR)) - 1;
+            } else {
+                cbCopied = 0;
+            }
+            RegCloseKey(hkWinlogon);
+        } else {
+            cbCopied = 0;
+        }
+
+        // Fall back to default if not found
+        if (cbCopied == 0 && pszDefault != NULL && pszDefault[0] != 0) {
+            lstrcpyW((LPTSTR)pchData, pszDefault);
+            cbCopied = lstrlenW(pszDefault);
+        }
+
+        DbgPrint("WINLOGON: ExecProcesses('%ws') = %d '%ws'\n",
+                 pszKeyName, cbCopied,
+                 cbCopied > 0 ? (LPTSTR)pchData : L"(empty)");
+
+        if (cbCopied == 0) {
             Free((TCHAR *)pchData);
             return(FALSE);
         }
-
-        /*
-         * If the returned value is our passed size - 1 (weird way for error)
-         * then our buffer is too small. Make it bigger and start over again.
-         */
-        if (cbCopied == cb - 1) {
-            cb += 128;
-            if ((pchData = ReAlloc(pchData, sizeof(TCHAR)*cb)) == NULL) {
-                return(FALSE);
-            }
-            continue;
-        }
-
-        break;
     }
 
     pchCmdLine = pchData;
@@ -734,27 +751,27 @@ ExecSystemProcesses(
     //  Initialize the shutdown server
     //
 
+    DbgPrint("WINLOGON: ExecSystemProcesses — RpcpInitRpcServer\n");
     RpcpInitRpcServer();
+    DbgPrint("WINLOGON: ExecSystemProcesses — InitializeShutdownModule\n");
     if ( !InitializeShutdownModule( pGlobals ) ) {
-        ASSERT( FALSE );
-        WLPrint(("Cannot InitializeShutdownModule."));
+        DbgPrint("WINLOGON: InitializeShutdownModule FAILED\n");
     }
 
     //
     // Initialize the registry server
     //
 
+    DbgPrint("WINLOGON: ExecSystemProcesses — InitializeWinreg\n");
     if ( !InitializeWinreg() ) {
-        ASSERT( FALSE );
-        WLPrint(("Cannot InitializeWinreg."));
+        DbgPrint("WINLOGON: InitializeWinreg FAILED\n");
     }
-
-
 
     //
     // must start services.exe server before anything else.  If there is an
     // entry ServiceControllerStart in win.ini, use it as the command.
     //
+    DbgPrint("WINLOGON: ExecSystemProcesses — starting services.exe\n");
     if (!ExecProcesses(
                 TEXT("ServiceControllerStart"),
                 TEXT("services.exe"),
@@ -765,7 +782,7 @@ ExecSystemProcesses(
                 )
         ) {
 
-         WLPrint(("Cannot start 'services.exe'."));
+         DbgPrint("WINLOGON: Cannot start services.exe (expected)\n");
     }
     else {
         HANDLE hRPCRegServer;
@@ -821,6 +838,7 @@ ExecSystemProcesses(
     // These must be started for authentication initialization to succeed
     // because one of the system processes is the LSA server.
     //
+    DbgPrint("WINLOGON: ExecSystemProcesses — launching System (lsass)\n");
     SystemStarted = ExecProcesses(TEXT("System"),
                                    NULL,
                                    APPLICATION_DESKTOP_NAME,
@@ -828,15 +846,20 @@ ExecSystemProcesses(
                                    0,
                                    STARTF_FORCEOFFFEEDBACK
                                    );
+    DbgPrint("WINLOGON: ExecProcesses(System) returned %d\n", SystemStarted);
     //
     // Initialize authentication service if the "System" line caused any processes to
     // successfully start.
     //
     if (SystemStarted) {
+        DbgPrint("WINLOGON: calling InitializeAuthentication\n");
         if (!InitializeAuthentication(pGlobals)) {
-            WLPrint(("failed to initialize authentication service"));
+            DbgPrint("WINLOGON: InitializeAuthentication FAILED\n");
             return FALSE;
         }
+        DbgPrint("WINLOGON: InitializeAuthentication succeeded\n");
+    } else {
+        DbgPrint("WINLOGON: System processes not started, skipping auth init\n");
     }
 
     return TRUE;
@@ -991,16 +1014,28 @@ InitializeAuthentication(
     // Hookup to the LSA and locate our authentication package.
     //
 
+    // MicroNT: winlogon launches lsass and immediately tries to connect.
+    // On real NT, lsass starts from the Execute list before winlogon, so
+    // it's ready by now. We retry with a sleep to wait for lsass to
+    // finish initializing its LPC port.
     RtlInitString(&LogonProcessName, "Winlogon");
-    Status = LsaRegisterLogonProcess(
-                 &LogonProcessName,
-                 &pGlobals->LsaHandle,
-                 &pGlobals->SecurityMode
-                 );
-
+    {
+        int retries;
+        for (retries = 0; retries < 30; retries++) {
+            Status = LsaRegisterLogonProcess(
+                         &LogonProcessName,
+                         &pGlobals->LsaHandle,
+                         &pGlobals->SecurityMode
+                         );
+            if (NT_SUCCESS(Status)) break;
+            DbgPrint("WINLOGON: LsaRegisterLogonProcess failed %08lx, retry %d\n",
+                     Status, retries);
+            Sleep(1000);
+        }
+    }
 
     if (!NT_SUCCESS(Status)) {
-        WLPrint(("Unable to connect to Local Security Authority."));
+        DbgPrint("WINLOGON: Unable to connect to LSA after retries, status=%08lx\n", Status);
         return(FALSE);
     }
 
