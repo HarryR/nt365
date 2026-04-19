@@ -483,6 +483,7 @@ Return Value:
     // Create the symbolic link \Registry\Machine\System\CurrentControlSet
     //
     status = CmpCreateControlSet();
+    DbgPrint("CM: CmpCreateControlSet status=%08lx\n", status);
     if (!NT_SUCCESS(status)) {
         return(FALSE);
     }

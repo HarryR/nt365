@@ -302,7 +302,7 @@ class Hive:
         value_list = self._value_list(value_cells) if value_cells else 0xFFFFFFFF
 
         # Children must be sorted alphabetically for binary search
-        children = sorted(key.subkeys.items(), key=lambda kv: kv[0])
+        children = sorted(key.subkeys.items(), key=lambda kv: kv[0].upper())
 
         # Allocate the nk with placeholder subkey_list; patch after emitting children
         nk_cell = self._nk(
@@ -598,9 +598,17 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
     h["ControlSet001\\Control\\Lsa"] \
         .set_multi_sz("Authentication Packages", [])
 
-    # LanmanWorkstation\Parameters — LsapDbInstallLsaDatabase reads
-    # the Domain value here. Empty key satisfies the NtOpenKey check.
-    services["LanmanWorkstation\\Parameters"]
+    # LanmanWorkstation\Parameters — LsapDbSetDomainInfo (Pass 2 of
+    # LSA auto-install) reads Domain name and DomainId SID from here.
+    # Without these, the Account Domain SID is never set, and SAM init
+    # fails with STATUS_INVALID_SID. DomainId format is space-separated
+    # decimal (LsapDbGetNextValueToken tokenizes on whitespace):
+    # 6 authority bytes then sub-authorities.
+    # S-1-5-21-1-2-3 = authority 0 0 0 0 0 5, sub-auths 21 1 2 3.
+    services["LanmanWorkstation\\Parameters"] \
+        .set_sz("Domain", "MICRONT") \
+        .set_sz("DomainId", "0 0 0 0 0 5 21 1 2 3") \
+        .set_sz("AccountDomainId", "0 0 0 0 0 5 21 1 2 3")
 
     # ProductOptions — LsapDbInitializeServer reads ProductType.
     # "WinNt" = standalone workstation, "LanManNt" = domain controller.

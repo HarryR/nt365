@@ -981,6 +981,29 @@ if (ProductType == NtProductLanManNt) {
     // interesting domain values (name, id, and account id)
     //
 
+    DbgPrint("LSA DB INSTALL: LsapDbSetDomainInfo entered\n");
+
+    // XXX: MicroNT testing
+    // Debug: test symlink resolution with a key we know exists
+    {
+        HANDLE hTest;
+        UNICODE_STRING TestName;
+        OBJECT_ATTRIBUTES TestAttr;
+        NTSTATUS TestStatus;
+
+        RtlInitUnicodeString(&TestName, L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\atdisk");
+        InitializeObjectAttributes(&TestAttr, &TestName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+        TestStatus = NtOpenKey(&hTest, KEY_READ, &TestAttr);
+        DbgPrint("LSA DB INSTALL: test open atdisk via CurrentControlSet = %08lx\n", TestStatus);
+        if (NT_SUCCESS(TestStatus)) NtClose(hTest);
+
+        RtlInitUnicodeString(&TestName, L"\\Registry\\Machine\\System\\ControlSet001\\Services\\LanmanWorkstation\\Parameters");
+        InitializeObjectAttributes(&TestAttr, &TestName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+        TestStatus = NtOpenKey(&hTest, KEY_READ, &TestAttr);
+        DbgPrint("LSA DB INSTALL: test open LanmanWks via ControlSet001 = %08lx\n", TestStatus);
+        if (NT_SUCCESS(TestStatus)) NtClose(hTest);
+    }
+
     RtlInitUnicodeString( &KeyName, L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" );
     InitializeObjectAttributes(
                             &ObjectAttributes,
@@ -989,6 +1012,7 @@ if (ProductType == NtProductLanManNt) {
                             NULL,
                             NULL);
     Status = NtOpenKey( &KeyHandle, KEY_READ, &ObjectAttributes );
+    DbgPrint("LSA DB INSTALL: NtOpenKey(%wZ) = %08lx\n", &KeyName, Status);
     if (!NT_SUCCESS( Status )) {
 #if DEVL
         DbgPrint( "LSA DB INSTALL: Unable to access registry key (%wZ) - Status == %x\n", &KeyName, Status );
@@ -1003,8 +1027,10 @@ if (ProductType == NtProductLanManNt) {
     Status = LsapDbGetConfig(KeyHandle,
                            L"Domain",
                            &PrimaryDomainName);
+    DbgPrint("LSA DB INSTALL: LsapDbGetConfig(Domain) = %08lx\n", Status);
 
     if ( !NT_SUCCESS( Status ) ) {
+        DbgPrint("LSA DB INSTALL: Domain read failed, returning\n");
         NtClose( KeyHandle );
         return;
     }
@@ -1028,8 +1054,10 @@ if (ProductType == NtProductLanManNt) {
         Status = LsapDbGetConfig(KeyHandle,
                                L"DomainId",
                                &DomainId );
+        DbgPrint("LSA DB INSTALL: LsapDbGetConfig(DomainId) = %08lx\n", Status);
 
         if ( !NT_SUCCESS( Status ) ) {
+            DbgPrint("LSA DB INSTALL: DomainId read failed, returning\n");
             NtClose( KeyHandle );
             return;
         }
@@ -1152,9 +1180,11 @@ if (ProductType == NtProductLanManNt) {
 
 
         RtlInitUnicodeString(&AccountDomainName,L"Account");
+        DbgPrint("LSA DB INSTALL: reading AccountDomainId\n");
         Status = LsapDbGetConfig(KeyHandle,
                                L"AccountDomainId",
                                &DomainId );
+        DbgPrint("LSA DB INSTALL: AccountDomainId status=%08lx\n", Status);
 
         if ( !NT_SUCCESS( Status ) ) {
             NtClose( KeyHandle );
@@ -1323,6 +1353,8 @@ if (ProductType == NtProductLanManNt) {
                  &LsapDbNames[PolAcDmS],
                  (*NextAttribute)
                  );
+    DbgPrint("LSA DB INSTALL: AccountDomainSid=%p AccountDomainName=%wZ status=%08lx\n",
+             AccountDomainSid, &AccountDomainName, Status);
     ASSERT(NT_SUCCESS(Status));
 
 
