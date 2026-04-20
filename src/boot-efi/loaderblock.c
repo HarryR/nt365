@@ -55,8 +55,12 @@ static void *arena_alloc(UINTN size, UINTN align) {
     return p;
 }
 
-static void *kseg0_of(void *phys_ptr) {
-    return (void *)((UINTN)phys_ptr | KSEG0_BASE);
+/* Returns the KSEG0 virtual address of a phys pointer, as a 32-bit
+ * integer. All NT-visible struct fields in nt.h are UINT32 wire-format
+ * pointers, so keeping this as UINT32 keeps assignments type-correct
+ * without explicit casts at every site. */
+static UINT32 kseg0_of(void *phys_ptr) {
+    return (UINT32)((UINTN)phys_ptr | KSEG0_BASE);
 }
 
 /* ---- String/UNICODE helpers -------------------------------------------- */
@@ -111,24 +115,22 @@ static LDR_DATA_TABLE_ENTRY *make_ldr_entry(const pe_image_t *img,
     ldr->LoadCount = 1;
 
     /* Link LDR into the LoadOrder list (tail insert via pre-KSEG0 pointers). */
-    NT_LIST_ENTRY *entry_kseg0 = kseg0_of(&ldr->InLoadOrderLinks);
-    NT_LIST_ENTRY *tail_phys   = (NT_LIST_ENTRY *)((UINTN)list_head_kseg0 & ~KSEG0_BASE);
-    /* Can't walk via virtual yet — walk via physical representation,
-     * then rewrite pointers in KSEG0. Since arena is contiguous and we
-     * keep tail_kseg0 updated, track it explicitly below. */
+    UINT32 entry_kseg0 = kseg0_of(&ldr->InLoadOrderLinks);
+    NT_LIST_ENTRY *tail_phys = (NT_LIST_ENTRY *)((UINTN)list_head_kseg0 & ~KSEG0_BASE);
     (void)entry_kseg0; (void)tail_phys;
     return ldr;
 }
 
 static void list_tail_insert_kseg0(NT_LIST_ENTRY *head_phys, NT_LIST_ENTRY *entry_phys) {
-    /* Both head and entry live in arena phys; we operate on them here and
-     * write KSEG0 pointers into their Flink/Blink fields. */
+    /* Both head and entry live in arena phys. Flink/Blink on the structs
+     * are UINT32 wire-format KSEG0 VAs — we cast back to phys pointers
+     * only when we need to walk the list physically here. */
     NT_LIST_ENTRY *prev_tail_phys = head_phys->Blink ?
                                  (NT_LIST_ENTRY *)((UINTN)head_phys->Blink & ~KSEG0_BASE) :
                                  head_phys;
-    NT_LIST_ENTRY *head_kseg0  = kseg0_of(head_phys);
-    NT_LIST_ENTRY *entry_kseg0 = kseg0_of(entry_phys);
-    NT_LIST_ENTRY *prev_kseg0  = kseg0_of(prev_tail_phys);
+    UINT32 head_kseg0  = kseg0_of(head_phys);
+    UINT32 entry_kseg0 = kseg0_of(entry_phys);
+    UINT32 prev_kseg0  = kseg0_of(prev_tail_phys);
 
     entry_phys->Flink = head_kseg0;
     entry_phys->Blink = prev_kseg0;
@@ -137,7 +139,7 @@ static void list_tail_insert_kseg0(NT_LIST_ENTRY *head_phys, NT_LIST_ENTRY *entr
 }
 
 static void init_list_head_kseg0(NT_LIST_ENTRY *head_phys) {
-    NT_LIST_ENTRY *k = kseg0_of(head_phys);
+    UINT32 k = kseg0_of(head_phys);
     head_phys->Flink = k;
     head_phys->Blink = k;
 }
@@ -188,7 +190,16 @@ unsigned long loaderblock_kernel_entry(void) { return g_kernel_entry_v; }
 EFI_STATUS loaderblock_build(void) {
     EFI_STATUS s;
 
-    s = mmu_alloc(ARENA_PAGES, PK_MEMORY_DATA, &g_arena_phys);
+    /* Place the LPB arena below 16 MiB so its KSEG0 alias lands in
+     * PDE[512..515]. Those are the only PDEs MmCreateProcessAddressSpace
+     * (PROCSUP.C:52,297) copies into new-process PDs, which — despite the
+     * LPB ostensibly being boot-only — matters because MM init touches
+     * descriptors while switching address spaces during InitSystem. Under
+     * OVMF64 with a 1 GB guest UEFI was placing the arena near 1 GB phys,
+     * which kernels with MmCreateProcessAddressSpace's narrow copy would
+     * lose access to. Harmless under OVMF32 where UEFI naturally picks
+     * low-phys allocations. */
+    s = mmu_alloc_below(ARENA_PAGES, PK_MEMORY_DATA, 0x01000000, &g_arena_phys);
     if (EFI_ERROR(s)) return s;
     g_arena_used = 0;
 
@@ -208,7 +219,7 @@ EFI_STATUS loaderblock_build(void) {
         for (UINTN i = 0; i < n; i++) {
             const AllocEntry *e = mmu_registry_entry(i);
             if (e->kind == PK_REGISTRY) {
-                lpb->RegistryBase   = (void *)(UINTN)(KSEG0_BASE | (UINT32)e->phys);
+                lpb->RegistryBase   = (UINT32)(KSEG0_BASE | (UINT32)e->phys);
                 lpb->RegistryLength = (ULONG)(e->pages << 12);
                 break;
             }
@@ -221,9 +232,9 @@ EFI_STATUS loaderblock_build(void) {
     {
         NLS_DATA_BLOCK *nls = arena_alloc(sizeof *nls, 4);
         UINT32 base_kseg0 = KSEG0_BASE | (UINT32)g_nls_base_phys;
-        nls->AnsiCodePageData     = (void *)(UINTN)(base_kseg0 + g_nls_ansi_off);
-        nls->OemCodePageData      = (void *)(UINTN)(base_kseg0 + g_nls_oem_off);
-        nls->UnicodeCaseTableData = (void *)(UINTN)(base_kseg0 + g_nls_uni_off);
+        nls->AnsiCodePageData     = base_kseg0 + (UINT32)g_nls_ansi_off;
+        nls->OemCodePageData      = base_kseg0 + (UINT32)g_nls_oem_off;
+        nls->UnicodeCaseTableData = base_kseg0 + (UINT32)g_nls_uni_off;
         lpb->NlsData = kseg0_of(nls);
     }
 

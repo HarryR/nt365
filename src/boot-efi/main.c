@@ -31,7 +31,10 @@
 
 extern void handoff(unsigned long entry_kseg0,
                     unsigned long loader_block_kseg0,
-                    unsigned long stack_top_kseg0);
+                    unsigned long stack_top_kseg0,
+                    unsigned long pd_phys,
+                    unsigned long gdt_phys,
+                    unsigned long idt_phys);
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
                            EFI_SYSTEM_TABLE *SystemTable) {
@@ -282,9 +285,22 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
     mmu_build_and_activate();
 
     com1_puts("[main] handoff to KiSystemStartup\n");
+    /* Pass GDT/IDT as phys — handoff.S does the KSEG0 remap. We need the
+     * long-mode LGDT (before the mode drop) to access the GDT via UEFI's
+     * identity PML4, which only maps phys. But once the NT kernel takes
+     * over and switches CR3 to a new process PD, MmCreateProcessAddressSpace
+     * (NTOS/MM/PROCSUP.C:297-305) copies only PDE[512..515] + the non-paged
+     * range into that new PD; the identity PDEs [0..511] are NOT copied, so
+     * any descriptor referenced by its phys address becomes unreachable and
+     * the next trap triple-faults. Fix is in handoff.S: after the CR3 swap
+     * to our NT PD (which has both identity + KSEG0), re-LGDT/LIDT with the
+     * KSEG0-aliased base so the descriptor tables stay reachable forever. */
     handoff(loaderblock_kernel_entry(),
             loaderblock_handoff_ptr(),
-            mmu_handoff_stack_top());
+            mmu_handoff_stack_top(),
+            (unsigned long)mmu_pd_base(),
+            (unsigned long)mmu_gdt_base(),
+            (unsigned long)mmu_idt_base());
 
     /* Unreachable — handoff never returns. */
     com1_puts("[main] kernel returned!?\n");

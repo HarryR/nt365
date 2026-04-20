@@ -1,34 +1,41 @@
 /*
  * NT kernel interface structures used by LOADER_PARAMETER_BLOCK.
  *
- * Uses EFI type names (UINT8/UINT16/UINT32/BOOLEAN) where they overlap
- * to avoid typedef clashes with gnu-efi headers. NT-specific type
- * aliases (UCHAR, USHORT, ULONG, PVOID, PCHAR) are all reused as macros
- * onto the EFI equivalents.
+ * CRITICAL: these structs are wire-format between our 64-bit UEFI
+ * loader and the 32-bit NT kernel. Native C pointer types would be
+ * 8 bytes under -m64 and 4 bytes under -m32, shifting every subsequent
+ * field by 4 bytes and making the kernel read garbage. All pointer-
+ * equivalent fields are therefore declared as UINT32 — the loader
+ * stores KSEG0 virtual addresses (0x80000000..0xFFFFFFFF) which
+ * always fit in 32 bits. C code that assigns pointers into these
+ * fields casts via `(UINT32)(UINTN)ptr`.
+ *
+ * UCHAR/USHORT/ULONG aliases cover NT type conventions without
+ * clashing with gnu-efi's typedefs. PVOID/PCHAR are defined as
+ * UINT32 (the "32-bit pointer" wire type) rather than real pointers
+ * so existing `PVOID field` declarations keep working.
  */
 #ifndef _BOOT_EFI_NT_H_
 #define _BOOT_EFI_NT_H_
 
 #include <efi.h>
 
-/* Alias NT-style names onto their EFI equivalents. Safe because EFI's
- * typedefs are stable and NT's headers do the same under a different
- * toolchain root. */
 #define UCHAR   UINT8
 #define USHORT  UINT16
 #define ULONG   UINT32
-#define PCHAR   CHAR8 *
-#define PVOID   VOID *
+/* Wire-format pointers: 4 bytes, holds a KSEG0 VA. */
+#define PCHAR   UINT32
+#define PVOID   UINT32
 
 typedef struct _NT_LIST_ENTRY {
-    struct _NT_LIST_ENTRY *Flink;
-    struct _NT_LIST_ENTRY *Blink;
+    UINT32 Flink;   /* wire: KSEG0 VA of next entry */
+    UINT32 Blink;   /* wire: KSEG0 VA of prev entry */
 } NT_LIST_ENTRY;
 
 typedef struct _UNICODE_STRING {
     UINT16  Length;
     UINT16  MaximumLength;
-    UINT16 *Buffer;
+    UINT32  Buffer;   /* wire: KSEG0 VA of UTF-16 buffer */
 } UNICODE_STRING;
 
 typedef enum _NT_MEMORY_TYPE {
@@ -66,15 +73,15 @@ typedef struct _MEMORY_ALLOCATION_DESCRIPTOR {
 } MEMORY_ALLOCATION_DESCRIPTOR;
 
 typedef struct _NLS_DATA_BLOCK {
-    void *AnsiCodePageData;
-    void *OemCodePageData;
-    void *UnicodeCaseTableData;
+    UINT32 AnsiCodePageData;       /* wire: KSEG0 VA */
+    UINT32 OemCodePageData;        /* wire: KSEG0 VA */
+    UINT32 UnicodeCaseTableData;   /* wire: KSEG0 VA */
 } NLS_DATA_BLOCK;
 
 typedef struct _ARC_DISK_SIGNATURE {
     NT_LIST_ENTRY ListEntry;
     UINT32        Signature;
-    CHAR8        *ArcName;
+    UINT32        ArcName;    /* wire: KSEG0 VA of CHAR8* */
     UINT32        CheckSum;
     BOOLEAN       ValidPartitionTable;
 } ARC_DISK_SIGNATURE;
@@ -100,15 +107,15 @@ typedef struct _CONFIGURATION_COMPONENT {
     UINT16 Version, Revision;
     UINT32 Key, AffinityMask;
     UINT32 ConfigurationDataLength, IdentifierLength;
-    CHAR8 *Identifier;
+    UINT32 Identifier;       /* wire: KSEG0 VA of CHAR8* */
 } CONFIGURATION_COMPONENT;
 
 typedef struct _CONFIGURATION_COMPONENT_DATA {
-    struct _CONFIGURATION_COMPONENT_DATA *Parent;
-    struct _CONFIGURATION_COMPONENT_DATA *Child;
-    struct _CONFIGURATION_COMPONENT_DATA *Sibling;
+    UINT32 Parent;           /* wire: KSEG0 VA */
+    UINT32 Child;            /* wire: KSEG0 VA */
+    UINT32 Sibling;          /* wire: KSEG0 VA */
     CONFIGURATION_COMPONENT ComponentEntry;
-    void *ConfigurationData;
+    UINT32 ConfigurationData; /* wire: KSEG0 VA */
 } CONFIGURATION_COMPONENT_DATA;
 
 /* NT's kernel-visible resource descriptor wire format (NTIFS.H). Used
@@ -162,8 +169,8 @@ typedef struct _LDR_DATA_TABLE_ENTRY {
     NT_LIST_ENTRY InLoadOrderLinks;
     NT_LIST_ENTRY InMemoryOrderLinks;
     NT_LIST_ENTRY InInitializationOrderLinks;
-    void *DllBase;
-    void *EntryPoint;
+    UINT32 DllBase;          /* wire: KSEG0 VA */
+    UINT32 EntryPoint;       /* wire: KSEG0 VA */
     UINT32 SizeOfImage;
     UNICODE_STRING FullDllName;
     UNICODE_STRING BaseDllName;
@@ -178,11 +185,11 @@ typedef struct _BOOT_DRIVER_LIST_ENTRY {
     NT_LIST_ENTRY Link;
     UNICODE_STRING FilePath;
     UNICODE_STRING RegistryPath;
-    LDR_DATA_TABLE_ENTRY *LdrEntry;
+    UINT32 LdrEntry;         /* wire: KSEG0 VA of LDR_DATA_TABLE_ENTRY */
 } BOOT_DRIVER_LIST_ENTRY;
 
 typedef struct _I386_LOADER_BLOCK {
-    void  *CommonDataArea;
+    UINT32 CommonDataArea;   /* wire: KSEG0 VA */
     UINT32 MachineType;
 } I386_LOADER_BLOCK;
 
@@ -195,17 +202,17 @@ typedef struct _LOADER_PARAMETER_BLOCK {
     UINT32  Process;
     UINT32  Thread;
     UINT32  RegistryLength;
-    void   *RegistryBase;
-    CONFIGURATION_COMPONENT_DATA *ConfigurationRoot;
-    CHAR8  *ArcBootDeviceName;
-    CHAR8  *ArcHalDeviceName;
-    CHAR8  *NtBootPathName;
-    CHAR8  *NtHalPathName;
-    CHAR8  *LoadOptions;
-    NLS_DATA_BLOCK       *NlsData;
-    ARC_DISK_INFORMATION *ArcDiskInformation;
-    void   *OemFontFile;
-    void   *SetupLoaderBlock;
+    UINT32  RegistryBase;            /* wire: KSEG0 VA */
+    UINT32  ConfigurationRoot;       /* wire: KSEG0 VA */
+    UINT32  ArcBootDeviceName;       /* wire: KSEG0 VA of CHAR8* */
+    UINT32  ArcHalDeviceName;        /* wire: KSEG0 VA of CHAR8* */
+    UINT32  NtBootPathName;          /* wire: KSEG0 VA of CHAR8* */
+    UINT32  NtHalPathName;           /* wire: KSEG0 VA of CHAR8* */
+    UINT32  LoadOptions;             /* wire: KSEG0 VA of CHAR8* */
+    UINT32  NlsData;                 /* wire: KSEG0 VA of NLS_DATA_BLOCK* */
+    UINT32  ArcDiskInformation;      /* wire: KSEG0 VA of ARC_DISK_INFORMATION* */
+    UINT32  OemFontFile;             /* wire: KSEG0 VA */
+    UINT32  SetupLoaderBlock;        /* wire: KSEG0 VA */
     UINT32  Spare1;
     I386_LOADER_BLOCK I386;
 } LOADER_PARAMETER_BLOCK;
