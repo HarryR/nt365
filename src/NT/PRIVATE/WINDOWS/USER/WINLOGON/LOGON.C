@@ -286,6 +286,9 @@ WelcomeDlgProc(
     )
 {
     PGLOBALS pGlobals = (PGLOBALS)GetWindowLong(hDlg, GWL_USERDATA);
+    if (message == WM_INITDIALOG) {
+        DbgPrint("WINLOGON: WelcomeDlgProc WM_INITDIALOG\n");
+    }
 
     ProcessDialogTimeout(hDlg, message, wParam, lParam);
 

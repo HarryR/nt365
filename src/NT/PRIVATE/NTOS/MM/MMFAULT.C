@@ -456,6 +456,8 @@ Environment:
 
             } else {
                 if (TempPte.u.Hard.Write == 0) {
+                    DbgPrint("MM: write fault VA=%lx PTE=%08lx (Write=0 COW=0) — ACCESS_VIOLATION\n",
+                             VirtualAddress, TempPte.u.Long);
                     status = STATUS_ACCESS_VIOLATION;
                 }
             }

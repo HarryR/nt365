@@ -302,6 +302,7 @@ build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"
 build_npfs()   { run_nmake "$NTOS/NPFS"       "NPFS - Named Pipe filesystem driver"; }
 build_msfs()   { run_nmake "$NTOS/MAILSLOT"  "MSFS - Mailslot filesystem driver"; }
 build_hello()  { run_nmake "$NTOS/DD/HELLO"    "HELLO - MicroNT visibility driver"; }
+build_cowtest(){ KEEP_UMAPPL=1 run_nmake "$NT_ROOT/PRIVATE/TESTS/cowtest" "COWTEST - COW test program"; }
 
 # --- RPC stack ---------------------------------------------------------------
 # NT 3.5's RPC runtime is 180k LoC across NDRLIB + NDR20 + RUNTIME.

@@ -35,7 +35,7 @@ _CRTAPI1 main(
     NTSTATUS Status;
     KPRIORITY SetBasePriority;
     UNICODE_STRING InitialCommand, DebugInitialCommand, UnicodeParameter;
-    HANDLE ProcessHandles[ 2 ];
+    HANDLE ProcessHandles[ 2 ] = { NULL, NULL };
     ULONG Parameters[ 4 ];
     ULONG Response;
     PROCESS_BASIC_INFORMATION ProcessInfo;
@@ -86,12 +86,23 @@ _CRTAPI1 main(
 #endif
             Status = SmpExecuteInitialCommand( &InitialCommand, &ProcessHandles[ 1 ] );
             if (NT_SUCCESS( Status )) {
-                Status = NtWaitForMultipleObjects( 2,
-                                                   ProcessHandles,
-                                                   WaitAny,
-                                                   FALSE,
-                                                   NULL
-                                                 );
+                // MicroNT: if no subsystem was started (micront profile),
+                // ProcessHandles[0] is NULL. Wait only on the InitialCommand.
+                if (ProcessHandles[0] != NULL) {
+                    Status = NtWaitForMultipleObjects( 2,
+                                                       ProcessHandles,
+                                                       WaitAny,
+                                                       FALSE,
+                                                       NULL
+                                                     );
+                } else {
+                    Status = NtWaitForSingleObject( ProcessHandles[1],
+                                                    FALSE,
+                                                    NULL );
+                    if (NT_SUCCESS(Status)) {
+                        Status = STATUS_WAIT_1;
+                    }
+                }
                 }
 
             if (Status == STATUS_WAIT_0) {

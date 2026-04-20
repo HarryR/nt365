@@ -473,6 +473,7 @@ _CORE_FILES: list[tuple[str, Path]] = [
     ("System32/Drivers/fastfat.sys",SDK_LIB / "fastfat.sys"),
     ("System32/Drivers/npfs.sys",   SDK_LIB / "npfs.sys"),
     ("System32/Drivers/msfs.sys",   SDK_LIB / "msfs.sys"),
+    ("System32/cowtest.exe",        SDK_LIB / "cowtest.exe"),
 ]
 
 # Headless adds the Win32 subsystem base.

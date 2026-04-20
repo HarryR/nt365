@@ -2828,12 +2828,15 @@ SmpExecuteInitialCommand(
         return( Status );
         }
 
+    DbgPrint("SMSS: SmpExecuteImage('%wZ')\n", &ImageFileName);
     Status = SmpExecuteImage( &ImageFileName,
                               &CurrentDirectory,
                               InitialCommand,
                               SMP_DONT_START,
                               &ProcessInformation
                             );
+    DbgPrint("SMSS: SmpExecuteImage status=%08lx SubSys=%d\n",
+             Status, ProcessInformation.ImageInformation.SubSystemType);
     if (!NT_SUCCESS( Status )) {
         return( Status );
         }

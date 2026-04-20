@@ -208,6 +208,12 @@ Return Value:
     ULONG i, DirectoryAddress;
     PIMAGE_NT_HEADERS NtHeaders;
 
+    if (Base == NULL) {
+        DbgPrint("RTL: RtlImageDirectoryEntryToData called with NULL base (dir=%d)\n",
+                 DirectoryEntry);
+        return NULL;
+    }
+
     if ((ULONG)Base & 0x00000001) {
         Base = (PVOID)((ULONG)Base & ~0x00000001);
         MappedAsImage = FALSE;
@@ -215,7 +221,8 @@ Return Value:
 
     NtHeaders = RtlImageNtHeader(Base);
 
-    if (DirectoryEntry >= NtHeaders->OptionalHeader.NumberOfRvaAndSizes) {
+    if (!NtHeaders ||
+        DirectoryEntry >= NtHeaders->OptionalHeader.NumberOfRvaAndSizes) {
         return( NULL );
     }
 

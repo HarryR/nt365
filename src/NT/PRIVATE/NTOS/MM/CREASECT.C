@@ -1667,9 +1667,13 @@ Return Value:
                       NtHeader->OptionalHeader.SizeOfHeaders & MMSECTOR_MASK;
         Subsection->u.SubsectionFlags.ReadOnly = 1;
         Subsection->u.SubsectionFlags.CopyOnWrite = 1;
-        Subsection->u.SubsectionFlags.Protection = MM_READONLY;
+        // MicroNT: use MM_WRITECOPY so demand-faulted PTEs get the
+        // hardware CopyOnWrite bit. MM_READONLY produces PTEs without
+        // COW, causing writes to fail with ACCESS_VIOLATION instead
+        // of triggering copy-on-write.
+        Subsection->u.SubsectionFlags.Protection = MM_WRITECOPY;
 
-        TempPte.u.Soft.Protection = MM_READONLY;
+        TempPte.u.Soft.Protection = MM_WRITECOPY;
         NewSegment->SegmentPteTemplate = TempPte;
 
         for (i = 0; i < Subsection->PtesInSubsection; i++) {
@@ -1945,6 +1949,24 @@ Return Value:
 
         Subsection->u.SubsectionFlags.ReadOnly = 1;
         Subsection->u.SubsectionFlags.CopyOnWrite = 1;
+
+        // MicroNT: promote read-only and execute-read protections to
+        // their copy-on-write equivalents for image section subsections.
+        // The hardware PTE protection is derived from the prototype PTE,
+        // which must carry MM_WRITECOPY for the COW bit to be set.
+        // Without this, loader import fixup writes to read-only image
+        // pages (e.g. .rdata with IAT) fault with ACCESS_VIOLATION.
+        if (TempPte.u.Soft.Protection == MM_READONLY) {
+            TempPte.u.Soft.Protection = MM_WRITECOPY;
+            TempPteDemandZero.u.Soft.Protection = MM_WRITECOPY;
+        } else if (TempPte.u.Soft.Protection == MM_EXECUTE_READ) {
+            TempPte.u.Soft.Protection = MM_EXECUTE_WRITECOPY;
+            TempPteDemandZero.u.Soft.Protection = MM_EXECUTE_WRITECOPY;
+        } else if (TempPte.u.Soft.Protection == MM_EXECUTE) {
+            TempPte.u.Soft.Protection = MM_EXECUTE_WRITECOPY;
+            TempPteDemandZero.u.Soft.Protection = MM_EXECUTE_WRITECOPY;
+        }
+
         Subsection->u.SubsectionFlags.Protection = TempPte.u.Soft.Protection;
 
         if (TempPte.u.Soft.Protection & MM_PROTECTION_WRITE_MASK) {

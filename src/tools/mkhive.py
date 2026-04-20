@@ -441,7 +441,7 @@ def build_micront_system_hive(profile: str = "headless") -> Hive:
     # For headless/gui we launch lsass.exe as InitialCommand — gets the
     # security subsystem up without needing winlogon.
     if profile == "micront":
-        sm.set_multi_sz("Execute", [])
+        sm.set_multi_sz("Execute", ["cowtest.exe"])
     else:
         # Empty Execute list — smss defaults to "winlogon.exe" as
         # InitialCommand (SMINIT.C line 753). winlogon then launches

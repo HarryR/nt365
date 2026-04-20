@@ -1,0 +1,11 @@
+TARGETNAME=cowtest
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=PROGRAM
+
+INCLUDES=$(BASEDIR)\private\ntos\inc;$(BASEDIR)\private\inc
+
+SOURCES=cowtest.c
+
+UMTYPE=nt
+UMBASE=0x01000000
+UMLIBS=$(BASEDIR)\public\sdk\lib\*\nt.lib
