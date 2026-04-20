@@ -13,6 +13,15 @@
 static AllocEntry g_reg[MMU_REGISTRY_MAX];
 static UINTN      g_reg_n = 0;
 
+/* Identity-only registry: phys ranges that need to be present in the
+ * 32-bit PD's identity map but shouldn't show up in the KSEG0 mirror or
+ * the memmap NT-type overlay. Loader image (UEFI-placed) + current stack
+ * land here. Small — 8 slots is plenty since we only register a handful
+ * of well-defined ranges. */
+#define MMU_IMAGE_MAX 8
+static AllocEntry g_image[MMU_IMAGE_MAX];
+static UINTN      g_image_n = 0;
+
 UINTN             mmu_registry_count(void)      { return g_reg_n; }
 const AllocEntry *mmu_registry_entry(UINTN i) {
     return (i < g_reg_n) ? &g_reg[i] : 0;
@@ -94,25 +103,50 @@ EFI_STATUS mmu_alloc_below(UINTN pages, PageKind kind,
     return mmu_alloc_impl(pages, kind, AllocateMaxAddress, out_phys, max_addr);
 }
 
+EFI_STATUS mmu_register_image(EFI_PHYSICAL_ADDRESS phys, UINTN pages) {
+    if (g_image_n >= MMU_IMAGE_MAX) {
+        com1_puts("[mmu] image registry full\n");
+        return EFI_OUT_OF_RESOURCES;
+    }
+    g_image[g_image_n].phys  = phys;
+    g_image[g_image_n].pages = pages;
+    g_image[g_image_n].kind  = PK_FIRMWARE_TEMP;
+    g_image_n++;
+
+    com1_puts("[mmu] register image ");
+    com1_put_dec((unsigned long)pages);
+    com1_puts(" pages at ");
+    com1_put_hex((unsigned long)phys);
+    com1_puts(" (identity only, not in KSEG0)\n");
+    return EFI_SUCCESS;
+}
+
 /*============================================================================
  * Page-table + GDT/IDT layout
  *
- * Identity mapping: phys 0..IDENTITY_MB covers our loader code/stack/allocs
- *                   so the CR3 swap is survivable.
- * KSEG0 mirror:     virt 0x80000000.. maps the same phys range.
- * Shared PTs:       identity and KSEG0 point at the *same* PT pages.
+ * Identity mapping: every phys page in mmu_alloc'd regions + the loader
+ *                   image + the current stack, so the CR3 swap is
+ *                   survivable. Kernel tears these PDEs down in
+ *                   MiInitMachineDependent anyway, so "spurious" entries
+ *                   are harmless.
+ * KSEG0 mirror:     virt 0x80000000.. maps only pages from mmu_alloc
+ *                   (loader image / stack intentionally NOT mirrored —
+ *                   those are boot-transient). Kernel references only
+ *                   its own allocations via KSEG0.
+ * Separate PTs:     identity and KSEG0 use distinct PT pages so kernel
+ *                   edits on KSEG0 PTs don't bleed into the identity
+ *                   view during teardown.
  * Self-map:         PD[768] = PD itself (kernel's MiGetPteAddress).
  * HAL page:         PD[1023] = hal_pt.
  *                     hal_pt[511] = PCR       (KIP0PCRADDRESS  = 0xFFDFF000)
  *                     hal_pt[496] = SharedUD  (KI_USER_SHARED_DATA = 0xFFDF0000)
+ *
+ * PT pool sized on demand: walk the registries, count unique PDE slots,
+ * allocate exactly that many PTs + 1 HAL. Dynamic sizing replaces the
+ * old blanket "identity-map 0..IDENTITY_MB" preallocation which would
+ * break the moment UEFI placed the loader image above that cutoff.
  *===========================================================================*/
 
-#define IDENTITY_MB       256
-#define PTS_PER_ALIAS     (IDENTITY_MB / 4)   /* each PT = 4 MB, per alias */
-/* Two aliases (identity + KSEG0) get their OWN PT pages. Matches the
- * multiboot loader; prevents kernel self-map edits on KSEG0 PTs from
- * bleeding into identity view. +1 for the HAL PT at PDE[1023]. */
-#define PTS_TOTAL         (PTS_PER_ALIAS * 2 + 1)
 #define PAGE_PRESENT      0x001u
 #define PAGE_RW           0x002u
 #define PAGE_USER         0x004u
@@ -132,7 +166,8 @@ EFI_STATUS mmu_alloc_below(UINTN pages, PageKind kind,
 #define KI_USER_SHARED_VA 0xFFDF0000u
 
 static EFI_PHYSICAL_ADDRESS g_phys_pd        = 0;
-static EFI_PHYSICAL_ADDRESS g_phys_pts       = 0;  /* PTS_FOR_RANGE + 1 (HAL) pages */
+static EFI_PHYSICAL_ADDRESS g_phys_pts       = 0;  /* base of PT pool */
+static UINTN                g_pt_pool_pages  = 0;  /* sized by mmu_alloc_pt_pool */
 static EFI_PHYSICAL_ADDRESS g_phys_pcr       = 0;
 static EFI_PHYSICAL_ADDRESS g_phys_sud       = 0;
 static EFI_PHYSICAL_ADDRESS g_phys_tss       = 0;
@@ -174,10 +209,59 @@ EFI_STATUS mmu_alloc_reserved(void) {
     s = mmu_alloc_below(4, PK_MEMORY_DATA, LOW16M, &g_phys_idlestack);if (EFI_ERROR(s)) return s;
     s = mmu_alloc_below(1, PK_MEMORY_DATA, LOW16M, &g_phys_gdt);     if (EFI_ERROR(s)) return s;
     s = mmu_alloc_below(1, PK_MEMORY_DATA, LOW16M, &g_phys_idt);     if (EFI_ERROR(s)) return s;
-    s = mmu_alloc_below(PTS_TOTAL, PK_MEMORY_DATA, LOW16M, &g_phys_pts);
-    if (EFI_ERROR(s)) return s;
 
     com1_puts("[mmu] reserved core pages (all < 16 MiB)\n");
+    return EFI_SUCCESS;
+}
+
+/*
+ * Walk both registries, count unique 4 MB-aligned PDE slots needed
+ * for the identity map (all entries) and KSEG0 mirror (g_reg only).
+ * Each unique slot consumes one PT. Plus one HAL PT at PDE[1023].
+ */
+static UINTN count_pt_slots(UINT8 id_slot[512], UINT8 ks_slot[512]) {
+    for (UINTN i = 0; i < 512; i++) { id_slot[i] = 0; ks_slot[i] = 0; }
+
+    for (UINTN r = 0; r < g_reg_n; r++) {
+        UINT64 lo = g_reg[r].phys;
+        UINT64 hi = lo + ((UINT64)g_reg[r].pages << 12) - 1;
+        UINTN  start = (UINTN)(lo >> 22);
+        UINTN  end   = (UINTN)(hi >> 22);
+        for (UINTN i = start; i <= end && i < 512; i++) {
+            id_slot[i] = 1;
+            ks_slot[i] = 1;
+        }
+    }
+    for (UINTN r = 0; r < g_image_n; r++) {
+        UINT64 lo = g_image[r].phys;
+        UINT64 hi = lo + ((UINT64)g_image[r].pages << 12) - 1;
+        UINTN  start = (UINTN)(lo >> 22);
+        UINTN  end   = (UINTN)(hi >> 22);
+        for (UINTN i = start; i <= end && i < 512; i++) {
+            id_slot[i] = 1;    /* identity only */
+        }
+    }
+
+    UINTN id_count = 0, ks_count = 0;
+    for (int i = 0; i < 512; i++) {
+        if (id_slot[i]) id_count++;
+        if (ks_slot[i]) ks_count++;
+    }
+    return id_count + ks_count + 1;   /* +1 for HAL PT */
+}
+
+EFI_STATUS mmu_alloc_pt_pool(void) {
+    const EFI_PHYSICAL_ADDRESS LOW16M = 0x01000000;
+    UINT8 id_slot[512], ks_slot[512];
+    UINTN total = count_pt_slots(id_slot, ks_slot);
+
+    EFI_STATUS s = mmu_alloc_below(total, PK_MEMORY_DATA, LOW16M, &g_phys_pts);
+    if (EFI_ERROR(s)) return s;
+    g_pt_pool_pages = total;
+
+    com1_puts("[mmu] PT pool: ");
+    com1_put_dec((unsigned long)total);
+    com1_puts(" pages (identity+kseg0+hal)\n");
     return EFI_SUCCESS;
 }
 
@@ -248,75 +332,96 @@ static void build_tss(void *tss) {
  *---------------------------------------------------------------------------*/
 
 static void build_page_tables(void) {
-    UINT32 *pd  = (UINT32 *)(UINTN)g_phys_pd;
-    UINT32 *pts = (UINT32 *)(UINTN)g_phys_pts;
-    UINT32 *id_pts   = pts;                            /* identity PTs */
-    UINT32 *kseg_pts = pts + PTS_PER_ALIAS * 1024;     /* KSEG0 PTs */
-    UINT32 *hal_pt   = pts + 2 * PTS_PER_ALIAS * 1024; /* HAL PT */
+    UINT32 *pd = (UINT32 *)(UINTN)g_phys_pd;
     int kseg0_pd_idx = (int)(KSEG0_BASE >> 22);
 
     /* Zero PD + full PT pool. */
     for (int i = 0; i < 1024; i++) pd[i] = 0;
-    for (int i = 0; i < PTS_TOTAL * 1024; i++) pts[i] = 0;
-
-    /* Identity PTs: blanket-map 0..IDENTITY_MB (minus page 0). Only needed
-     * briefly so we survive the CR3 swap; kernel tears these PDEs down in
-     * MiInitMachineDependent. */
-    for (int pt_idx = 0; pt_idx < PTS_PER_ALIAS; pt_idx++) {
-        UINT32 *id_pt = id_pts + pt_idx * 1024;
-        for (int j = 0; j < 1024; j++) {
-            UINT32 page_phys = ((UINT32)pt_idx << 22) | ((UINT32)j << 12);
-            if (pt_idx == 0 && j == 0) {
-                id_pt[j] = 0;  /* NULL-pointer detection */
-            } else {
-                id_pt[j] = page_phys | PAGE_PRESENT | PAGE_RW;
-            }
-        }
+    for (UINTN i = 0; i < g_pt_pool_pages * 1024; i++) {
+        ((UINT32 *)(UINTN)g_phys_pts)[i] = 0;
     }
 
-    /* KSEG0 PTs: map ONLY pages we registered (kernel, HAL, drivers, PCR,
-     * TSS, stacks, GDT, IDT, LPB arena, PT pool itself, registry, NLS).
-     * Every other phys page stays unmapped in KSEG0 so the kernel's PDE
-     * walk (NT MM/I386/INIT386.C:457-498) does NOT set RefCount=1 on free
-     * RAM — leaving those PFN entries at 0 so the descriptor walk (:572)
-     * adds LoaderFree/LoaderFirmwareTemporary pages to the free list.
-     * Blanket-mapping here was the PFN_LIST_CORRUPT root cause. */
-    for (UINTN r = 0; r < g_reg_n; r++) {
-        UINT32 base = (UINT32)g_reg[r].phys;
-        UINT32 pages = (UINT32)g_reg[r].pages;
-        for (UINT32 p = 0; p < pages; p++) {
-            UINT32 page_phys = base + (p << 12);
-            UINT32 pt_idx = page_phys >> 22;
-            UINT32 pte_idx = (page_phys >> 12) & 0x3FF;
-            if (pt_idx >= PTS_PER_ALIAS) continue;   /* out of KSEG0 window */
-            kseg_pts[pt_idx * 1024 + pte_idx] =
-                page_phys | PAGE_PRESENT | PAGE_RW;
-        }
-    }
+    /* Recompute slot bitmaps — we deliberately re-walk the registries
+     * rather than cache the count_pt_slots() output. Layout decisions
+     * all derive from the same pass, so any inconsistency between
+     * sizing and layout would manifest as a PT-pool over-run. */
+    UINT8 id_slot[512], ks_slot[512];
+    (void)count_pt_slots(id_slot, ks_slot);
 
-    /* PDEs 0..PTS_PER_ALIAS-1: identity mapping (lives only long enough
-     * for us to survive the CR3 load + jmp into KSEG0). */
-    for (int i = 0; i < PTS_PER_ALIAS; i++) {
-        UINT32 pt_phys = (UINT32)(UINTN)(id_pts + i * 1024);
-        pd[i] = pt_phys | PAGE_PRESENT | PAGE_RW;
+    /* Assign PTs from the pool: one per identity slot, one per KSEG0
+     * slot, one for HAL. Track slot → PT phys so PTE writes hit the
+     * right table. */
+    UINT32 id_pt_phys[512] = {0};
+    UINT32 ks_pt_phys[512] = {0};
+    UINT32 pt_cursor = (UINT32)g_phys_pts;
+    for (int i = 0; i < 512; i++) {
+        if (id_slot[i]) { id_pt_phys[i] = pt_cursor; pt_cursor += 4096; }
     }
+    for (int i = 0; i < 512; i++) {
+        if (ks_slot[i]) { ks_pt_phys[i] = pt_cursor; pt_cursor += 4096; }
+    }
+    UINT32 hal_pt_phys = pt_cursor;
 
-    /* PDEs KSEG0..KSEG0+PTS_PER_ALIAS-1: permanent KSEG0 mirror. */
-    for (int i = 0; i < PTS_PER_ALIAS; i++) {
-        UINT32 pt_phys = (UINT32)(UINTN)(kseg_pts + i * 1024);
-        pd[kseg0_pd_idx + i] = pt_phys | PAGE_PRESENT | PAGE_RW;
+    /* Install per-slot PDEs — identity in the low half, KSEG0 mirror in
+     * the upper half (KSEG0_BASE >> 22 = 512 on i386). Only slots with
+     * actual registered pages are present; every other PDE stays zero. */
+    for (int i = 0; i < 512; i++) {
+        if (id_pt_phys[i]) pd[i] = id_pt_phys[i] | PAGE_PRESENT | PAGE_RW;
+        if (ks_pt_phys[i]) pd[kseg0_pd_idx + i] = ks_pt_phys[i] | PAGE_PRESENT | PAGE_RW;
     }
 
     /* Self-map PDE[768] — kernel's MiGetPteAddress walks here. */
     pd[768] = (UINT32)(UINTN)g_phys_pd | PAGE_PRESENT | PAGE_RW;
 
-    /* HAL page table at PDE[1023]; uses the dedicated PT we reserved. */
-    pd[1023] = (UINT32)(UINTN)hal_pt | PAGE_PRESENT | PAGE_RW;
+    /* HAL page table at PDE[1023]. */
+    pd[1023] = hal_pt_phys | PAGE_PRESENT | PAGE_RW;
+
+    /* Populate identity PTEs from mmu_alloc'd entries (kernel, HAL,
+     * drivers, PCR, TSS, stacks, GDT, IDT, LPB arena, PT pool itself,
+     * registry, NLS) AND from the image-only list (loader image, stack).
+     * KSEG0 PTEs only see the former — boot-transient pages aren't
+     * mirrored into kernel virt. NULL phys (page 0) is excluded from
+     * identity so NULL-pointer deref still faults. */
+#define POPULATE_IDENTITY(entry)                                           \
+    do {                                                                   \
+        UINT32 base = (UINT32)(entry)->phys;                               \
+        UINTN  pages = (entry)->pages;                                     \
+        for (UINTN p = 0; p < pages; p++) {                                \
+            UINT32 phys = base + (UINT32)(p << 12);                        \
+            if (phys == 0) continue;                                       \
+            UINT32 pdi = phys >> 22;                                       \
+            if (pdi >= 512 || id_pt_phys[pdi] == 0) continue;              \
+            UINT32 pti = (phys >> 12) & 0x3FF;                             \
+            ((UINT32 *)(UINTN)id_pt_phys[pdi])[pti] =                      \
+                phys | PAGE_PRESENT | PAGE_RW;                             \
+        }                                                                  \
+    } while (0)
+
+    for (UINTN r = 0; r < g_reg_n; r++) {
+        POPULATE_IDENTITY(&g_reg[r]);
+        /* KSEG0 mirror: mmu_alloc entries only */
+        UINT32 base = (UINT32)g_reg[r].phys;
+        UINTN  pages = g_reg[r].pages;
+        for (UINTN p = 0; p < pages; p++) {
+            UINT32 phys = base + (UINT32)(p << 12);
+            UINT32 pdi = phys >> 22;
+            if (pdi >= 512 || ks_pt_phys[pdi] == 0) continue;
+            UINT32 pti = (phys >> 12) & 0x3FF;
+            ((UINT32 *)(UINTN)ks_pt_phys[pdi])[pti] =
+                phys | PAGE_PRESENT | PAGE_RW;
+        }
+    }
+    for (UINTN r = 0; r < g_image_n; r++) POPULATE_IDENTITY(&g_image[r]);
+
+#undef POPULATE_IDENTITY
 
     /* HAL PT: PCR at VA 0xFFDFF000 (PTE 511), SharedUserData at 0xFFDF0000
      * (PTE 496). PTE index = (VA - 0xFFC00000) >> 12. */
-    hal_pt[511] = (UINT32)(UINTN)g_phys_pcr | PAGE_PRESENT | PAGE_RW;
-    hal_pt[496] = (UINT32)(UINTN)g_phys_sud | PAGE_PRESENT | PAGE_RW;
+    {
+        UINT32 *hal_pt = (UINT32 *)(UINTN)hal_pt_phys;
+        hal_pt[511] = (UINT32)(UINTN)g_phys_pcr | PAGE_PRESENT | PAGE_RW;
+        hal_pt[496] = (UINT32)(UINTN)g_phys_sud | PAGE_PRESENT | PAGE_RW;
+    }
 
     /* PCR + SharedUserData pages start life zero. */
     {
@@ -334,10 +439,10 @@ static void build_page_tables(void) {
  * their dedicated pages, then lgdt/lidt/mov-cr3 to switch to our world.
  *
  * Paging is already on (UEFI's doing); we are SWITCHING tables via CR3.
- * Since our PD identity-maps the low IDENTITY_MB, execution continues at
- * the same linear address after CR3 is loaded. Code, stack, and all
- * allocated pages must live within this identity window — mmu_alloc on
- * EfiLoaderData satisfies that in practice for QEMU/OVMF.
+ * Our PD identity-maps every phys page the loader registered — all
+ * mmu_alloc'd regions + the UEFI-placed loader image + the current
+ * stack — so execution continues at the same linear address after
+ * CR3 is loaded regardless of where UEFI placed us in phys RAM.
  *---------------------------------------------------------------------------*/
 
 void mmu_build_and_activate(void) {

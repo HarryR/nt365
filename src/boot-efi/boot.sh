@@ -29,6 +29,13 @@ fi
 
 cp /usr/share/OVMF/OVMF32_VARS_4M.fd OVMF32_VARS_4M.fd
 
+# Guest RAM size. Override via env: MEM=512 boot.sh micront
+# Default keeps parity with the old behaviour (qemu-system-i386 default
+# is ~128 MB). The loader's identity map scales with registered ranges,
+# not a blanket constant, so any size UEFI's allocator can place our
+# image at should work.
+MEM="${MEM:-128}"
+
 # GDB=1 enables QEMU's gdb-stub on :1234 and freezes CPU until gdb attaches.
 # Connect with `gdb -x gdb.init` from a second shell.
 GDB_FLAGS=""
@@ -54,7 +61,7 @@ fi
 # default AHCI. Reason: NT 3.5's atdisk.sys only speaks legacy IDE/ATA
 # (ISA + PCI IDE), not AHCI. OVMF's built-in IdeBusDxe still finds the
 # PIIX3 controller fine so firmware-side boot is unaffected.
-exec qemu-system-i386 -machine q35 \
+exec qemu-system-i386 -machine q35 -m "$MEM" \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF32_CODE_4M.secboot.fd \
     -drive if=pflash,format=raw,file=./OVMF32_VARS_4M.fd \
     -device piix3-ide,id=ide \

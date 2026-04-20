@@ -69,9 +69,25 @@ EFI_STATUS mmu_alloc_below(UINTN pages, PageKind kind,
 UINTN             mmu_registry_count(void);
 const AllocEntry *mmu_registry_entry(UINTN i);
 
-/* Pre-exit: reserve pages for PD, PTs, PCR, TSS, idle stack, loader block.
- * Each page is tracked in the registry with the right NT type. */
+/* Pre-exit: reserve core pages — PD, PCR, SUD, TSS, idle stack, GDT,
+ * IDT. PT pool is sized separately via mmu_alloc_pt_pool() once all
+ * other registrations are in, because the PT count depends on the
+ * phys ranges the identity map needs to cover. */
 EFI_STATUS mmu_alloc_reserved(void);
+
+/* Register a phys range we didn't allocate (e.g. the UEFI-placed
+ * loader image, our current stack) that must be identity-mapped in
+ * the 32-bit PD so we survive the CR3 swap. No UEFI AllocatePages call
+ * is made. The range does NOT contribute to KSEG0 mirror or memmap
+ * NT-type overlay — those are reserved for mmu_alloc'd entries. */
+EFI_STATUS mmu_register_image(EFI_PHYSICAL_ADDRESS phys, UINTN pages);
+
+/* Pre-exit: allocate the exact-sized PT pool after all identity + KSEG0
+ * candidates are registered. Walks both registries, counts unique PDE
+ * slots, allocates that many PTs (+1 for the HAL PT at PDE[1023]) below
+ * 16 MiB so the KSEG0 aliases land in PDE[512..515]. Must be the last
+ * UEFI allocation before ExitBootServices. */
+EFI_STATUS mmu_alloc_pt_pool(void);
 
 /* Post-exit: build page-table content + activate paging. Runs with no
  * UEFI services available. */

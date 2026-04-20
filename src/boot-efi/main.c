@@ -183,6 +183,44 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
     loaderblock_build();
     loaderblock_wire_modules(&kernel, &hal, drivers, n_drivers);
 
+    /* Identity-map the loader image. UEFI can place our PE anywhere in
+     * available RAM (including above 256 MB on larger guests), so rather
+     * than blanket-mapping a fixed window, we ask LoadedImageProtocol
+     * where we are and register the exact range. */
+    {
+        static EFI_GUID lip_guid = LOADED_IMAGE_PROTOCOL;
+        EFI_LOADED_IMAGE_PROTOCOL *lip = 0;
+        EFI_STATUS s = uefi_call_wrapper(BS->HandleProtocol, 3,
+                                         ImageHandle, &lip_guid, (void **)&lip);
+        if (!EFI_ERROR(s) && lip) {
+            UINTN base  = (UINTN)lip->ImageBase;
+            UINTN size  = (UINTN)lip->ImageSize;
+            UINTN start = base & ~0xFFFul;
+            UINTN end   = (base + size + 0xFFFul) & ~0xFFFul;
+            mmu_register_image(start, (end - start) >> 12);
+        } else {
+            com1_puts("[main] LoadedImageProtocol failed; identity map may miss loader\n");
+        }
+    }
+
+    /* Identity-map the current stack too — we keep using it until
+     * handoff.S switches to the KSEG0 idle stack. Snapshot ESP now and
+     * register the page containing it plus a few pages below for the
+     * frames mmu_build_and_activate + handoff() will use. UEFI hands us
+     * stacks that are typically 16 KB; 8 pages of identity cover well
+     * past any realistic depth from here to the stack switch. */
+    {
+        UINTN rsp;
+        __asm__ volatile("mov %%esp, %0" : "=r"(rsp));
+        UINTN top    = (rsp + 0xFFFul) & ~0xFFFul;
+        UINTN bottom = (top - 8 * 0x1000) & ~0xFFFul;
+        mmu_register_image(bottom, 8);
+    }
+
+    /* Size + allocate the PT pool now that every identity/KSEG0 input
+     * is known. Must be the last UEFI allocation before memmap_capture. */
+    mmu_alloc_pt_pool();
+
     /* Last UEFI allocation happened above. Capture the map now — no
      * UEFI-side allocation may occur between here and ExitBootServices. */
     UINTN map_key = 0;
