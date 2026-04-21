@@ -1,5 +1,5 @@
 #include "pe.h"
-#include "com1.h"
+#include "log.h"
 
 /*
  * PE32 structures (locally defined so we don't drag NT headers into the
@@ -162,17 +162,17 @@ EFI_STATUS pe_stage(const void *blob, UINTN blob_size,
     if (blob_size < sizeof(image_dos_header_t)) return EFI_INVALID_PARAMETER;
     dos = (const image_dos_header_t *)file;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        com1_puts("[pe] bad MZ in "); com1_puts(name); com1_puts("\n");
+        BXLOG(L"bad MZ in %a", name);
         return EFI_INVALID_PARAMETER;
     }
     if (dos->e_lfanew + sizeof(*nt) > blob_size) return EFI_INVALID_PARAMETER;
     nt = (const image_nt_headers32_t *)(file + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) {
-        com1_puts("[pe] bad PE in "); com1_puts(name); com1_puts("\n");
+        BXLOG(L"bad PE in %a", name);
         return EFI_INVALID_PARAMETER;
     }
     if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386) {
-        com1_puts("[pe] not i386 in "); com1_puts(name); com1_puts("\n");
+        BXLOG(L"not i386 in %a", name);
         return EFI_INVALID_PARAMETER;
     }
 
@@ -196,18 +196,11 @@ EFI_STATUS pe_stage(const void *blob, UINTN blob_size,
         status = mmu_alloc_at(pages, kind, preferred_phys, &phys);
         if (EFI_ERROR(status)) {
             if (!has_relocs) {
-                com1_puts("[pe] /FIXED image ");
-                com1_puts(name);
-                com1_puts(" can't be placed at preferred phys ");
-                com1_put_hex(preferred_phys);
-                com1_puts(" (");
-                com1_put_hex((unsigned long)status);
-                com1_puts(") — fatal\n");
+                BXLOG(L"/FIXED image %a can't be placed at preferred phys 0x%x (status 0x%lx) — fatal",
+                      name, preferred_phys, (UINT64)status);
                 return status;
             }
-            com1_puts("[pe] preferred phys busy, falling back for ");
-            com1_puts(name);
-            com1_puts("\n");
+            BXLOG(L"preferred phys busy, falling back for %a", name);
             /* Force below 16 MiB: driver/kernel images must live at phys
              * < 16 MiB so their KSEG0 aliases survive a process switch
              * (only PDE[512..515] get copied by MmCreateProcessAddressSpace
@@ -263,8 +256,7 @@ EFI_STATUS pe_stage(const void *blob, UINTN blob_size,
                 case IMAGE_REL_BASED_ABSOLUTE: break;   /* pad */
                 case IMAGE_REL_BASED_HIGHLOW:  *patch += (UINT32)delta; break;
                 default:
-                    com1_puts("[pe] unhandled reloc type in "); com1_puts(name);
-                    com1_puts("\n");
+                    BXLOG(L"unhandled reloc type in %a", name);
                     break;
                 }
             }
@@ -273,17 +265,10 @@ EFI_STATUS pe_stage(const void *blob, UINTN blob_size,
         }
     }
 
-    com1_puts("[pe] staged ");
-    com1_puts(name);
-    com1_puts(" at phys ");
-    com1_put_hex((unsigned long)phys);
-    com1_puts(" (base=");
-    com1_put_hex((unsigned long)out->image_base_va);
-    com1_puts(", size=");
-    com1_put_hex((unsigned long)opt->SizeOfImage);
-    com1_puts(", entry=");
-    com1_put_hex((unsigned long)(out->image_base_va + out->entry_rva));
-    com1_puts(")\n");
+    BXLOG(L"staged %a at phys 0x%lx (base=0x%x size=0x%x entry=0x%x)",
+          name, (UINT64)phys,
+          out->image_base_va, opt->SizeOfImage,
+          out->image_base_va + out->entry_rva);
     return EFI_SUCCESS;
 }
 
@@ -324,8 +309,7 @@ static UINT32 resolve_export_byname(const pe_image_t *m, const char *name) {
             /* Forwarder check: RVA inside export table range → forwarder string. */
             if (rva >= edir_dd->VirtualAddress &&
                 rva <  edir_dd->VirtualAddress + edir_dd->Size) {
-                com1_puts("[pe] forwarder not handled for ");
-                com1_puts(name); com1_puts("\n");
+                BXLOG(L"forwarder not handled for %a", name);
                 return 0;
             }
             return m->image_base_va + rva;
@@ -354,7 +338,7 @@ static UINT32 resolve_export_byord(const pe_image_t *m, UINT32 ordinal) {
         UINT32 rva = funcs[idx];
         if (rva >= edir_dd->VirtualAddress &&
             rva <  edir_dd->VirtualAddress + edir_dd->Size) {
-            com1_puts("[pe] forwarder (ord) not handled\n");
+            BXLOG(L"forwarder (ord) not handled");
             return 0;
         }
         return m->image_base_va + rva;
@@ -373,8 +357,7 @@ EFI_STATUS pe_resolve_imports(pe_image_t *img,
     UINTN failed = 0;
 
     if (!idir_dd->VirtualAddress || !idir_dd->Size) {
-        com1_puts("[pe] "); com1_puts(img->name);
-        com1_puts(" has no imports\n");
+        BXLOG(L"%a has no imports", img->name);
         return EFI_SUCCESS;
     }
 
@@ -387,9 +370,7 @@ EFI_STATUS pe_resolve_imports(pe_image_t *img,
         const UINT32 *ilt;
 
         if (!mod) {
-            com1_puts("[pe] "); com1_puts(img->name);
-            com1_puts(" imports from missing module: "); com1_puts(dll);
-            com1_puts("\n");
+            BXLOG(L"%a imports from missing module: %a", img->name, dll);
             failed++;
             continue;
         }
@@ -402,11 +383,8 @@ EFI_STATUS pe_resolve_imports(pe_image_t *img,
             if (*ilt & IMAGE_ORDINAL_FLAG32) {
                 resolved = resolve_export_byord(mod, *ilt & 0xFFFF);
                 if (!resolved) {
-                    com1_puts("[pe] unresolved ordinal import ");
-                    com1_put_dec(*ilt & 0xFFFF);
-                    com1_puts(" from "); com1_puts(dll);
-                    com1_puts(" into "); com1_puts(img->name);
-                    com1_puts("\n");
+                    BXLOG(L"unresolved ordinal import %u from %a into %a",
+                          (UINT32)(*ilt & 0xFFFF), dll, img->name);
                     failed++;
                     continue;
                 }
@@ -415,10 +393,8 @@ EFI_STATUS pe_resolve_imports(pe_image_t *img,
                 const char *iname = (const char *)(base + *ilt + 2);
                 resolved = resolve_export_byname(mod, iname);
                 if (!resolved) {
-                    com1_puts("[pe] unresolved "); com1_puts(iname);
-                    com1_puts(" from "); com1_puts(dll);
-                    com1_puts(" into "); com1_puts(img->name);
-                    com1_puts("\n");
+                    BXLOG(L"unresolved %a from %a into %a",
+                          iname, dll, img->name);
                     failed++;
                     continue;
                 }
@@ -427,10 +403,8 @@ EFI_STATUS pe_resolve_imports(pe_image_t *img,
         }
     }
 
-    com1_puts("[pe] resolved imports for "); com1_puts(img->name);
     if (failed) {
-        com1_puts(" ("); com1_put_dec(failed); com1_puts(" failed)");
+        BXLOG(L"%a: %u unresolved imports", img->name, (UINT32)failed);
     }
-    com1_puts("\n");
     return failed ? EFI_NOT_FOUND : EFI_SUCCESS;
 }

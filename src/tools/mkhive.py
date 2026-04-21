@@ -559,6 +559,7 @@ def build_micront_system_hive(profile: str = "headless",
     control["ServiceGroupOrder"] \
         .set_multi_sz("List", [
             "Base",
+            "Extended base",
             "File System",
             "Video Init",
             "Video",
@@ -612,40 +613,47 @@ def build_micront_system_hive(profile: str = "headless",
         .set_dword("ErrorControl", 1) \
         .set_sz("Group", "File System")
 
-    # LSA configuration — auth packages list and product options.
-    # LsapConfigurePackages reads Control\Lsa\Authentication Packages.
-    # msv1_0 is the standard NT LAN Manager auth package.
-    control["Lsa"] \
-        .set_multi_sz("Authentication Packages", ["msv1_0"])
-
-    # LanmanWorkstation\Parameters — LsapDbSetDomainInfo (Pass 2 of
-    # LSA auto-install) reads the Account Domain SID from here.
-    # No Domain/DomainId (primary domain) — MicroNT is standalone,
-    # never domain-joined. LsapDbSetDomainInfo is patched to skip
-    # primary domain setup when these are absent.
-    # AccountDomainId format: space-separated decimal, 6 authority
-    # bytes then sub-authorities (tokenized by LsapDbGetNextValueToken).
-    # S-1-5-21-1-2-3 = authority 0 0 0 0 0 5, sub-auths 21 1 2 3.
-    services["LanmanWorkstation\\Parameters"] \
-        .set_sz("AccountDomainId", "0 0 0 0 0 5 21 1 2 3")
-
-    # ProductOptions — LsapDbInitializeServer reads ProductType.
-    # "WinNt" = standalone workstation, "LanManNt" = domain controller.
-    control["ProductOptions"] \
-        .set_sz("ProductType", "WinNt")
-
-    # ComputerName — GetComputerNameW reads this; lsass calls it during
-    # LsapDbInitializeServer(2). Missing key = null deref in kernel32.
-    control["ComputerName\\ComputerName"] \
-        .set_sz("ComputerName", "MICRONT")
-
-    # hello.sys — loaded from disk at Phase 1 (SERVICE_SYSTEM_START) as a
-    # visibility test that the kernel is driving the filesystem correctly.
-    services["hello"] \
+    # Serial — NT 3.5's COM port driver. SERVICE_AUTO_START (=1) means the
+    # I/O manager loads it in Phase 1 after the registry is up; we don't
+    # need serial during kernel init (COM1/COM2 are KD/HAL debug channels
+    # owned outside the NT I/O subsystem). "Extended base" group loads
+    # right after "Base", before file systems get mounted.
+    # serial.sys walks HKLM\Hardware\Description\System\MultifunctionAdapter\N\
+    # SerialController\M\ConfigurationData at DriverEntry to learn which
+    # UARTs to claim — our UEFI loader emits those nodes.
+    services["Serial"] \
         .set_dword("Type",         1) \
         .set_dword("Start",        1) \
         .set_dword("ErrorControl", 1) \
-        .set_sz("ImagePath", "System32\\Drivers\\hello.sys")
+        .set_sz("Group", "Extended base")
+
+    if profile != "micront":
+        # LSA configuration — auth packages list and product options.
+        # LsapConfigurePackages reads Control\Lsa\Authentication Packages.
+        # msv1_0 is the standard NT LAN Manager auth package.
+        control["Lsa"] \
+            .set_multi_sz("Authentication Packages", ["msv1_0"])
+
+        # LanmanWorkstation\Parameters — LsapDbSetDomainInfo (Pass 2 of
+        # LSA auto-install) reads the Account Domain SID from here.
+        # No Domain/DomainId (primary domain) — MicroNT is standalone,
+        # never domain-joined. LsapDbSetDomainInfo is patched to skip
+        # primary domain setup when these are absent.
+        # AccountDomainId format: space-separated decimal, 6 authority
+        # bytes then sub-authorities (tokenized by LsapDbGetNextValueToken).
+        # S-1-5-21-1-2-3 = authority 0 0 0 0 0 5, sub-auths 21 1 2 3.
+        services["LanmanWorkstation\\Parameters"] \
+            .set_sz("AccountDomainId", "0 0 0 0 0 5 21 1 2 3")
+
+        # ProductOptions — LsapDbInitializeServer reads ProductType.
+        # "WinNt" = standalone workstation, "LanManNt" = domain controller.
+        control["ProductOptions"] \
+            .set_sz("ProductType", "WinNt")
+
+        # ComputerName — GetComputerNameW reads this; lsass calls it during
+        # LsapDbInitializeServer(2). Missing key = null deref in kernel32.
+        control["ComputerName\\ComputerName"] \
+            .set_sz("ComputerName", "MICRONT")
 
     if profile == "gui":
         # Video: Bochs VGA miniport (QEMU stdvga, PCI 1234:1111).
@@ -708,26 +716,27 @@ def build_micront_software_hive(profile: str = "headless") -> Hive:
       .set_sz("CurrentType", "Uniprocessor Free") \
       .set_sz("SystemRoot", "C:\\")
 
-    # Winlogon configuration — winlogon reads these via GetProfileString
-    # (WINLOGON section → IniFileMapping → this registry path).
-    wl = cv["Winlogon"]
+    if profile != 'micront':
+        # Winlogon configuration — winlogon reads these via GetProfileString
+        # (WINLOGON section → IniFileMapping → this registry path).
+        wl = cv["Winlogon"]
 
-    # "System" is the list of processes winlogon starts before auth init.
-    # lsass.exe is the security subsystem; must be running before
-    # LsaRegisterLogonProcess can succeed.
-    wl.set_sz("System", "lsass.exe")
+        # "System" is the list of processes winlogon starts before auth init.
+        # lsass.exe is the security subsystem; must be running before
+        # LsaRegisterLogonProcess can succeed.
+        wl.set_sz("System", "lsass.exe")
 
-    # "Userinit" runs after a successful logon to set up the user env.
-    wl.set_sz("Userinit", "userinit.exe,")
+        # "Userinit" runs after a successful logon to set up the user env.
+        wl.set_sz("Userinit", "userinit.exe,")
 
-    # "Shell" is what userinit launches as the user's desktop shell.
-    # We don't have progman/explorer yet — leave empty for now.
-    wl.set_sz("Shell", "")
+        # "Shell" is what userinit launches as the user's desktop shell.
+        # We don't have progman/explorer yet — leave empty for now.
+        wl.set_sz("Shell", "")
 
-    # ServiceControllerStart — winlogon starts this before lsass.
-    # We don't have services.exe yet; winlogon logs a warning but
-    # continues.
-    wl.set_sz("ServiceControllerStart", "")
+        # ServiceControllerStart — winlogon starts this before lsass.
+        # We don't have services.exe yet; winlogon logs a warning but
+        # continues.
+        wl.set_sz("ServiceControllerStart", "")
 
     if profile == "gui":
         # GRE_Initialize — font file paths for the GDI engine.
@@ -743,15 +752,16 @@ def build_micront_software_hive(profile: str = "headless") -> Hive:
         cv["FontSubstitutes"] \
             .set_sz("MS Shell Dlg", "System")
 
-    # IniFileMapping — BaseSrvInitializeIniFileMappings reads this tree
-    # to map GetProfileString("section","key") calls to registry paths.
-    # Format: value "" (default) = "SYS:registrypath" maps the whole
-    # section. SYS: = HKLM, USR: = HKCU.
-    ifm = h["Microsoft\\Windows NT\\CurrentVersion\\IniFileMapping\\win.ini"]
-    ifm["windows"] \
-        .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows")
-    ifm["WINLOGON"] \
-        .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon")
+    if profile != 'micront':
+        # IniFileMapping — BaseSrvInitializeIniFileMappings reads this tree
+        # to map GetProfileString("section","key") calls to registry paths.
+        # Format: value "" (default) = "SYS:registrypath" maps the whole
+        # section. SYS: = HKLM, USR: = HKCU.
+        ifm = h["Microsoft\\Windows NT\\CurrentVersion\\IniFileMapping\\win.ini"]
+        ifm["windows"] \
+            .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows")
+        ifm["WINLOGON"] \
+            .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon")
 
     return h
 

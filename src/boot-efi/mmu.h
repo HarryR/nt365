@@ -22,7 +22,7 @@
  * NT memory type intent for each allocation we make.  Maps 1:1 to
  * MEMORY_TYPE values (defined in ARC loader headers); we keep a local
  * enum so mmu/fs code doesn't have to drag NT headers in.  The mapping
- * is applied in loaderblock.c when it emits MEMORY_ALLOCATION_DESCRIPTORs.
+ * is applied in lpb.c when it emits MEMORY_ALLOCATION_DESCRIPTORs.
  */
 typedef enum {
     PK_FREE,                /* LoaderFree — unused, caller shouldn't use this */
@@ -93,7 +93,7 @@ EFI_STATUS mmu_alloc_pt_pool(void);
  * UEFI services available. */
 void mmu_build_and_activate(void);
 
-/* Accessors for loaderblock.c so it can write KSEG0 pointers into
+/* Accessors for lpb.c so it can write KSEG0 pointers into
  * LoaderBlock.KernelStack, .Thread, etc. Also used by transition.S to
  * install our 32-bit descriptor state post-mode-drop. */
 EFI_PHYSICAL_ADDRESS mmu_idle_stack_base(void);

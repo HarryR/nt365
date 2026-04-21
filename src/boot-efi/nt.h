@@ -96,8 +96,24 @@ typedef enum _CONFIGURATION_CLASS {
     PeripheralClass, MemoryClass, MaximumClass
 } CONFIGURATION_CLASS;
 
+/* Positions match NTOS/INC/ARC.H _CONFIGURATION_TYPE. Only the values
+ * we actually emit are listed; extend as new device classes are added. */
 typedef enum _CONFIGURATION_TYPE {
-    ArcSystem = 0, CentralProcessor = 1,
+    ArcSystem             = 0,
+    CentralProcessor      = 1,
+    /* ... gap: FloatingPointProcessor, PrimaryICache, PrimaryDCache,
+     * SecondaryICache, SecondaryDCache, SecondaryCache ... */
+    EisaAdapter           = 8,
+    /* ... TcAdapter, ScsiAdapter, DtiAdapter ... */
+    MultifunctionAdapter  = 12,
+    DiskController        = 13,
+    /* ... TapeController, CdromController, WormController ... */
+    SerialController      = 17,
+    /* ... NetworkController, DisplayController, ParallelController ... */
+    PointerController     = 21,
+    KeyboardController    = 22,
+    AudioController       = 23,
+    OtherController       = 24,
 } CONFIGURATION_TYPE;
 
 typedef struct _CONFIGURATION_COMPONENT {
@@ -127,20 +143,40 @@ typedef enum {
 } NT_INTERFACE_TYPE;
 
 /* CmResourceType enum positions (NTIFS.H _CM_RESOURCE_TYPE). */
+#define NT_CmResourceTypePort            1
+#define NT_CmResourceTypeInterrupt       2
+#define NT_CmResourceTypeMemory          3
 #define NT_CmResourceTypeDeviceSpecific  5
 
+/* CM_RESOURCE_PORT_ / CM_RESOURCE_INTERRUPT_ flags (NTIFS.H / NTCONFIG.H).
+ *
+ * Note the polarity: PORT_IO=1 means the port range is in I/O space, and 0
+ * means it's memory-mapped. Got this backwards on first implementation —
+ * serial.sys's SerialGetMappedAddress then calls HalTranslateBusAddress
+ * with AddressSpace=0 (memory), MmMapIoSpace'd phys 0x3F8 to a random
+ * kernel VA, and SerialDoesPortExist read 0xFF off the float-high bus. */
+#define NT_CM_RESOURCE_PORT_IO           0x0001  /* range is in I/O space */
+#define NT_CM_RESOURCE_INTERRUPT_LATCHED 0x0001  /* edge-triggered; 0 = level */
+
+/* ShareDisposition constants (NTIFS.H _CM_SHARE_DISPOSITION). */
+#define NT_CmResourceShareDriverExclusive 1
+#define NT_CmResourceShareDeviceExclusive 2
+#define NT_CmResourceShareShared          3
+
+/* One partial descriptor, matching NT's union layout. Header = 4 bytes
+ * (Type + ShareDisposition + Flags), payload = 12 bytes. Every union arm
+ * is exactly 12 bytes — Port/Memory/Generic are `LARGE_INTEGER + ULONG`,
+ * Interrupt is 3× ULONG, DeviceSpecific is 3× ULONG. Total: 16 bytes. */
 typedef struct __attribute__((packed, aligned(4))) _NT_CM_PARTIAL_RESOURCE_DESCRIPTOR {
     UINT8  Type;
     UINT8  ShareDisposition;
     UINT16 Flags;
-    struct {
-        UINT32 DataSize;
-        UINT32 Reserved1;
-        UINT32 Reserved2;
-    } DeviceSpecificData;
-    /* Extra padding: the union in NT's struct is 12 bytes (DataSize + two
-     * Reserved ULONGs), but other arms (Memory/Port with LARGE_INTEGER
-     * Start + ULONG Length) are also 12 bytes @ align 4. Total struct = 16. */
+    union {
+        struct { UINT64 Start; UINT32 Length; } __attribute__((packed)) Port;
+        struct { UINT32 Level; UINT32 Vector; UINT32 Affinity; } Interrupt;
+        struct { UINT64 Start; UINT32 Length; } __attribute__((packed)) Memory;
+        struct { UINT32 DataSize; UINT32 Reserved1; UINT32 Reserved2; } DeviceSpecificData;
+    } u;
 } NT_CM_PARTIAL_RESOURCE_DESCRIPTOR;
 
 typedef struct __attribute__((aligned(4))) _NT_CM_PARTIAL_RESOURCE_LIST {

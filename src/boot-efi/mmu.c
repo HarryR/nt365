@@ -1,5 +1,5 @@
 #include "mmu.h"
-#include "com1.h"
+#include "log.h"
 #include <efilib.h>
 
 /*
@@ -51,7 +51,7 @@ static EFI_STATUS mmu_alloc_impl(UINTN pages, PageKind kind,
     EFI_STATUS status;
 
     if (g_reg_n >= MMU_REGISTRY_MAX) {
-        com1_puts("[mmu] registry full\n");
+        BXLOG(L"registry full");
         return EFI_OUT_OF_RESOURCES;
     }
 
@@ -59,13 +59,8 @@ static EFI_STATUS mmu_alloc_impl(UINTN pages, PageKind kind,
                                mode, EfiLoaderData,
                                pages, &phys);
     if (EFI_ERROR(status)) {
-        com1_puts("[mmu] AllocatePages(");
-        com1_put_dec((unsigned long)pages);
-        com1_puts(") for ");
-        com1_puts(kind_name(kind));
-        com1_puts(" failed: ");
-        com1_put_hex((unsigned long)status);
-        com1_puts("\n");
+        BXLOG(L"AllocatePages(%u) for %a failed: 0x%lx",
+              (UINT32)pages, kind_name(kind), (UINT64)status);
         return status;
     }
 
@@ -74,14 +69,10 @@ static EFI_STATUS mmu_alloc_impl(UINTN pages, PageKind kind,
     g_reg[g_reg_n].kind  = kind;
     g_reg_n++;
 
-    com1_puts("[mmu] alloc ");
-    com1_put_dec((unsigned long)pages);
-    com1_puts(" pages at ");
-    com1_put_hex((unsigned long)phys);
-    com1_puts(" for ");
-    com1_puts(kind_name(kind));
-    com1_puts("\n");
-
+    /* No per-alloc log on success — callers that care (fs_read,
+     * pe_stage, hwtree, lpb_build, mmu_alloc_pt_pool) emit their own
+     * semantic lines with phys + purpose; an additional line per
+     * mmu_alloc is pure noise. The error paths above still log. */
     if (out_phys) *out_phys = phys;
     return EFI_SUCCESS;
 }
@@ -105,7 +96,7 @@ EFI_STATUS mmu_alloc_below(UINTN pages, PageKind kind,
 
 EFI_STATUS mmu_register_image(EFI_PHYSICAL_ADDRESS phys, UINTN pages) {
     if (g_image_n >= MMU_IMAGE_MAX) {
-        com1_puts("[mmu] image registry full\n");
+        BXLOG(L"image registry full");
         return EFI_OUT_OF_RESOURCES;
     }
     g_image[g_image_n].phys  = phys;
@@ -113,11 +104,8 @@ EFI_STATUS mmu_register_image(EFI_PHYSICAL_ADDRESS phys, UINTN pages) {
     g_image[g_image_n].kind  = PK_FIRMWARE_TEMP;
     g_image_n++;
 
-    com1_puts("[mmu] register image ");
-    com1_put_dec((unsigned long)pages);
-    com1_puts(" pages at ");
-    com1_put_hex((unsigned long)phys);
-    com1_puts(" (identity only, not in KSEG0)\n");
+    BXLOG(L"register image %u pages at 0x%lx (identity only, not in KSEG0)",
+          (UINT32)pages, (UINT64)phys);
     return EFI_SUCCESS;
 }
 
@@ -210,7 +198,11 @@ EFI_STATUS mmu_alloc_reserved(void) {
     s = mmu_alloc_below(1, PK_MEMORY_DATA, LOW16M, &g_phys_gdt);     if (EFI_ERROR(s)) return s;
     s = mmu_alloc_below(1, PK_MEMORY_DATA, LOW16M, &g_phys_idt);     if (EFI_ERROR(s)) return s;
 
-    com1_puts("[mmu] reserved core pages (all < 16 MiB)\n");
+    BXLOG(L"reserved core pages below 16 MiB: "
+          L"PD=0x%lx PCR=0x%lx SUD=0x%lx TSS=0x%lx stack=0x%lx GDT=0x%lx IDT=0x%lx",
+          (UINT64)g_phys_pd, (UINT64)g_phys_pcr, (UINT64)g_phys_sud,
+          (UINT64)g_phys_tss, (UINT64)g_phys_idlestack,
+          (UINT64)g_phys_gdt, (UINT64)g_phys_idt);
     return EFI_SUCCESS;
 }
 
@@ -259,9 +251,7 @@ EFI_STATUS mmu_alloc_pt_pool(void) {
     if (EFI_ERROR(s)) return s;
     g_pt_pool_pages = total;
 
-    com1_puts("[mmu] PT pool: ");
-    com1_put_dec((unsigned long)total);
-    com1_puts(" pages (identity+kseg0+hal)\n");
+    BXLOG(L"PT pool: %u pages (identity+kseg0+hal)", (UINT32)total);
     return EFI_SUCCESS;
 }
 
@@ -456,10 +446,7 @@ void mmu_build_and_activate(void) {
      * HalpInitializePICs re-enables once the kernel's IDT is filled. */
     __asm__ volatile("cli");
 
-    com1_puts("[mmu] building page tables\n");
     build_page_tables();
-
-    com1_puts("[mmu] building GDT\n");
     build_gdt((gdt_entry_t *)(UINTN)g_phys_gdt, gdt_kseg0, tss_kseg0, tss_limit);
 
     /* IDT: 256 zeroed entries. Kernel's KiSwapIDT fills them in. */
@@ -468,10 +455,7 @@ void mmu_build_and_activate(void) {
         for (int i = 0; i < 4096; i++) p[i] = 0;
     }
 
-    com1_puts("[mmu] building TSS\n");
     build_tss((void *)(UINTN)g_phys_tss);
-
-    com1_puts("[mmu] structures ready; mode drop pending\n");
 }
 
 /* Accessors for transition.S: it needs the phys bases of the PD, GDT,

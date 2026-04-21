@@ -295,6 +295,23 @@ Returns:
     INTERFACE_TYPE LocalInterfaceType = InterfaceType;
     ULONG LocalBusNumber = BusNumber;
 
+    if (CurrentEntry) {
+        DbgPrint("CM: tree node Class=%u Type=%u Key=%u Identifier=%s "
+                 "Child=%x Sibling=%x CfgLen=%u InboundIfType=%u\n",
+                 CurrentEntry->ComponentEntry.Class,
+                 CurrentEntry->ComponentEntry.Type,
+                 CurrentEntry->ComponentEntry.Key,
+                 CurrentEntry->ComponentEntry.Identifier
+                     ? (char *)CurrentEntry->ComponentEntry.Identifier
+                     : "(null)",
+                 CurrentEntry->Child,
+                 CurrentEntry->Sibling,
+                 CurrentEntry->ComponentEntry.ConfigurationDataLength,
+                 (ULONG)InterfaceType);
+    } else {
+        DbgPrint("CM: tree node (null)\n");
+    }
+
     //
     // Process current entry first
     //
@@ -331,6 +348,9 @@ Returns:
 
                 if (Component->Identifier) {
                     for (i=0; CmpMultifunctionTypes[i].AscString; i++) {
+                        DbgPrint("CM:  trying MFT[%u]='%s' vs ident='%s'\n",
+                                 i, CmpMultifunctionTypes[i].AscString,
+                                 Component->Identifier);
                         if (stricmp(CmpMultifunctionTypes[i].AscString,
                                     Component->Identifier) == 0) {
                                         break;
@@ -339,6 +359,8 @@ Returns:
 
                     LocalInterfaceType = CmpMultifunctionTypes[i].InterfaceType;
                     LocalBusNumber = CmpMultifunctionTypes[i].Count++;
+                    DbgPrint("CM:  MFT match i=%u -> IfType=%u BusNum=%u\n",
+                             i, (ULONG)LocalInterfaceType, LocalBusNumber);
                 }
                 break;
 
@@ -729,6 +751,12 @@ Returns:
 
     CmpConfigurationData->InterfaceType = InterfaceType;
     CmpConfigurationData->BusNumber = BusNumber;
+
+    DbgPrint("CM: CmpInitRegNode writing CfgData: IfType=%u BusNum=%u Len=%u "
+             "(comp Class=%u Type=%u Id=%s)\n",
+             (ULONG)InterfaceType, BusNumber, ConfigurationDataLength,
+             Component->Class, Component->Type,
+             Component->Identifier ? (char *)Component->Identifier : "(null)");
 
     //
     // Write the newly constructed configuration data to the hardware registry

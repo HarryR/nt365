@@ -296,7 +296,26 @@ build_raw()    { run_nmake "$NTOS/RAW/UP"      "RAW - Raw File System"; }
 build_vdm()    { run_nmake "$NTOS/VDM/UP"      "VDM - Virtual DOS Machine"; }
 
 # --- Boot device / filesystem drivers (TARGETTYPE=DRIVER) ---
+# serial.sys has its own message catalog (serlog.mc) that mc.exe compiles
+# into serlog.rc + serlog.h + msg00001.bin. serial.rc #includes serlog.rc,
+# and initunlo.c #includes serlog.h (error codes). Run mc before nmake —
+# same pattern as _ensure_bugcodes for ntoskrnl.
+_ensure_serlog() {
+    local dir="$NTOS/DD/SERIAL"
+    if [ -f "$dir/serlog.rc" ] && [ -f "$dir/serlog.h" ] \
+       && [ "$dir/serlog.rc" -nt "$dir/SERLOG.MC" ]; then
+        return 0
+    fi
+    echo ">>> mc SERLOG.MC -> serlog.h/.rc"
+    run_wibo_tool "$dir" mc SERLOG.MC \
+        || { echo "!!! mc on SERLOG.MC failed"; return 1; }
+    # mc.exe emits case-matching names on Windows; normalise for our
+    # case-sensitive Linux FS so #include "serlog.rc" / "serlog.h" resolve.
+    [ -f "$dir/SERLOG.rc" ] && cp -f "$dir/SERLOG.rc" "$dir/serlog.rc"
+    [ -f "$dir/SERLOG.h" ]  && cp -f "$dir/SERLOG.h"  "$dir/serlog.h"
+}
 build_atdisk() { run_nmake "$NTOS/DD/HARDDISK" "ATDISK - IDE disk driver"; }
+build_serial() { _ensure_serlog && run_nmake "$NTOS/DD/SERIAL" "SERIAL - NT 3.5 serial port driver"; }
 build_null()   { run_nmake "$NTOS/DD/NULL"     "NULL - null device driver"; }
 build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"; }
 build_npfs()   { run_nmake "$NTOS/NPFS"       "NPFS - Named Pipe filesystem driver"; }
@@ -1155,9 +1174,10 @@ NTOSKRNL_TARGETS=(
     hal
 )
 
-# Drivers needed regardless of mode — disk, FS, visibility/null stubs.
+# Drivers needed regardless of mode — disk, FS, visibility/null stubs,
+# serial (user-facing COM console + Lua I/O).
 DRIVER_TARGETS=(
-    atdisk null fastfat npfs msfs
+    atdisk null fastfat npfs msfs serial
 )
 
 # Drivers only useful with the GUI (input + video).

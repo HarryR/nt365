@@ -27,6 +27,12 @@ Revision History:
 #include "fsrtl.h"
 #include "zwapi.h"
 
+/* Defined at the end of IOINIT.C — prints BaseDllName + FileVersion +
+ * OptionalHeader.CheckSum. IopLoadDriver calls it between
+ * MmLoadSystemImage and DriverEntry, while the full PE (including
+ * discardable INIT / .rsrc sections) is still mapped. */
+VOID IopDumpModuleVersion(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
+
 PIRP IopDeadIrp;
 
 VOID
@@ -2710,6 +2716,15 @@ Notes:
     // If this doesn't work, then simply unload the image and mark the driver
     // object as temporary.  This will cause everything to be deleted.
     //
+
+    /* Print FileVersion + PE checksum BEFORE DriverEntry runs. The full
+     * image (including INIT + .rsrc) is mapped now; after DriverEntry
+     * returns IopLoadDriver calls MmFreeDriverInitialization which
+     * discards every trailing discardable section, and the version
+     * resource may land in that unmapped range. Doing this early also
+     * means a DriverEntry that crashes leaves us with a log line
+     * naming exactly which driver we were loading. */
+    IopDumpModuleVersion((PLDR_DATA_TABLE_ENTRY)driverObject->DriverSection);
 
     status = driverObject->DriverInit( driverObject, &registryPath->Name );
     ExFreePool( registryPath );

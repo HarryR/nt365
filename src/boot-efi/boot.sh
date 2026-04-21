@@ -55,7 +55,9 @@ fi
 
 #
 # Serial: COM1 (loader) + COM2 (kernel debug) both multiplexed to stdio.
-# QEMU chardev mux-on merges both streams to the same terminal.
+# Single COM1 channel to stdio — everything (loader, HAL, kernel) writes
+# here. COM2 was used historically for HAL debug while COM1 served the
+# KD (WinDbg) protocol; we don't use KD, so HAL now writes to COM1 too.
 # Storage: legacy IDE is the default on -machine pc — no explicit
 # -device piix3-ide needed. NT 3.5's atdisk.sys speaks IDE/ATA and
 # OVMF64's IdeBusDxe handles the firmware-side enumeration fine.
@@ -64,7 +66,6 @@ exec qemu-system-x86_64 -m "$MEM" \
     -drive if=pflash,format=raw,file=./OVMF_VARS_4M.fd \
     -drive file="$ESP_IMG",format=raw,if=ide \
     -chardev stdio,id=serialmux,mux=on \
-    -serial chardev:serialmux \
     -serial chardev:serialmux \
     -no-reboot \
     $DISPLAY_FLAGS $GDB_FLAGS $TRACE_FLAGS

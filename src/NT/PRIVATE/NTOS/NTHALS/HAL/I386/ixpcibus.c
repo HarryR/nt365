@@ -71,6 +71,53 @@ NTSTATUS HalpAssignPCISlotResources (
 
 
 /*
+ * Find the next free slot under \Hardware\Description\System\MultifunctionAdapter.
+ *
+ * NTDETECT's classic convention is numeric subkey names "0", "1", ... , one
+ * per bus. Our UEFI loader's `hwtree.c` populates whatever it could
+ * enumerate before ExitBootServices (currently the ISA bus at slot 0). The
+ * HAL runs later and needs to append its own entries (PCI bus, eventually
+ * ACPI-discovered buses) without colliding with the loader's work.
+ *
+ * We enumerate the existing subkeys, treat any all-digit name as a claimed
+ * slot, and return max(claimed) + 1 (or 0 if nothing is present).
+ */
+static ULONG
+HalpNextMultifunctionAdapterSlot(HANDLE MfKey)
+{
+    UCHAR Buffer[96];
+    PKEY_BASIC_INFORMATION info = (PKEY_BASIC_INFORMATION)Buffer;
+    ULONG i, retLength;
+    ULONG maxSlot = 0;
+    BOOLEAN foundAny = FALSE;
+
+    for (i = 0; ; i++) {
+        NTSTATUS st = ZwEnumerateKey(MfKey, i, KeyBasicInformation,
+                                     info, sizeof(Buffer), &retLength);
+        if (!NT_SUCCESS(st)) break;
+
+        /* Parse Name as decimal integer. Non-digit names (shouldn't exist
+         * under this key, but don't trust it) are skipped, not counted. */
+        {
+            ULONG nameChars = info->NameLength / sizeof(WCHAR);
+            ULONG slot = 0;
+            BOOLEAN valid = (nameChars > 0);
+            ULONG k;
+            for (k = 0; k < nameChars; k++) {
+                WCHAR c = info->Name[k];
+                if (c < L'0' || c > L'9') { valid = FALSE; break; }
+                slot = slot * 10 + (c - L'0');
+            }
+            if (!valid) continue;
+            if (!foundAny || slot > maxSlot) maxSlot = slot;
+            foundAny = TRUE;
+        }
+    }
+
+    return foundAny ? maxSlot + 1 : 0;
+}
+
+/*
  * HalpInitializePciBus — probe for PCI Type 1 config access and
  * register bus handler(s). Called from HalReportResourceUsage.
  */
@@ -217,9 +264,12 @@ HalpInitializePciBus(VOID)
     /*
      * Populate the ARC configuration tree so IoQueryDeviceDescription(PCIBus)
      * finds our bus. VideoPortInitialize uses this to discover adapters.
-     * Create: \Hardware\Description\System\MultifunctionAdapter\0
-     *   Identifier = "PCI"
-     *   ConfigurationData = CM_FULL_RESOURCE_DESCRIPTOR (empty)
+     *
+     * Append at the next free MultifunctionAdapter\N slot — the UEFI loader
+     * populated slots in hwtree.c (currently just ISA at 0), and we don't
+     * want to clobber its work. The number we pick here is opaque to
+     * callers: IoQueryDeviceDescription finds us by matching the bus's
+     * InterfaceType (PCIBus) against the query argument.
      */
     {
         UNICODE_STRING Name;
@@ -250,10 +300,19 @@ HalpInitializePciBus(VOID)
         RtlInitUnicodeString(&Name,
             L"\\Registry\\Machine\\Hardware\\Description\\System\\MultifunctionAdapter");
         InitializeObjectAttributes(&ObjAttr, &Name, OBJ_CASE_INSENSITIVE, NULL, NULL);
-        st = ZwCreateKey(&MfKey, KEY_WRITE, &ObjAttr, 0, NULL, REG_OPTION_VOLATILE, &disp);
+        st = ZwCreateKey(&MfKey, KEY_READ | KEY_WRITE, &ObjAttr, 0, NULL,
+                         REG_OPTION_VOLATILE, &disp);
         if (NT_SUCCESS(st)) {
-            RtlInitUnicodeString(&Name, L"0");
-            InitializeObjectAttributes(&ObjAttr, &Name, OBJ_CASE_INSENSITIVE, MfKey, NULL);
+            ULONG slot = HalpNextMultifunctionAdapterSlot(MfKey);
+            WCHAR SlotBuffer[16];
+            UNICODE_STRING SlotName;
+
+            SlotName.Buffer = SlotBuffer;
+            SlotName.MaximumLength = sizeof(SlotBuffer);
+            SlotName.Length = 0;
+            RtlIntegerToUnicodeString(slot, 10, &SlotName);
+
+            InitializeObjectAttributes(&ObjAttr, &SlotName, OBJ_CASE_INSENSITIVE, MfKey, NULL);
             st = ZwCreateKey(&BusKey, KEY_WRITE, &ObjAttr, 0, NULL, REG_OPTION_VOLATILE, &disp);
             if (NT_SUCCESS(st)) {
                 WCHAR PciId[] = L"PCI";
@@ -269,7 +328,8 @@ HalpInitializePciBus(VOID)
                 ZwSetValueKey(BusKey, &Name, 0, REG_FULL_RESOURCE_DESCRIPTOR,
                               &CmDesc, sizeof(CmDesc));
 
-                DbgPrint("HAL: created MultifunctionAdapter\\0 PCI ConfigData\n");
+                DbgPrint("HAL: created MultifunctionAdapter\\%u PCI ConfigData\n",
+                         slot);
                 ZwClose(BusKey);
             }
             ZwClose(MfKey);

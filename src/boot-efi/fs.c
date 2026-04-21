@@ -1,5 +1,5 @@
 #include "fs.h"
-#include "com1.h"
+#include "log.h"
 
 /*
  * ESP file reading.
@@ -40,9 +40,7 @@ EFI_STATUS fs_init(EFI_HANDLE ImageHandle) {
                                (EFI_GUID *)&g_loaded_image_guid,
                                (void **)&loaded_image);
     if (EFI_ERROR(status)) {
-        com1_puts("[fs] HandleProtocol(LoadedImage) failed: ");
-        com1_put_hex((unsigned long)status);
-        com1_puts("\n");
+        BXLOG(L"HandleProtocol(LoadedImage) failed: 0x%lx", (UINT64)status);
         return status;
     }
 
@@ -51,27 +49,17 @@ EFI_STATUS fs_init(EFI_HANDLE ImageHandle) {
                                (EFI_GUID *)&g_sfs_guid,
                                (void **)&sfs);
     if (EFI_ERROR(status)) {
-        com1_puts("[fs] HandleProtocol(SimpleFileSystem) failed: ");
-        com1_put_hex((unsigned long)status);
-        com1_puts("\n");
+        BXLOG(L"HandleProtocol(SimpleFileSystem) failed: 0x%lx", (UINT64)status);
         return status;
     }
 
     status = uefi_call_wrapper(sfs->OpenVolume, 2, sfs, &g_root);
     if (EFI_ERROR(status)) {
-        com1_puts("[fs] OpenVolume failed: ");
-        com1_put_hex((unsigned long)status);
-        com1_puts("\n");
+        BXLOG(L"OpenVolume failed: 0x%lx", (UINT64)status);
         return status;
     }
 
-    com1_puts("[fs] init OK\n");
     return EFI_SUCCESS;
-}
-
-static void put_utf16(const CHAR16 *s) {
-    /* ASCII-safe dump for serial: if a char is >0x7F, render '?'. */
-    for (; *s; s++) com1_putc(*s < 0x80 ? (char)*s : '?');
 }
 
 EFI_STATUS fs_read(const CHAR16 *path, PageKind kind,
@@ -84,19 +72,14 @@ EFI_STATUS fs_read(const CHAR16 *path, PageKind kind,
     EFI_STATUS            status;
 
     if (!g_root) {
-        com1_puts("[fs] read before init\n");
+        BXLOG(L"read before init");
         return EFI_NOT_READY;
     }
-
-    com1_puts("[fs] read ");
-    put_utf16(path);
 
     status = uefi_call_wrapper(g_root->Open, 5, g_root, &file,
                                (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
     if (EFI_ERROR(status)) {
-        com1_puts(" - open failed: ");
-        com1_put_hex((unsigned long)status);
-        com1_puts("\n");
+        BXLOG(L"open %s failed: 0x%lx", path, (UINT64)status);
         return status;
     }
 
@@ -105,7 +88,7 @@ EFI_STATUS fs_read(const CHAR16 *path, PageKind kind,
                                (EFI_GUID *)&g_file_info_guid,
                                &info_size, NULL);
     if (status != EFI_BUFFER_TOO_SMALL) {
-        com1_puts(" - GetInfo sizing failed\n");
+        BXLOG(L"GetInfo sizing failed for %s", path);
         goto close_err;
     }
     status = uefi_call_wrapper(BS->AllocatePool, 3,
@@ -115,7 +98,7 @@ EFI_STATUS fs_read(const CHAR16 *path, PageKind kind,
                                (EFI_GUID *)&g_file_info_guid,
                                &info_size, info);
     if (EFI_ERROR(status)) {
-        com1_puts(" - GetInfo failed\n");
+        BXLOG(L"GetInfo failed for %s", path);
         goto free_info_err;
     }
     size = (UINTN)info->FileSize;
@@ -123,13 +106,13 @@ EFI_STATUS fs_read(const CHAR16 *path, PageKind kind,
     pages = (size + EFI_PAGE_SIZE - 1) >> EFI_PAGE_SHIFT;
     status = mmu_alloc(pages, kind, &phys);
     if (EFI_ERROR(status)) {
-        com1_puts(" - mmu_alloc failed\n");
+        BXLOG(L"mmu_alloc failed for %s", path);
         goto free_info_err;
     }
 
     status = uefi_call_wrapper(file->Read, 3, file, &size, (void *)(UINTN)phys);
     if (EFI_ERROR(status)) {
-        com1_puts(" - Read failed\n");
+        BXLOG(L"Read failed for %s", path);
         uefi_call_wrapper(BS->FreePages, 2, phys, pages);
         goto free_info_err;
     }
@@ -137,11 +120,7 @@ EFI_STATUS fs_read(const CHAR16 *path, PageKind kind,
     uefi_call_wrapper(BS->FreePool, 1, info);
     uefi_call_wrapper(file->Close, 1, file);
 
-    com1_puts(" -> ");
-    com1_put_hex((unsigned long)phys);
-    com1_puts(" (");
-    com1_put_dec((unsigned long)size);
-    com1_puts(" bytes)\n");
+    BXLOG(L"%s -> 0x%lx (%lu bytes)", path, (UINT64)phys, (UINT64)size);
 
     *out_buf  = (void *)(UINTN)phys;
     *out_size = size;
@@ -192,25 +171,20 @@ EFI_STATUS fs_boot_disk_read_sector0(void *out, UINTN out_size) {
 EFI_STATUS fs_boot_disk_size(UINT64 *out_blocks, UINT32 *out_block_size) {
     EFI_BLOCK_IO_PROTOCOL *chosen = find_whole_disk_bio();
     if (!chosen) {
-        com1_puts("[fs] no whole-disk BlockIo found\n");
+        BXLOG(L"no whole-disk BlockIo found");
         return EFI_NOT_FOUND;
     }
 
     *out_blocks     = chosen->Media->LastBlock + 1;
     *out_block_size = chosen->Media->BlockSize;
 
-    com1_puts("[fs] boot disk: ");
-    com1_put_dec((unsigned long)*out_blocks);
-    com1_puts(" x ");
-    com1_put_dec((unsigned long)*out_block_size);
-    com1_puts(" bytes = ");
     {
         /* Total in MiB. Force 64-bit multiply + shift so we don't wrap on
          * ia32 when a large block count meets 512 B sectors. */
         UINT64 total = (UINT64)*out_blocks * (UINT64)*out_block_size;
-        com1_put_dec((unsigned long)(total >> 20));
+        BXLOG(L"boot disk: %lu x %u bytes = %lu MiB",
+              (UINT64)*out_blocks, *out_block_size, total >> 20);
     }
-    com1_puts(" MiB\n");
     return EFI_SUCCESS;
 }
 
@@ -256,12 +230,12 @@ EFI_STATUS fs_read_into(const CHAR16 *path, void *buf, UINTN buf_size,
 
     if (!g_root) return EFI_NOT_READY;
 
-    com1_puts("[fs] read_into ");
-    put_utf16(path);
-
     status = uefi_call_wrapper(g_root->Open, 5, g_root, &file,
                                (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
-    if (EFI_ERROR(status)) { com1_puts(" - open failed\n"); return status; }
+    if (EFI_ERROR(status)) {
+        BXLOG(L"open %s failed: 0x%lx", path, (UINT64)status);
+        return status;
+    }
 
     status = uefi_call_wrapper(file->GetInfo, 4, file,
                                (EFI_GUID *)&g_file_info_guid,
@@ -279,18 +253,19 @@ EFI_STATUS fs_read_into(const CHAR16 *path, void *buf, UINTN buf_size,
 
     size = (UINTN)info->FileSize;
     if (size > buf_size) {
-        com1_puts(" - buffer too small\n");
+        BXLOG(L"%s buffer too small", path);
         status = EFI_BUFFER_TOO_SMALL;
         goto free_info2;
     }
 
     status = uefi_call_wrapper(file->Read, 3, file, &size, buf);
-    if (EFI_ERROR(status)) { com1_puts(" - read failed\n"); goto free_info2; }
+    if (EFI_ERROR(status)) {
+        BXLOG(L"read %s failed: 0x%lx", path, (UINT64)status);
+        goto free_info2;
+    }
 
     *out_size = size;
-    com1_puts(" -> ");
-    com1_put_dec((unsigned long)size);
-    com1_puts(" bytes\n");
+    BXLOG(L"%s -> %lu bytes", path, (UINT64)size);
 
 free_info2:
     uefi_call_wrapper(BS->FreePool, 1, info);

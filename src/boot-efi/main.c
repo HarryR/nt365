@@ -2,31 +2,34 @@
  * MicroNT UEFI loader — efi_main entry + orchestration.
  *
  * Flow:
- *   1. com1_init            - serial alive before anything else
- *   2. InitializeLib        - gnu-efi globals (gBS, ST, etc.)
- *   3. fs_init              - find the ESP we were loaded from
- *   4. fs_read              - pull ntoskrnl.exe, hal.dll, config/SYSTEM, NLS
- *   5. mmu_alloc_reserved   - grab pages for PD/PT/PCR/TSS/stack
- *   6. loaderblock_build    - stitch LOADER_PARAMETER_BLOCK
- *   7. memmap_capture       - final UEFI memory map, remember MapKey
- *   8. ExitBootServices     - point of no return; UEFI services gone
- *   9. memmap_to_nt         - translate captured map into NT descriptors
- *   10. mmu_build_and_activate - page tables on, GDT/IDT/TSS at KSEG0
- *   11. loaderblock_kseg0_fixup - retarget every internal pointer
- *   12. handoff()           - jump to KiSystemStartup
- *
- * Phase 1 skeleton runs steps 1-2, logs where the other steps would
- * start, and halts. Subsequent commits fill in each stage.
+ *   1. com1_init              - serial alive before anything else
+ *   2. InitializeLib          - gnu-efi globals (gBS, ST, etc.)
+ *   3. fs_init + fs_read      - pull ntoskrnl / hal / drivers / NLS / hive
+ *   4. pe_stage               - relocate PE images to their bases
+ *   5. mmu_alloc_reserved     - grab pages for PD/PT/PCR/TSS/stack
+ *   6. arena_init             - reserve the arena for LPB + hwtree
+ *   7. hwtree_build           - ARC config tree (disk geometry + UART probe)
+ *   8. lpb_build + wire       - LOADER_PARAMETER_BLOCK and its lists
+ *   9. mmu_register_image     - identity-map loader image + current stack
+ *   10. mmu_alloc_pt_pool     - size PT pool (last UEFI allocation)
+ *   11. memmap_capture        - final UEFI memory map, remember MapKey
+ *   12. lpb_link_memmap       - translate + attach descriptor list (no UEFI)
+ *   13. ExitBootServices      - point of no return; UEFI services gone
+ *   14. mmu_build_and_activate - 32-bit PD/PT/GDT/IDT/TSS in memory
+ *   15. handoff()             - 64→32 mode drop + jump to KiSystemStartup
  */
 
 #include <efi.h>
 #include <efilib.h>
 
 #include "com1.h"
+#include "log.h"
 #include "fs.h"
 #include "memmap.h"
 #include "mmu.h"
-#include "loaderblock.h"
+#include "arena.h"
+#include "hwtree.h"
+#include "lpb.h"
 #include "pe.h"
 
 extern void handoff(unsigned long entry_kseg0,
@@ -41,11 +44,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
     EFI_INPUT_KEY key;
 
     com1_init();
-    com1_puts("\n[MicroNT EFI] loader entered\n");
-
     InitializeLib(ImageHandle, SystemTable);
-    Print(L"MicroNT UEFI loader (Phase 1 skeleton)\n");
-    Print(L"FirmwareVendor=%s FirmwareRevision=%x\n",
+    BXLOG(L"loader entered; FirmwareVendor=%s FirmwareRevision=%x",
           SystemTable->FirmwareVendor, SystemTable->FirmwareRevision);
 
     if (fs_init(ImageHandle) != EFI_SUCCESS) goto halt;
@@ -85,7 +85,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
         UINTN total = 0;
         for (UINTN i = 0; i < N; i++) {
             if (fs_file_size(nls[i].path, &nls[i].size) != EFI_SUCCESS) {
-                com1_puts("[main] NLS size probe failed\n"); goto halt;
+                BXLOG(L"NLS size probe failed"); goto halt;
             }
             nls[i].off = total;
             total += (nls[i].size + 0xFFF) & ~0xFFFu;  /* page-align slab */
@@ -93,7 +93,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
 
         EFI_PHYSICAL_ADDRESS nls_phys;
         if (mmu_alloc((total + 0xFFF) >> 12, PK_NLS, &nls_phys) != EFI_SUCCESS) {
-            com1_puts("[main] NLS alloc failed\n"); goto halt;
+            BXLOG(L"NLS alloc failed"); goto halt;
         }
         {
             UINT8 *p = (UINT8 *)(UINTN)nls_phys;
@@ -107,7 +107,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
                          nls[i].size, &nread);
         }
 
-        loaderblock_set_nls(nls_phys, nls[0].off, nls[1].off, nls[2].off);
+        lpb_set_nls(nls_phys, nls[0].off, nls[1].off, nls[2].off);
     }
 
     /* Stage kernel + HAL + boot drivers via the PE loader: sections to
@@ -143,48 +143,54 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
     }
 
     /* Query boot disk geometry + MBR signature/checksum while UEFI is
-     * still up. Needed for atdisk's INT13 table (size) and the kernel's
-     * IopCreateArcNames matching (sig + sum). */
-    {
-        UINT64 total_blocks = 0;
-        UINT32 block_size   = 0;
-        UINT32 mbr_sig      = 0;
-        UINT32 mbr_neg_sum  = 0;
-        if (fs_boot_disk_size(&total_blocks, &block_size) == EFI_SUCCESS) {
-            /* Read MBR (sector 0). FAT/MBR sectors are 512 B; pad for safety. */
-            static UINT8 mbr[4096] __attribute__((aligned(4)));
-            if (fs_boot_disk_read_sector0(mbr, sizeof mbr) == EFI_SUCCESS) {
-                UINT32 *dw = (UINT32 *)mbr;
-                UINT32 sum = 0;
-                for (int i = 0; i < 128; i++) sum += dw[i];
-                mbr_neg_sum = (UINT32)-(INT32)sum;   /* so sum + ours == 0 */
-                /* Disk signature lives at MBR offset 0x1B8 (4 bytes, LE). */
-                mbr_sig = *(UINT32 *)(mbr + 0x1B8);
-                com1_puts("[main] MBR signature=");
-                com1_put_hex(mbr_sig);
-                com1_puts(" sum=");
-                com1_put_hex(sum);
-                com1_puts(" (loader stores negsum=");
-                com1_put_hex(mbr_neg_sum);
-                com1_puts(")\n");
-            } else {
-                com1_puts("[main] MBR read failed — ARC name match will fail\n");
-            }
-            loaderblock_set_boot_disk(total_blocks, block_size,
-                                      mbr_sig, mbr_neg_sum);
+     * still up. Geometry feeds atdisk's INT13 table (hwtree); MBR
+     * sig/checksum feeds the kernel's IopCreateArcNames matching (lpb). */
+    UINT64 total_blocks = 0;
+    UINT32 block_size   = 0;
+    UINT32 mbr_sig      = 0;
+    UINT32 mbr_neg_sum  = 0;
+    if (fs_boot_disk_size(&total_blocks, &block_size) == EFI_SUCCESS) {
+        /* Read MBR (sector 0). FAT/MBR sectors are 512 B; pad for safety. */
+        static UINT8 mbr[4096] __attribute__((aligned(4)));
+        if (fs_boot_disk_read_sector0(mbr, sizeof mbr) == EFI_SUCCESS) {
+            UINT32 *dw = (UINT32 *)mbr;
+            UINT32 sum = 0;
+            for (int i = 0; i < 128; i++) sum += dw[i];
+            mbr_neg_sum = (UINT32)-(INT32)sum;   /* so sum + ours == 0 */
+            /* Disk signature lives at MBR offset 0x1B8 (4 bytes, LE). */
+            mbr_sig = *(UINT32 *)(mbr + 0x1B8);
+            BXLOG(L"MBR signature=0x%x sum=0x%x negsum=0x%x", mbr_sig, sum, mbr_neg_sum);
         } else {
-            com1_puts("[main] boot disk size query failed — atdisk may not mount\n");
+            BXLOG(L"MBR read failed — ARC name match will fail");
         }
+        lpb_set_boot_disk(mbr_sig, mbr_neg_sum);
+    } else {
+        BXLOG(L"boot disk size query failed — atdisk may not mount");
     }
 
     /* Pre-exit: reserve the machine-state pages (PD, PCR, TSS, stacks). */
     mmu_alloc_reserved();
 
-    /* Build the LoaderBlock arena + static fields BEFORE memmap_capture,
-     * otherwise the arena's mmu_alloc invalidates the MapKey needed for
-     * ExitBootServices. */
-    loaderblock_build();
-    loaderblock_wire_modules(&kernel, &hal, drivers, n_drivers);
+    /* Arena must exist BEFORE hwtree/lpb emit into it, and all these
+     * mmu_alloc's must happen BEFORE memmap_capture or the MapKey
+     * needed for ExitBootServices goes stale. */
+    arena_init(LPB_ARENA_PAGES);
+
+    /* Hardware inventory (disk CHS + UART probe → MultifunctionAdapter /
+     * SerialController tree). Returned KSEG0 VA becomes the LPB's
+     * ConfigurationRoot, which the kernel materialises under
+     * \Registry\Machine\Hardware\Description\System. */
+    {
+        hwtree_disk_info hw = {
+            .total_blocks = total_blocks,
+            .block_size   = block_size,
+        };
+        lpb_set_configuration_root(hwtree_build(&hw));
+    }
+
+    /* LOADER_PARAMETER_BLOCK + its referenced lists + strings. */
+    lpb_build();
+    lpb_wire_modules(&kernel, &hal, drivers, n_drivers);
 
     /* Identity-map the loader image. UEFI can place our PE anywhere in
      * available RAM (including above 256 MB on larger guests), so rather
@@ -202,7 +208,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
             UINTN end   = (base + size + 0xFFFul) & ~0xFFFul;
             mmu_register_image(start, (end - start) >> 12);
         } else {
-            com1_puts("[main] LoadedImageProtocol failed; identity map may miss loader\n");
+            BXLOG(L"LoadedImageProtocol failed; identity map may miss loader");
         }
     }
 
@@ -230,15 +236,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
     memmap_capture(&map_key);
 
     /* Descriptor linking is pure arena writes — safe after capture. */
-    loaderblock_link_memmap();
-
-    com1_puts("[main] LPB kseg0=");
-    com1_put_hex(loaderblock_handoff_ptr());
-    com1_puts("  kernel_entry=");
-    com1_put_hex(loaderblock_kernel_entry());
-    com1_puts("  MapKey=");
-    com1_put_hex((unsigned long)map_key);
-    com1_puts("\n");
+    lpb_link_memmap();
 
     /* Stamp CMOS so atdisk.sys finds our IDE drive.
      *
@@ -263,28 +261,22 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
             "movb $47,   %%al\n\t"      /* user-defined type */
             "outb %%al, $0x71\n\t"
             : : : "al");
-        com1_puts("[main] CMOS drive-type bytes stamped for atdisk\n");
     }
 
     /* --------------------------------------------------------------------
      * Point of no return. UEFI services will be gone after this call. */
-    com1_puts("[main] ExitBootServices...\n");
     {
         EFI_STATUS s = uefi_call_wrapper(BS->ExitBootServices, 2,
                                          ImageHandle, map_key);
         if (EFI_ERROR(s)) {
-            com1_puts("[main] ExitBootServices failed: ");
-            com1_put_hex((unsigned long)s);
-            com1_puts("\n");
+            BXLOG(L"ExitBootServices failed: 0x%lx", (UINT64)s);
             goto halt;
         }
     }
 
     /* No Print() / ConOut from here on — COM1 only. */
-    com1_puts("[main] building page tables / GDT / IDT / TSS\n");
     mmu_build_and_activate();
-
-    com1_puts("[main] handoff to KiSystemStartup\n");
+    com1_puts("boot!efi_main: handoff to KiSystemStartup\n");
     /* Pass GDT/IDT as phys — handoff.S does the KSEG0 remap. We need the
      * long-mode LGDT (before the mode drop) to access the GDT via UEFI's
      * identity PML4, which only maps phys. But once the NT kernel takes
@@ -295,26 +287,26 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
      * the next trap triple-faults. Fix is in handoff.S: after the CR3 swap
      * to our NT PD (which has both identity + KSEG0), re-LGDT/LIDT with the
      * KSEG0-aliased base so the descriptor tables stay reachable forever. */
-    handoff(loaderblock_kernel_entry(),
-            loaderblock_handoff_ptr(),
+    handoff(lpb_kernel_entry(),
+            lpb_handoff_ptr(),
             mmu_handoff_stack_top(),
             (unsigned long)mmu_pd_base(),
             (unsigned long)mmu_gdt_base(),
             (unsigned long)mmu_idt_base());
 
     /* Unreachable — handoff never returns. */
-    com1_puts("[main] kernel returned!?\n");
+    com1_puts("boot!efi_main: kernel returned!?\n");
 
 halt:
 
-    com1_puts("[MicroNT EFI] halt (no kernel handoff yet)\n");
+    com1_puts("boot!efi_main: halt\n");
 
     /* Wait for a keypress so the serial log is readable in interactive runs. */
     SystemTable->ConIn->Reset(SystemTable->ConIn, FALSE);
     while (SystemTable->ConIn->ReadKeyStroke(SystemTable->ConIn, &key)
            == EFI_NOT_READY) { }
 
-    /* Unreached for now: handoff(loaderblock_kernel_entry(),
-     *                           loaderblock_handoff_ptr()); */
+    /* Unreached for now: handoff(lpb_kernel_entry(),
+     *                           lpb_handoff_ptr()); */
     return EFI_SUCCESS;
 }

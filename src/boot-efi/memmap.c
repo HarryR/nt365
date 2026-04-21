@@ -1,5 +1,5 @@
 #include "memmap.h"
-#include "com1.h"
+#include "log.h"
 #include "mmu.h"
 
 /*
@@ -32,9 +32,7 @@ EFI_STATUS memmap_capture(UINTN *out_map_key) {
     status = uefi_call_wrapper(BS->GetMemoryMap, 5,
                                &size, NULL, &map_key, &ds, &dv);
     if (status != EFI_BUFFER_TOO_SMALL) {
-        com1_puts("[memmap] unexpected GetMemoryMap (sizing) status=");
-        com1_put_hex((unsigned long)status);
-        com1_puts("\n");
+        BXLOG(L"unexpected GetMemoryMap (sizing) status=0x%lx", (UINT64)status);
         return status;
     }
 
@@ -42,7 +40,7 @@ EFI_STATUS memmap_capture(UINTN *out_map_key) {
     status = uefi_call_wrapper(BS->AllocatePool, 3,
                                EfiLoaderData, size, (void **)&g_map);
     if (EFI_ERROR(status)) {
-        com1_puts("[memmap] AllocatePool failed\n");
+        BXLOG(L"AllocatePool failed");
         return status;
     }
 
@@ -51,9 +49,7 @@ EFI_STATUS memmap_capture(UINTN *out_map_key) {
     status = uefi_call_wrapper(BS->GetMemoryMap, 5,
                                &size, g_map, &map_key, &ds, &dv);
     if (EFI_ERROR(status)) {
-        com1_puts("[memmap] GetMemoryMap (fill) failed status=");
-        com1_put_hex((unsigned long)status);
-        com1_puts("\n");
+        BXLOG(L"GetMemoryMap (fill) failed status=0x%lx", (UINT64)status);
         uefi_call_wrapper(BS->FreePool, 1, g_map);
         g_map = NULL;
         return status;
@@ -65,95 +61,18 @@ EFI_STATUS memmap_capture(UINTN *out_map_key) {
 
     if (out_map_key) *out_map_key = map_key;
 
-    com1_puts("[memmap] captured ");
-    com1_put_dec((unsigned long)(size / ds));
-    com1_puts(" entries (");
-    com1_put_dec((unsigned long)size);
-    com1_puts(" bytes, desc_size=");
-    com1_put_dec((unsigned long)ds);
-    com1_puts(", MapKey=");
-    com1_put_hex((unsigned long)map_key);
-    com1_puts(")\n");
+    /* DO NOT BXLOG past this point — Print() calls AllocatePool
+     * internally, which invalidates the MapKey we just captured and
+     * causes ExitBootServices to return EFI_INVALID_PARAMETER. The
+     * error path above is fine because we return failure anyway. */
     return EFI_SUCCESS;
 }
 
-static const char *uefi_type_name(UINT32 t) {
-    switch (t) {
-    case EfiReservedMemoryType:      return "Reserved";
-    case EfiLoaderCode:              return "LoaderCode";
-    case EfiLoaderData:              return "LoaderData";
-    case EfiBootServicesCode:        return "BootSvcCode";
-    case EfiBootServicesData:        return "BootSvcData";
-    case EfiRuntimeServicesCode:     return "RTSvcCode";
-    case EfiRuntimeServicesData:     return "RTSvcData";
-    case EfiConventionalMemory:      return "Conventional";
-    case EfiUnusableMemory:          return "Unusable";
-    case EfiACPIReclaimMemory:       return "ACPIReclaim";
-    case EfiACPIMemoryNVS:           return "ACPINvs";
-    case EfiMemoryMappedIO:          return "MmIo";
-    case EfiMemoryMappedIOPortSpace: return "MmIoPort";
-    case EfiPalCode:                 return "PalCode";
-    default:                         return "Unknown";
-    }
-}
-
-void memmap_dump(void) {
-    UINTN i = 0;
-    UINT8 *p = (UINT8 *)g_map;
-    UINT8 *end = p + g_map_bytes;
-
-    if (!g_map) { com1_puts("[memmap] not captured\n"); return; }
-
-    com1_puts("[memmap] UEFI descriptors:\n");
-    for (; p < end; p += g_desc_size, i++) {
-        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)p;
-        /* Fold pages * 4K into a byte count for eyeballing. */
-        unsigned long bytes = (unsigned long)d->NumberOfPages << 12;
-        com1_puts("  [");
-        com1_put_dec(i);
-        com1_puts("] ");
-        com1_put_hex((unsigned long)d->PhysicalStart);
-        com1_puts(" + ");
-        com1_put_hex(bytes);
-        com1_puts("  ");
-        com1_puts(uefi_type_name(d->Type));
-        com1_puts("\n");
-    }
-    com1_puts("[memmap] end\n");
-}
-
-static const char *pagekind_name(PageKind k) {
-    switch (k) {
-    case PK_KERNEL_IMAGE:  return "LoaderSystemCode";
-    case PK_HAL_IMAGE:     return "LoaderHalCode";
-    case PK_BOOT_DRIVER:   return "LoaderBootDriver";
-    case PK_REGISTRY:      return "LoaderRegistryData";
-    case PK_NLS:           return "LoaderNlsData";
-    case PK_PCR:           return "LoaderStartupPcrPage";
-    case PK_MEMORY_DATA:   return "LoaderMemoryData";
-    case PK_FIRMWARE_PERM: return "LoaderFirmwarePermanent";
-    case PK_FIRMWARE_TEMP: return "LoaderFirmwareTemporary";
-    default:               return "LoaderFree";
-    }
-}
-
-void memmap_dump_registry(void) {
-    UINTN n = mmu_registry_count();
-    UINTN i;
-    com1_puts("[memmap] NT allocation registry (");
-    com1_put_dec((unsigned long)n);
-    com1_puts(" entries):\n");
-    for (i = 0; i < n; i++) {
-        const AllocEntry *e = mmu_registry_entry(i);
-        com1_puts("  ");
-        com1_put_hex((unsigned long)e->phys);
-        com1_puts(" + ");
-        com1_put_hex((unsigned long)(e->pages << 12));
-        com1_puts("  ");
-        com1_puts(pagekind_name(e->kind));
-        com1_puts("\n");
-    }
-}
+/* memmap_dump / memmap_dump_registry were verbose diagnostic helpers
+ * used during UEFI bring-up. Removed in the Print() refactor — the per-
+ * descriptor dump was ~35 lines of noise on a 128 MB guest and every
+ * info it surfaced is already implied by the mmu_alloc trace lines
+ * plus the `N NT descriptors, highest_end=...` summary at memmap_to_nt. */
 
 /*
  * UEFI -> NT memory type mapping. The NT kernel's MmInitSystem is
@@ -349,25 +268,8 @@ EFI_STATUS memmap_to_nt(NtMemEntry *out, UINTN out_cap, UINTN *out_n) {
         split_by_registry(base_page, pages, d->Type, out, out_cap, out_n);
     }
 
-    {
-        UINT32 max_end = 0;
-        com1_puts("[memmap] NT descriptors:\n");
-        for (UINTN i = 0; i < *out_n; i++) {
-            UINT32 end = out[i].base_page + out[i].page_count;
-            if (end > max_end) max_end = end;
-            com1_puts("  type=");
-            com1_put_dec(out[i].memory_type);
-            com1_puts(" base=");
-            com1_put_hex((unsigned long)out[i].base_page << 12);
-            com1_puts(" pages=");
-            com1_put_dec(out[i].page_count);
-            com1_puts("\n");
-        }
-        com1_puts("[memmap] total=");
-        com1_put_dec((unsigned long)*out_n);
-        com1_puts(" highest_end=");
-        com1_put_hex((unsigned long)max_end << 12);
-        com1_puts("\n");
-    }
+    /* No BXLOG here: memmap_to_nt is called from lpb_link_memmap AFTER
+     * memmap_capture, and Print() allocates internally via UEFI, which
+     * invalidates the MapKey we need for ExitBootServices. */
     return EFI_SUCCESS;
 }

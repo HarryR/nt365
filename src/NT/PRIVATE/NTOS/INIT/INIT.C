@@ -107,6 +107,10 @@ extern KiServiceLimit;
 extern PMESSAGE_RESOURCE_DATA  KiBugCodeMessages;
 #endif
 
+/* From NTOS/IO/IOINIT.C — prints BaseDllName + FileVersion + CheckSum of a
+ * loaded LDR entry. Used for the boot-module inventory after HAL init. */
+VOID IopDumpModuleVersion(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
+
 extern CM_SYSTEM_CONTROL_VECTOR CmControlVector[];
 ULONG CmNtGlobalFlag;
 ULONG CmNtCSDVersion;
@@ -474,6 +478,13 @@ Return Value:
                    );
             RtlInitString( &NameString, Buffer );
             DbgLoadImageSymbols(&NameString, DataTableEntry->DllBase, (ULONG)-1);
+
+            /* Print FileVersion + PE checksum for each pre-staged module
+             * (ntoskrnl, hal, and the UEFI loader's boot drivers). Module
+             * inventory for the boot log — matches the format used later
+             * when registry-driven drivers load via IopInitializeSystemDrivers. */
+            IopDumpModuleVersion(DataTableEntry);
+
             NextEntry = NextEntry->Flink;
         }
 

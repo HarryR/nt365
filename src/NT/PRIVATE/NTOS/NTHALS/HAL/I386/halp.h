@@ -457,7 +457,12 @@ static VOID _inline HalpWritePort(USHORT port, UCHAR val) {
 /* Serial ports */
 #define COM1_PORT   0x3F8
 #define COM2_PORT   0x2F8
-#define HAL_DEBUG_PORT  COM2_PORT
+/* HAL debug output joins the kernel debugger traffic on COM1. MicroNT
+ * does not use WinDbg (we rely on gdb via QEMU's stub + `TRACE=1`
+ * instruction logs instead), so KdPortInitialize's "ownership" of COM1
+ * is nominal — interleaving raw byte writes from both subsystems onto
+ * the same UART is fine, settings are identical (115200 8N1). */
+#define HAL_DEBUG_PORT  COM1_PORT
 
 VOID HalpSerialPutChar(CHAR c);
 VOID HalpSerialPrint(PCHAR s);

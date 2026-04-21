@@ -39,6 +39,7 @@ Revision History:
 #define DEFAULT_LARGE_IRP_LOCATIONS     4;
 
 
+
 //
 // Define the type for driver group name entries in the group list so that
 // load order dependencies can be tracked.
@@ -3691,17 +3692,11 @@ Return Value:
         }
 
         if (IopCheckDependencies( *driverList )) {
-            PKEY_BASIC_INFORMATION _ki;
-            ULONG _rl;
-            _ki = (PKEY_BASIC_INFORMATION)ExAllocatePool(PagedPool, 256);
-            if (_ki && NT_SUCCESS(NtQueryKey(*driverList, KeyBasicInformation, _ki, 256, &_rl))) {
-                DbgPrint("IOSYS: loading '%.*ws'\n", _ki->NameLength/sizeof(WCHAR), _ki->Name);
-            } else {
-                DbgPrint("IOSYS: loading handle=%p\n", *driverList);
-            }
-            if (_ki) ExFreePool(_ki);
+            /* IopLoadDriver itself prints "IOSYS: 'foo.sys' X.Y.Z.W (0xCC)"
+             * between MmLoadSystemImage and DriverEntry, so no further
+             * version work is needed here. Just load and propagate the
+             * DriversLoaded accounting. */
             status = IopLoadDriver( *driverList );
-            DbgPrint("IOSYS: load status=%08lx\n", status);
             if (NT_SUCCESS( status )) {
                 if (treeEntry) {
                     treeEntry->DriversLoaded++;
@@ -4244,4 +4239,91 @@ Return Value:
         RemoveHeadList( &loaderEntry->InLoadOrderLinks );
     }
 }
+
+/*++
+ * IopDumpModuleVersion -- print BaseDllName + FileVersion + PE checksum.
+ *
+ *   IOSYS: 'serial.sys' 3.50.2604.0 (0x001a2b3c)
+ *
+ * FileVersion is pulled from the RT_VERSION resource (VS_FIXEDFILEINFO).
+ * Checksum is OptionalHeader.CheckSum, set by `link -release`.
+ *
+ * Must be called while the full image is still mapped — i.e. right after
+ * MmLoadSystemImage creates the LDR entry, BEFORE DriverEntry runs and
+ * IopLoadDriver discards the INIT section. Calling this post-load
+ * bugchecks with PAGE_FAULT_IN_NONPAGED_AREA when LdrFindResource_U
+ * walks into the unmapped INIT RVA range.
+ *--*/
+VOID
+IopDumpModuleVersion(
+    IN PLDR_DATA_TABLE_ENTRY LdrEntry
+    )
+{
+    /* VS_FIXEDFILEINFO is declared in WINVER.H (user-mode header). We
+     * only need a few fields; redefine the relevant prefix locally to
+     * avoid pulling the whole thing into the kernel build. Size and
+     * layout match winver.h exactly. */
+    typedef struct {
+        ULONG dwSignature;        /* expect 0xFEEF04BD */
+        ULONG dwStrucVersion;
+        ULONG dwFileVersionMS;    /* major<<16 | minor */
+        ULONG dwFileVersionLS;    /* build<<16 | revision */
+    } KERN_VS_FIXEDFILEINFO_HEAD;
+
+    PIMAGE_NT_HEADERS NtHeader;
+    ULONG ResourceIdPath[3];
+    PIMAGE_RESOURCE_DATA_ENTRY ResourceDataEntry;
+    PVOID ResourceBase;
+    ULONG ResourceSize;
+    NTSTATUS Status;
+    ULONG CheckSum = 0;
+    ULONG FileVerMS = 0, FileVerLS = 0;
+    PUCHAR p;
+    KERN_VS_FIXEDFILEINFO_HEAD *ffi;
+
+    NtHeader = RtlImageNtHeader(LdrEntry->DllBase);
+    if (NtHeader) {
+        CheckSum = NtHeader->OptionalHeader.CheckSum;
+    }
+
+    /* RT_VERSION = 16. Resource tree: [type][name=1][lang=0].
+     * LdrFindResource_U walks down the tree for us; we don't care about
+     * the specific language so we pass 0 meaning "any". */
+    ResourceIdPath[0] = 16;
+    ResourceIdPath[1] = 1;
+    ResourceIdPath[2] = 0;
+
+    Status = LdrFindResource_U(LdrEntry->DllBase,
+                               ResourceIdPath, 3,
+                               &ResourceDataEntry);
+    if (NT_SUCCESS(Status)) {
+        Status = LdrAccessResource(LdrEntry->DllBase, ResourceDataEntry,
+                                   &ResourceBase, &ResourceSize);
+        if (NT_SUCCESS(Status) && ResourceSize >= 64) {
+            /* VS_VERSIONINFO layout:
+             *   WORD  wLength
+             *   WORD  wValueLength  (52 if VS_FIXEDFILEINFO present)
+             *   WORD  wType         (0 = binary)
+             *   WCHAR szKey[16]     L"VS_VERSION_INFO\0"  (32 bytes)
+             *   <pad to 4-byte boundary>
+             *   VS_FIXEDFILEINFO    (52 bytes, dwSignature = 0xFEEF04BD)
+             *
+             * Offset to VS_FIXEDFILEINFO = 6 (3 WORDs) + 32 (key) = 38,
+             * rounded up to 40. */
+            p = (PUCHAR)ResourceBase + 40;
+            ffi = (KERN_VS_FIXEDFILEINFO_HEAD *)p;
+            if (ffi->dwSignature == 0xFEEF04BD) {
+                FileVerMS = ffi->dwFileVersionMS;
+                FileVerLS = ffi->dwFileVersionLS;
+            }
+        }
+    }
+
+    DbgPrint("IOSYS: '%wZ' %u.%u.%u.%u (0x%08lx)\n",
+             &LdrEntry->BaseDllName,
+             (FileVerMS >> 16) & 0xFFFF, FileVerMS & 0xFFFF,
+             (FileVerLS >> 16) & 0xFFFF, FileVerLS & 0xFFFF,
+             CheckSum);
+}
+
 

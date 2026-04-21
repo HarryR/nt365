@@ -14,7 +14,8 @@ HalpInitSerial(VOID)
 {
     if (SerialInitialized) return;
 
-    /* Initialize COM2 for HAL debug output (COM1 reserved for KD) */
+    /* Initialize COM1 for HAL debug output. Shared with KD's port traffic
+     * but we don't use WinDbg so this is effectively the only writer. */
     HalpWritePort(HAL_DEBUG_PORT + 1, 0x00);  /* Disable interrupts */
     HalpWritePort(HAL_DEBUG_PORT + 3, 0x80);  /* DLAB on */
     HalpWritePort(HAL_DEBUG_PORT + 0, 0x01);  /* 115200 baud (divisor 1) */

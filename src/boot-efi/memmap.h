@@ -21,13 +21,6 @@
  * returns the MapKey the caller must pass to ExitBootServices. */
 EFI_STATUS memmap_capture(UINTN *out_map_key);
 
-/* Debug: walk the captured map and print a summary to COM1. Safe to
- * call either pre- or post-exit (no UEFI services used). */
-void memmap_dump(void);
-
-/* Debug: print the mmu.c allocation registry with NT memory type names. */
-void memmap_dump_registry(void);
-
 /*
  * NT memory descriptor emitted from translate. This mirrors the fields of
  * MEMORY_ALLOCATION_DESCRIPTOR but without the NT LIST_ENTRY — loaderblock

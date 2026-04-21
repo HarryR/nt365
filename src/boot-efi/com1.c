@@ -21,7 +21,7 @@ void com1_init(void) {
     outb(COM1 + 4, 0x0B);   /* DTR+RTS+OUT2 */
 }
 
-void com1_putc(char c) {
+static void com1_putc(char c) {
     while ((inb(COM1 + 5) & 0x20) == 0) { }
     outb(COM1, (unsigned char)c);
 }
@@ -31,20 +31,4 @@ void com1_puts(const char *s) {
         if (*s == '\n') com1_putc('\r');
         com1_putc(*s);
     }
-}
-
-void com1_put_hex(unsigned long v) {
-    static const char hx[] = "0123456789abcdef";
-    int i;
-    com1_putc('0');
-    com1_putc('x');
-    for (i = 28; i >= 0; i -= 4) com1_putc(hx[(v >> i) & 0xF]);
-}
-
-void com1_put_dec(unsigned long v) {
-    char buf[12];
-    int i = 0;
-    if (v == 0) { com1_putc('0'); return; }
-    while (v) { buf[i++] = '0' + (v % 10); v /= 10; }
-    while (i--) com1_putc(buf[i]);
 }
