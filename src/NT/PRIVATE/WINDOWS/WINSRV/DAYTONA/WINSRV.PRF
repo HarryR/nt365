@@ -28,7 +28,6 @@ FreeObject@8
 ?vCharPos_H3@ESTROBJ@@QAEXAAVRFONTOBJ@@JJJJJVEFLOAT@@@Z
 GreIntersectClipRect@20
 ValidateHwnd@4
-xGetGlyphMetricsPlus@20
 _allmul
 ?iSelect@DCREGION@@QAEHPAVREGION@@H@Z
 ?vOrder@EXFORMOBJ@@QAEXAAU_RECTL@@@Z

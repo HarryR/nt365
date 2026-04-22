@@ -477,6 +477,7 @@ int ClientDrawText(
     int ysign;
     HRGN hrgnClip;
 
+
     gpUserGetViewportExtEx(hdc, &ViewExtent);
     gpUserGetWindowExtEx(hdc, &WindowExtent);
 

@@ -212,8 +212,6 @@ Return Value:
 
     case DLL_PROCESS_ATTACH:
 
-        DbgPrint("KERNEL32: BaseDllInitialize DLL_PROCESS_ATTACH\n");
-
         DisableThreadLibraryCalls(DllHandle);
 
         BaseIniFileUpdateCount = 0;
@@ -255,15 +253,12 @@ Return Value:
                                            NULL,
                                            &ServerProcess
                                          );
-        DbgPrint("KERNEL32: CsrClientConnectToServer status=%08lx server=%d\n",
-                 Status, ServerProcess);
         if (!NT_SUCCESS( Status )) {
-            DbgPrint("KERNEL32: CsrConnect failed\n");
+            DbgPrint("KERNEL32: CsrConnect failed status=%08lx\n", Status);
             return FALSE;
             }
 
         BaseStaticServerData = NtCurrentPeb()->ReadOnlyStaticServerData[BASESRV_SERVERDLL_INDEX];
-        DbgPrint("KERNEL32: StaticServerData=%p\n", BaseStaticServerData);
 
         if (!ServerProcess) {
             CsrNewThread();
@@ -275,19 +270,16 @@ Return Value:
             BaseRunningInServerProcess = TRUE;
 
             CsrSrv = LoadLibrary("csrsrv");
-            DbgPrint("KERNEL32: LoadLibrary(csrsrv)=%p\n", CsrSrv);
             if (!CsrSrv) {
                 DbgPrint("KERNEL32: csrsrv load failed\n");
                 return FALSE;
             }
             SetQuick = (SETQUICKROUTINE)GetProcAddress(CsrSrv,"CsrSetQuickThreadCreateRoutine");
-            DbgPrint("KERNEL32: SetQuick=%p\n", SetQuick);
             if (!SetQuick) {
-                DbgPrint("KERNEL32: GetProcAddress failed\n");
+                DbgPrint("KERNEL32: GetProcAddress(CsrSetQuickThreadCreateRoutine) failed\n");
                 return FALSE;
             }
             Status = (SetQuick)(QuickThreadCreateRoutine);
-            DbgPrint("KERNEL32: SetQuick status=%08lx\n", Status);
             FreeLibrary(CsrSrv);
             }
 
@@ -363,7 +355,6 @@ Return Value:
 	RtlInitUnicodeString(&BaseDotPifSuffixName,L".pif");
         RtlInitUnicodeString(&BaseDotExeSuffixName,L".exe");
 
-        DbgPrint("KERNEL32: path setup done, calling IniFileMappings\n");
         BaseDllInitializeIniFileMappings( BaseStaticServerData );
 #if 0
         DbgPrint( "BASEDLL: Connected to server\n" );
@@ -388,13 +379,10 @@ Return Value:
         //
         // call the NLS API initialization routine
         //
-        DbgPrint("KERNEL32: calling NlsDllInitialize\n");
         if ( !NlsDllInitialize(DllHandle,Reason,Context) ) {
             DbgPrint("KERNEL32: NlsDllInitialize FAILED\n");
             return FALSE;
             }
-
-        DbgPrint("KERNEL32: BaseDllInitialize complete\n");
         break;
 
     case DLL_PROCESS_DETACH:

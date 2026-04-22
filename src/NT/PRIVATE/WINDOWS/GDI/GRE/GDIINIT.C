@@ -529,10 +529,6 @@ VOID GdiClientDisconnect(
 NTSTATUS GdiClientThreadDisconnect(
     PCSR_THREAD t)
 {
-#if GDISRV_INIT_MESSAGES
-    DbgPrint("GDISRV: GdiClientThreadDisconnect()\n");
-#endif
-
     return(STATUS_SUCCESS);
     t;
 }
@@ -547,10 +543,6 @@ NTSTATUS GdiClientThreadDisconnect(
 
 NTSTATUS GdiServerThreadInit()
 {
-#if GDISRV_INIT_MESSAGES
-    DbgPrint("GDISRV: GdiServerThreadInit()\n");
-#endif
-
     NtCurrentTeb()->glSectionInfo = 0;  // OpenGL
 
     if (!Initialize())

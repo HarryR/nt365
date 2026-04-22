@@ -95,7 +95,6 @@ extern "C" BOOL Initialize(VOID)
     // Initialize lots of random stuff including the handle manager.
     //
 
-    DbgPrint("GRE: Initialize — calling HmgCreate\n");
     if (!HmgCreate())
     {
         DbgPrint("GRE: HmgCreate FAILED\n");
@@ -112,7 +111,6 @@ extern "C" BOOL Initialize(VOID)
     // Initialize LDEV
     //
 
-    DbgPrint("GRE: calling bInitLDEVOBJ\n");
     if (!bInitLDEVOBJ())
     {
         DbgPrint("GRE: bInitLDEVOBJ FAILED\n");
@@ -123,7 +121,6 @@ extern "C" BOOL Initialize(VOID)
     // Init the font drivers
     //
 
-    DbgPrint("GRE: calling bInitPathAlloc\n");
     if (!bInitPathAlloc())
     {
         DbgPrint("GRE: bInitPathAlloc FAILED\n");
@@ -158,7 +155,6 @@ extern "C" BOOL Initialize(VOID)
     // Create a monochrome 1x1 bitmap as the default bitmap
     //
 
-    DbgPrint("GRE: calling bInitPALOBJ\n");
     if (!bInitPALOBJ())
     {
         DbgPrint("GRE: bInitPALOBJ FAILED\n");
@@ -167,7 +163,6 @@ extern "C" BOOL Initialize(VOID)
 
     vInitXLATE();
 
-    DbgPrint("GRE: calling bInitBMOBJ\n");
     if (!bInitBMOBJ())
     {
         DbgPrint("GRE: bInitBMOBJ FAILED\n");
@@ -178,7 +173,6 @@ extern "C" BOOL Initialize(VOID)
     // Init the font drivers
     //
 
-    DbgPrint("GRE: calling bInitFontDrivers\n");
     if (!bInitFontDrivers())
     {
         DbgPrint("GRE: bInitFontDrivers FAILED\n");
@@ -189,7 +183,6 @@ extern "C" BOOL Initialize(VOID)
     // Init global public PFT
     //
 
-    DbgPrint("GRE: calling bInitPublicPFT\n");
     if (!bInitPublicPFT())
     {
         DbgPrint("GRE: bInitPublicPFT FAILED\n");
@@ -200,14 +193,12 @@ extern "C" BOOL Initialize(VOID)
     // Initialize LFONT
     //
 
-    DbgPrint("GRE: calling bInitStockFonts\n");
     if (!bInitStockFonts())
     {
         DbgPrint("GRE: bInitStockFonts FAILED\n");
         return(FALSE);
     }
 
-    DbgPrint("GRE: calling bInitFontCache\n");
     if (!bInitFontCache())
     {
         DbgPrint("GRE: bInitFontCache FAILED\n");
@@ -224,7 +215,6 @@ extern "C" BOOL Initialize(VOID)
     // Start up the brush component
     //
 
-    DbgPrint("GRE: calling bInitBRUSHOBJ\n");
     if (!bInitBRUSHOBJ())
     {
         DbgPrint("GRE: bInitBRUSHOBJ FAILED\n");

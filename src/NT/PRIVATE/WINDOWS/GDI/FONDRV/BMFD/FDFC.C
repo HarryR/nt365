@@ -299,7 +299,6 @@ BmfdOpenFontContext (
     DbgPrint("\n    )\n");
 #endif
 
-    DbgPrint("BMFD: OpenFontContext entered iFile=%p iFace=%d\n", pfo->iFile, pfo->iFace);
     if ( ((HFF) pfo->iFile) == HFF_INVALID) {
         DbgPrint("BMFD: OpenFontContext — iFile is HFF_INVALID\n");
         return(HFC_INVALID);
@@ -337,12 +336,7 @@ BmfdOpenFontContext (
 
 // compute the horizontal and vertical scaling factors
 
-    {
-        XFORMOBJ *pxo = FONTOBJ_pxoGetXform(pfo);
-        DbgPrint("BMFD: OpenFontContext — pxoGetXform=%p\n", pxo);
-        vInitXform(&ptlScale, pxo);
-        DbgPrint("BMFD: OpenFontContext — ptlScale=%d,%d\n", ptlScale.x, ptlScale.y);
-    }
+    vInitXform(&ptlScale, FONTOBJ_pxoGetXform(pfo));
 
 #endif // DBCS_VERT
 
@@ -401,7 +395,6 @@ BmfdOpenFontContext (
             (ULONG)pcvtfh->usMaxWidth * ptlScale.x,
             (ULONG)pcvtfh->cy * ptlScale.y,
             &cxMax);
-    DbgPrint("BMFD: OpenFontContext — cjGlyphMax=%d cxMax=%d cjfc=%d\n", cjGlyphMax, cxMax, cjfc);
 #endif // DBCS_VERT
 
 // init stretch flags
@@ -466,15 +459,12 @@ BmfdOpenFontContext (
     // file to memory and make sure the pointers to FNT resources
     // are updated accordingly
 
-    DbgPrint("BMFD: OpenFontContext — iType=%d cRef=%d pwszFileName=%p '%ws'\n",
-             pff->iType, pff->cRef, pff->pwszFileName, pff->pwszFileName ? pff->pwszFileName : L"(null)");
     if ((pff->iType == TYPE_DLL16) || (pff->iType == TYPE_FNT))
     {
 
         if (pff->cRef == 0)
         {
             INT  i;
-            DbgPrint("BMFD: OpenFontContext — remapping '%ws'\n", pff->pwszFileName);
             if (!bMapFileUNICODE(pff->pwszFileName, &pff->u.fvw))
             {
                 DbgPrint("BMFD: OpenFontContext — bMapFileUNICODE FAILED\n");

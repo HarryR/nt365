@@ -49,8 +49,6 @@ BOOL UserClientDllInitialize(
 {
     DBG_UNREFERENCED_PARAMETER(pctx);
 
-    DbgPrint("USER32: UserClientDllInitialize reason=%d\n", Reason);
-
     if (Reason == DLL_PROCESS_ATTACH) {
 
         NTSTATUS status = 0;
@@ -100,9 +98,8 @@ BOOL UserClientDllInitialize(
                 USERSRV_SERVERDLL_INDEX, &cbiCallBack, &userconnect,
                 &ulConnect, (PBOOLEAN)&fServer);
 
-        DbgPrint("USER32: CsrClientConnectToServer status=%08lx\n", status);
         if (!NT_SUCCESS(status)) {
-            DbgPrint("USER32: connect FAILED, returning FALSE\n");
+            DbgPrint("USER32: CsrClientConnectToServer FAILED status=%08lx\n", status);
             return FALSE;
         }
 
@@ -120,8 +117,6 @@ BOOL UserClientDllInitialize(
         hmodUser = hmod;
 
         pUser32Heap = RtlProcessHeap();    /* cache the heap, for memory calls */
-
-        DbgPrint("USER32: DLL_PROCESS_ATTACH complete\n");
     }
 
     return TRUE;

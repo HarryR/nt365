@@ -751,16 +751,21 @@ def build_micront_software_hive(profile: str = "headless") -> Hive:
     if profile == "gui":
         # GRE_Initialize — font file paths for the GDI engine.
         # Without these, GRE falls back to the winsrv.dll embedded font.
+        # SSERIFE.FON contains "MS Sans Serif" (the canonical NT 3.5 dialog
+        # font); COURE.FON is Courier; SMALLE.FON holds the tiny-point
+        # Small Fonts face.
         gre = cv["GRE_Initialize"]
-        gre.set_sz("FONTS.FON", "C:\\System32\\vgasys.fon") \
-           .set_sz("FIXEDFON.FON", "C:\\System32\\vgafix.fon") \
-           .set_sz("OEMFONT.FON", "C:\\System32\\vgaoem.fon")
+        gre.set_sz("FONTS.FON", "C:\\System32\\sserife.fon") \
+           .set_sz("FIXEDFON.FON", "C:\\System32\\coure.fon") \
+           .set_sz("OEMFONT.FON", "C:\\System32\\coure.fon")
 
-        # Font substitution table — maps logical font names to physical
-        # fonts. "MS Shell Dlg" is used by all winlogon dialogs and
-        # must resolve to a font we actually have.
+        # Font substitution table — only logical faces that aren't
+        # physically present need aliasing.
         cv["FontSubstitutes"] \
-            .set_sz("MS Shell Dlg", "System")
+            .set_sz("MS Shell Dlg", "MS Sans Serif") \
+            .set_sz("Helv", "MS Sans Serif") \
+            .set_sz("Tms Rmn", "MS Serif") \
+            .set_sz("Courier New", "Courier")
 
     if profile != 'micront':
         # IniFileMapping — BaseSrvInitializeIniFileMappings reads this tree
@@ -772,6 +777,108 @@ def build_micront_software_hive(profile: str = "headless") -> Hive:
             .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Windows")
         ifm["WINLOGON"] \
             .set_sz("", "SYS:Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon")
+
+    return h
+
+
+def build_micront_default_hive(profile: str = "headless") -> Hive:
+    """Return the DEFAULT user hive mounted at \\Registry\\User\\.Default.
+
+    USERSRV accesses per-user UI policy through this hive whenever no
+    interactive user is logged on — which, for the Welcome dialog path,
+    is always. PROFILE.C::aFastRegMap hardcodes the section roots with a
+    leading 'U' meaning HKCU, and before logon HKCU == .Default. So every
+    one of these section reads lands here:
+
+        PMAP_COLORS      → Control Panel\\Colors
+        PMAP_DESKTOP     → Control Panel\\Desktop
+        PMAP_CURSORS     → Control Panel\\Cursors
+        PMAP_BEEP        → Control Panel\\Sound
+        PMAP_MOUSE       → Control Panel\\Mouse
+        PMAP_KEYBOARD    → Control Panel\\Keyboard
+        (etc. — see WINSRV.H PMAP_* constants)
+
+    Without a DEFAULT hive mounted, every FastGetProfileStringW call
+    that targets these sections fails to open its cached key, silently
+    returns the caller's hardcoded default, and the UI renders with
+    whatever Microsoft's engineer typed into the fallback literal in
+    1992. That's how MicroNT ended up with invisible dialog frames —
+    Color\\Window defaulted to RGB(255,255,255) (white), Color\\Desktop
+    to some gray, and the dialog frame brushes were NULL because no
+    real sysColors seeding ever happened.
+
+    NT 3.5 typically loads DEFAULT from %SystemRoot%\\System32\\config\\
+    DEFAULT, as a HIVE_LIST_ENTRY in CmpMachineHiveList (CMDAT.C line 206:
+    { L"DEFAULT", L"USER\\.DEFAULT", ... }). This builder emits that
+    hive file.
+
+    Populating this file is equivalent to running the Control Panel's
+    "Appearance" and "Desktop" applets once, with the classic Windows 3.1
+    grey/blue scheme. The color values are the 21 REG_SZ entries the
+    USERSRV string table identifies by name (STR_SCROLLBAR..STR_BTNHIGHLIGHT
+    in USER/SERVER/RES.RC), stored as space-separated decimal R G B.
+    """
+    h = Hive("DEFAULT")
+
+    if profile != "gui":
+        # Only GUI profile needs these — headless/micront never touches
+        # PMAP_COLORS / PMAP_DESKTOP and so never mounts .Default.
+        return h
+
+    # ---- Control Panel\Colors ----
+    # Classic Windows 3.1 / NT 3.5 "Windows Default" scheme. Values are
+    # space-separated decimal R G B as REG_SZ — the format CI_GetClrVal
+    # (USER/SERVER/INIT.C:1645) parses. Value names are from RES.RC:197–217.
+    colors = h["Control Panel\\Colors"]
+    colors.set_sz("Scrollbar",         "192 192 192")  # COLOR_SCROLLBAR
+    colors.set_sz("Background",        "0 128 128")    # COLOR_BACKGROUND (teal desktop)
+    colors.set_sz("ActiveTitle",       "0 0 128")      # COLOR_ACTIVECAPTION (dark blue)
+    colors.set_sz("InactiveTitle",     "128 128 128")  # COLOR_INACTIVECAPTION
+    colors.set_sz("Menu",              "192 192 192")  # COLOR_MENU
+    colors.set_sz("Window",            "255 255 255")  # COLOR_WINDOW (dialog background)
+    colors.set_sz("WindowFrame",       "0 0 0")        # COLOR_WINDOWFRAME (border line)
+    colors.set_sz("MenuText",          "0 0 0")        # COLOR_MENUTEXT
+    colors.set_sz("WindowText",        "0 0 0")        # COLOR_WINDOWTEXT
+    colors.set_sz("TitleText",         "255 255 255")  # COLOR_CAPTIONTEXT
+    colors.set_sz("ActiveBorder",      "192 192 192")  # COLOR_ACTIVEBORDER
+    colors.set_sz("InactiveBorder",    "192 192 192")  # COLOR_INACTIVEBORDER
+    colors.set_sz("AppWorkspace",      "128 128 128")  # COLOR_APPWORKSPACE (MDI backdrop)
+    colors.set_sz("Hilight",           "0 0 128")      # COLOR_HIGHLIGHT (selection bar)
+    colors.set_sz("HilightText",       "255 255 255")  # COLOR_HIGHLIGHTTEXT
+    colors.set_sz("ButtonFace",        "192 192 192")  # COLOR_BTNFACE (button grey)
+    colors.set_sz("ButtonShadow",      "128 128 128")  # COLOR_BTNSHADOW
+    colors.set_sz("GrayText",          "128 128 128")  # COLOR_GRAYTEXT (disabled)
+    colors.set_sz("ButtonText",        "0 0 0")        # COLOR_BTNTEXT
+    colors.set_sz("InactiveTitleText", "192 192 192")  # COLOR_INACTIVECAPTIONTEXT
+    colors.set_sz("ButtonHilight",     "255 255 255")  # COLOR_BTNHIGHLIGHT
+
+    # ---- Control Panel\Desktop ----
+    # Window manager policy that USER reads via PMAP_DESKTOP. BorderWidth
+    # is the multiplier applied to the display driver's cxBorder to yield
+    # SM_CXFRAME — without this, SERVER.C:2150 defaults to 3 anyway, but
+    # explicit beats implicit; also covers CaretBlinkRate, DragFullWindows,
+    # etc. that other sites in USERSRV read.
+    desktop = h["Control Panel\\Desktop"]
+    desktop.set_sz("BorderWidth",        "3")
+    desktop.set_sz("CursorBlinkRate",    "530")
+    desktop.set_sz("ScreenSaveTimeOut",  "900")
+    desktop.set_sz("ScreenSaveActive",   "0")
+    desktop.set_sz("Wallpaper",          "(None)")
+    desktop.set_sz("TileWallpaper",      "0")
+    desktop.set_sz("WallpaperStyle",     "0")
+    desktop.set_sz("GridGranularity",    "0")
+    desktop.set_sz("DragFullWindows",    "0")
+    desktop.set_sz("FontSmoothing",      "0")
+
+    # ---- Control Panel\Cursors / Mouse / Keyboard / Sound ----
+    # Empty but present, so FastGetProfileStringW gets a real key handle
+    # and falls through to the caller's default instead of erroring.
+    h["Control Panel\\Cursors"]
+    h["Control Panel\\Mouse"]
+    h["Control Panel\\Keyboard"]
+    h["Control Panel\\Sound"]
+    h["Control Panel\\Sounds"]
+    h["Control Panel\\Icons"]
 
     return h
 
@@ -828,6 +935,17 @@ def main() -> None:
         sw_path = args.output.replace("SYSTEM", "SOFTWARE") if "SYSTEM" in args.output else "SOFTWARE"
         size = sw.write(sw_path)
         print(f"SOFTWARE hive ({args.profile}): {size} bytes -> {sw_path}")
+
+    # DEFAULT hive is what gets mounted at \Registry\User\.Default before
+    # any interactive logon — USERSRV's PMAP_COLORS/PMAP_DESKTOP/etc.
+    # reads land here when nobody's logged in. Kernel-side CMDAT.C's
+    # CmpMachineHiveList expects %SystemRoot%\System32\config\DEFAULT
+    # to exist; without it mounts silently fall through to caller defaults.
+    if args.profile == "gui":
+        df = build_micront_default_hive(profile=args.profile)
+        df_path = args.output.replace("SYSTEM", "DEFAULT") if "SYSTEM" in args.output else "DEFAULT"
+        size = df.write(df_path)
+        print(f"DEFAULT hive ({args.profile}): {size} bytes -> {df_path}")
 
 
 if __name__ == "__main__":

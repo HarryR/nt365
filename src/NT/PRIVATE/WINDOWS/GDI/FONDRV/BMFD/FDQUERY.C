@@ -264,23 +264,17 @@ BmfdQueryFontData (
 #endif // DBCS_VERT
 
 
-    DbgPrint("BMFD: QueryFontData iMode=%d iFile=%p pvProducer=%p\n",
-             iMode, pfo->iFile, pfo->pvProducer);
-
     if (PFF(pfo->iFile)->fl & FF_EXCEPTION_IN_PAGE_ERROR)
     {
         WARNING("bmfd!bmfdQueryFontData: this file is gone\n");
         return FD_ERROR;
     }
 
-    DbgPrint("BMFD: QueryFontData — file OK, opening context\n");
-
 // If pfo->pvProducer is NULL, then we need to open a font context.
 //
     if ( pfo->pvProducer == (PVOID) NULL )
         pfo->pvProducer = (PVOID) BmfdOpenFontContext(pfo);
 
-    DbgPrint("BMFD: QueryFontData — pvProducer=%p\n", pfo->pvProducer);
     pfc = PFC(pfo->pvProducer);
 
     if ( pfc == (PFONTCONTEXT) NULL )

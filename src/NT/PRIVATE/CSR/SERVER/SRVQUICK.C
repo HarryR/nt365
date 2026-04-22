@@ -1017,7 +1017,6 @@ PCSR_THREAD CsrConnectToUser( VOID )
         }
     }
 
-    DbgPrint("CSRSS: CsrConnectToUser calling ClientThreadConnect at %p\n", ClientThreadConnectRoutine);
     if ((QlpcTeb = ClientThreadConnectRoutine()) == NULL) {
             IF_DEBUG {
             DbgPrint("CSRSS: CsrConnectToUser failed\n");
@@ -1026,7 +1025,6 @@ PCSR_THREAD CsrConnectToUser( VOID )
         return NULL;
     }
 
-    DbgPrint("CSRSS: CsrConnectToUser — QlpcTeb=%p\n", QlpcTeb);
     ASSERT(QlpcTeb->ClientThread);
 
     Teb = NtCurrentTeb();

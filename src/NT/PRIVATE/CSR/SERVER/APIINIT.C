@@ -102,15 +102,12 @@ CsrApiPortInitialize( VOID )
 
     InitializeObjectAttributes( &ObjectAttributes, &CsrApiPortName, 0,
                                 NULL, SecurityDescriptor );
-    DbgPrint("CSRSRV: ApiPortInit/ NtCreatePort(name=%wZ)\n", &CsrApiPortName);
     Status = NtCreatePort( &CsrApiPort,
                            &ObjectAttributes,
                            sizeof( CSR_API_CONNECTINFO ),
                            sizeof( CSR_API_MSG ),
                            4096 * 16
                          );
-    DbgPrint("CSRSRV: ApiPortInit/ NtCreatePort status=%08x CsrApiPort=%p\n",
-             Status, CsrApiPort);
     ASSERT( NT_SUCCESS( Status ) );
 
     //
@@ -138,8 +135,6 @@ CsrApiPortInitialize( VOID )
     // Create the inital request thread
     //
 
-    DbgPrint("CSRSRV: ApiPortInit/ RtlCreateUserThread(start=%p)\n",
-             (PVOID)CsrApiRequestThread);
     Status = RtlCreateUserThread( NtCurrentProcess(),
                                   NULL,
                                   TRUE,
@@ -151,8 +146,6 @@ CsrApiPortInitialize( VOID )
                                   &Thread,
                                   &ClientId
                                 );
-    DbgPrint("CSRSRV: ApiPortInit/ CreateUserThread status=%08x Thread=%p\n",
-             Status, Thread);
     ASSERT( NT_SUCCESS( Status ) );
     CsrAddStaticServerThread(Thread,&ClientId,CSR_STATIC_API_THREAD);
 

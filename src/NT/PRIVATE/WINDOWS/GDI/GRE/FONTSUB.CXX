@@ -71,138 +71,94 @@ LONG cCapString(WCHAR *pwcDst,WCHAR *pwcSrc,INT cMax);
 
 VOID vInitFontSubTable()
 {
-// Initialize font substitution table reference.
+// MicroNT: read HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes
+// directly via the registry API. The original NT 3.5 code routed through
+// GetProfileStringW → BASESRV IniFileMapping → win.ini [FontSubstitutes],
+// which is Win16-era baggage we don't need: the GDI server process has
+// registry access and the data lives in the registry anyway.
 
     gpfsTable = (PFONTSUB) NULL;
     gcfsTable = 0;
 
-// Load key names from the [FontSubstitutes] section of WIN.INI into buffer.
+    UNICODE_STRING KeyName;
+    OBJECT_ATTRIBUTES Obja;
+    HANDLE hKey;
+    NTSTATUS Status;
 
-    WCHAR   wcNull = L'\0';
-    PWCHAR  pwchBuf;
-    COUNT   cwchBuf = 256;
-    COUNT   cwchRet;
-    LBOOL   bDone = FALSE;
+    RtlInitUnicodeString(&KeyName,
+        L"\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\FontSubstitutes");
+    InitializeObjectAttributes(&Obja, &KeyName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    Status = NtOpenKey(&hKey, KEY_READ, &Obja);
+    if (!NT_SUCCESS(Status)) {
+        DbgPrint("GRE: vInitFontSubTable NtOpenKey FAILED status=%08x\n", Status);
+        return;
+    }
 
-    do
+// Count values first, then allocate exact-fit table.
+
+    ULONG cValues;
     {
-    // Allocate memory.
-
-        if ( (pwchBuf = (PWCHAR) PVALLOCMEM(cwchBuf * sizeof(WCHAR))) == (PWCHAR) NULL )
-        {
-             #if DBG
-            DbgPrint("gdisrv!vInitFontSubTable(): memory allocation failed\n");
-            #endif
-
+        KEY_FULL_INFORMATION kfi;
+        ULONG cb;
+        Status = NtQueryKey(hKey, KeyFullInformation, &kfi, sizeof(kfi), &cb);
+        if (!NT_SUCCESS(Status)) {
+            DbgPrint("GRE: vInitFontSubTable NtQueryKey FAILED status=%08x\n", Status);
+            NtClose(hKey);
             return;
         }
+        cValues = kfi.Values;
+    }
 
-    // Get the key names.
-
-        if ( (cwchRet = (SIZE_T) GetProfileStringW((LPCWSTR)L"FontSubstitutes", (LPWSTR) NULL, &wcNull, (LPWSTR) pwchBuf, cwchBuf)) < cwchBuf - 2 )
-            bDone = TRUE;
-        else
-        {
-        // Load failed because buffer too small, so enlarge the buffer size and try again.
-
-            cwchBuf += 256;
-
-        // Don't forget to release the small buffer.
-
-            VFREEMEM(pwchBuf);
-        }
-
-    } while ( !bDone );
-
-// Early out -- if cwchRet == 0, then there are no keys!
-
-    if ( cwchRet == 0 )
-    {
-    // Release buffer memory on the way out.
-
-        VFREEMEM(pwchBuf);
-
+    if (cValues == 0) {
+        NtClose(hKey);
         return;
     }
 
-// Count the keys.
-
-    PWCHAR pwchKey = pwchBuf;       // use to scan the keys
-    PWCHAR pwchKeyEnd = pwchBuf + cwchRet;
-    COUNT  cKeys = 0;                // number of keys
-
-    while ( pwchKey < pwchKeyEnd )
-    {
-    // Increment the key count.
-
-        cKeys++;
-
-    // Move pointer to the next key.
-
-        while (*pwchKey++);
-    }
-
-// Allocate font substitution table.
-
-    if ( (gpfsTable = (PFONTSUB) PVALLOCMEM(cKeys * sizeof(FONTSUB))) == (PFONTSUB) NULL )
-    {
-        #if DBG
-        DbgPrint("gdisrv!vInitFontSubTable(): memory allocation failed\n");
-        #endif
-
-        VFREEMEM(pwchBuf);
-
+    if ((gpfsTable = (PFONTSUB) PVALLOCMEM(cValues * sizeof(FONTSUB))) == (PFONTSUB) NULL) {
+        DbgPrint("GRE: vInitFontSubTable allocation FAILED\n");
+        NtClose(hKey);
         return;
     }
 
-// Get the font substitution strings.
+// Enumerate values. ValueName = logical face, data = substitute face.
 
-    PFONTSUB pfs = gpfsTable;       // scan the table
-    pwchKey = pwchBuf;              // reset key pointer
+    BYTE    Buffer[sizeof(KEY_VALUE_FULL_INFORMATION) + (LF_FACESIZE + 1) * sizeof(WCHAR) * 2];
+    PKEY_VALUE_FULL_INFORMATION pkvfi = (PKEY_VALUE_FULL_INFORMATION)Buffer;
+    PFONTSUB pfs = gpfsTable;
 
-    WCHAR   awchNonCapFace[LF_FACESIZE];    // tmp buf to store name before capitalizing
+    for (ULONG i = 0; i < cValues; i++) {
+        ULONG cb;
+        Status = NtEnumerateValueKey(hKey, i, KeyValueFullInformation,
+                                     pkvfi, sizeof(Buffer), &cb);
+        if (!NT_SUCCESS(Status))
+            break;
+        if (pkvfi->Type != REG_SZ)
+            continue;
 
-    do
-    {
-    // Get substitute name using key name.
+        WCHAR faceName[LF_FACESIZE];
+        WCHAR altName[LF_FACESIZE];
+        ULONG cchName = pkvfi->NameLength / sizeof(WCHAR);
+        ULONG cchData = pkvfi->DataLength / sizeof(WCHAR);
+        if (cchName == 0 || cchName >= LF_FACESIZE || cchData >= LF_FACESIZE)
+            continue;
 
-        DWORD dwRet = FastGetProfileStringW (
-                PMAP_FONTSUBS,
-                pwchKey,
-                &wcNull,
-                awchNonCapFace,
-                LF_FACESIZE);
+        RtlCopyMemory(faceName, pkvfi->Name, cchName * sizeof(WCHAR));
+        faceName[cchName] = L'\0';
+        PWCHAR pData = (PWCHAR)((PBYTE)pkvfi + pkvfi->DataOffset);
+        RtlCopyMemory(altName, pData, cchData * sizeof(WCHAR));
+        if (cchData > 0 && altName[cchData - 1] == L'\0')
+            cchData--;
+        altName[cchData] = L'\0';
 
-        if (dwRet > LF_FACESIZE) // dwRet includes the terminating zero
-        {
-        #if DBG
-            DbgPrint("gdisrv!vInitFontSubTable(): bad substitute name for %ws, dwRet = %ld\n",
-                 pwchKey, dwRet);
-        #endif
-
-            awchNonCapFace[0] = wcNull; // just substitute default and go on
-        }
-
-    // Store the key and substitute face name capitialized.  They are
-    // capitalized so that we can do fast, case insensitive searches.
-
-        cCapString(pfs->awchAltFace, awchNonCapFace, LF_FACESIZE);
-        cCapString(pfs->awchFace, pwchKey, LF_FACESIZE);
-
-    // Update pointer and count.
-
+        cCapString(pfs->awchFace, faceName, LF_FACESIZE);
+        cCapString(pfs->awchAltFace, altName, LF_FACESIZE);
         pfs++;
         gcfsTable++;
+    }
 
-    // Next key.
+    NtClose(hKey);
 
-        while (*pwchKey++);
-
-    } while (pwchKey < pwchKeyEnd);
-
-// Release buffer memory on the way out.
-
-    VFREEMEM(pwchBuf);
+    DbgPrint("GRE: vInitFontSubTable loaded %d entries\n", gcfsTable);
 }
 
 

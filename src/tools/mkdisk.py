@@ -524,10 +524,12 @@ _GUI_FILES: list[tuple[str, Path]] = [
     # Login
     ("System32/winlogon.exe",       OBJ("WINDOWS/USER/WINLOGON/DAYTONA") / "winlogon.exe"),
     ("System32/userinit.exe",       OBJ("WINDOWS/USER/USERINIT") / "userinit.exe"),
-    # VGA bitmap fonts — referenced by SOFTWARE hive GRE_Initialize
-    ("System32/vgasys.fon",         FONTS / "VGASYS.FON"),
-    ("System32/vgafix.fon",         FONTS / "VGAFIX.FON"),
-    ("System32/vgaoem.fon",         FONTS / "VGAOEM.FON"),
+    # Dialog bitmap fonts — referenced by SOFTWARE hive GRE_Initialize.
+    # The "E" = English (CP1252) variants, bigger than the stripped-down
+    # VGA*.FON (only 5-7 KB each, too sparse for dialog text).
+    ("System32/sserife.fon",        FONTS / "SSERIFE.FON"),   # MS Sans Serif
+    ("System32/coure.fon",          FONTS / "COURE.FON"),     # Courier (fixed)
+    ("System32/smalle.fon",         FONTS / "SMALLE.FON"),    # Small Fonts
 ]
 
 
@@ -543,6 +545,12 @@ def get_disk_files(profile: str, output_dir: Path) -> list[tuple[str, Path]]:
         files.append(("System32/config/SOFTWARE", output_dir / "SOFTWARE"))
         files.extend(_HEADLESS_FILES)
     if profile == "gui":
+        # DEFAULT hive holds pre-logon HKCU state (Control Panel\Colors,
+        # WindowMetrics, Desktop). Kernel's CmpMachineHiveList entry
+        # { L"DEFAULT", L"USER\\.DEFAULT", ... } mounts this at
+        # \Registry\User\.Default — absence yields silent fallbacks to
+        # whatever literals sit in the USERSRV source tree.
+        files.append(("System32/config/DEFAULT", output_dir / "DEFAULT"))
         files.extend(_GUI_FILES)
     return files
 

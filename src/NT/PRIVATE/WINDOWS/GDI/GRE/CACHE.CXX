@@ -569,7 +569,7 @@ VOID RFONTOBJ::vDeleteCache ()
     return;
 }
 
-#if !defined(_X86_) && !defined(_MIPS_) && !defined(_ALPHA_) && !defined(_PPC_)
+#if !defined(_MIPS_) && !defined(_ALPHA_) && !defined(_PPC_)
 
 /******************************Public*Routine******************************\
 * BOOL RFONTOBJ::bGetGlyphMetrics
@@ -691,7 +691,7 @@ BOOL RFONTOBJ::bGetGlyphMetrics (
 #endif
 
 
-#if !defined(_X86_) && !defined(_MIPS_) && !defined(_ALPHA_) && !defined(_PPC_)
+#if !defined(_MIPS_) && !defined(_ALPHA_) && !defined(_PPC_)
 
 /******************************Public*Routine******************************\
 * BOOL RFONTOBJ::bGetGlyphMetricsPlus

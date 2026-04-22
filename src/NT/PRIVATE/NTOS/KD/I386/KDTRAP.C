@@ -518,6 +518,7 @@ Return Value:
         static ULONG _prev_code = 0, _prev_eip = 0;
         if (PreviousMode == UserMode &&
             ExceptionRecord->ExceptionCode != STATUS_BREAKPOINT &&
+            ExceptionRecord->ExceptionCode != DBG_PRINTEXCEPTION_C &&
             ((ULONG)ExceptionRecord->ExceptionCode != _prev_code ||
              ContextRecord->Eip != _prev_eip))
         {

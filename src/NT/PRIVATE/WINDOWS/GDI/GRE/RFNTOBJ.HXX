@@ -478,12 +478,12 @@ class XLDEVOBJ;
 extern "C" {
 
 #ifdef FONTLINK /*EUDC */
-#if defined(_MIPS_) || defined(_X86_) || defined(_ALPHA_) || defined(_PPC_)
+#if defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 BOOL xGetGlyphMetrics(PRFONTOBJ Rfont, COUNT c, GLYPHPOS *pgp, WCHAR *pwc,XDCOBJ *pdco);
 BOOL xGetGlyphMetricsPlus(PRFONTOBJ Rfont, COUNT c, GLYPHPOS *pgp, WCHAR *pwc, BOOL *pbAccel,XDCOBJ *pdco,ESTROBJ*pto);
 #endif
 #else
-#if defined(_MIPS_) || defined(_X86_) || defined(_ALPHA_) || defined(_PPC_)
+#if defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 BOOL xGetGlyphMetrics(PRFONTOBJ Rfont, COUNT c, GLYPHPOS *pgp, WCHAR *pwc);
 BOOL xGetGlyphMetricsPlus(PRFONTOBJ Rfont, COUNT c, GLYPHPOS *pgp, WCHAR *pwc, BOOL *pbAccel);
 #endif
@@ -763,7 +763,7 @@ public:
 
 
 #ifdef FONTLINK /*EUDC*/
-#if defined(_X86_) || defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
+#if defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 
     BOOL bGetGlyphMetrics(COUNT c, GLYPHPOS *pgp, WCHAR *pwc,XDCOBJ *pdco = (XDCOBJ *)NULL )
     {
@@ -774,11 +774,11 @@ public:
 
     BOOL bGetGlyphMetrics( COUNT c, GLYPHPOS *pgp, WCHAR *pwc,XDCOBJ *pdco = (XDCOBJ *)NULL);
 
-#endif // defined(_X86_) || defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
+#endif // defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 
 
 #else
-#if defined(_X86_) || defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
+#if defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 
     BOOL bGetGlyphMetrics(COUNT c, GLYPHPOS *pgp, WCHAR *pwc)
     {
@@ -789,7 +789,7 @@ public:
 
     BOOL bGetGlyphMetrics( COUNT c, GLYPHPOS *pgp, WCHAR *pwc);
 
-#endif // defined(_X86_) || defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
+#endif // defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 #endif // FONTLINK
 
 
@@ -798,7 +798,7 @@ public:
 
 #ifdef FONTLINK /*EUDC*/
 
-#if defined(_X86_) || defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
+#if defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 
     BOOL bGetGlyphMetricsPlus(
                                 COUNT c,
@@ -828,7 +828,7 @@ public:
 
 #else
 
-#if defined(_X86_) || defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
+#if defined(_MIPS_) || defined(_ALPHA_) || defined(_PPC_)
 
     BOOL bGetGlyphMetricsPlus(COUNT c, GLYPHPOS *pgp, WCHAR *pwc, BOOL *pbAccel)
     {

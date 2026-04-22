@@ -116,7 +116,6 @@ CsrServerInitialization(
 
     DbgPrint("CSRSRV: init/7 CsrParseServerCommandLine\n");
     Status = CsrParseServerCommandLine( argc, argv );
-    DbgPrint("CSRSRV: init/7 returned %08x\n", Status);
     ASSERT( NT_SUCCESS( Status ) );
 
 
@@ -124,18 +123,13 @@ CsrServerInitialization(
     // Fix up per-process data for root process
     //
 
-    DbgPrint("CSRSRV: heap valid=%d\n", RtlValidateHeap(CsrHeap, 0, NULL));
-    DbgPrint("CSRSRV: CsrTotalPerProcessDataLength=%d\n", CsrTotalPerProcessDataLength);
     ProcessDataPtr = (PCSR_PROCESS)RtlAllocateHeap( CsrHeap,
                                                     HEAP_ZERO_MEMORY,
                                                     CsrTotalPerProcessDataLength
                                                   );
-    DbgPrint("CSRSRV: root PerProcessData=%p\n", ProcessDataPtr);
     for (i=0; i<CSR_MAX_SERVER_DLL; i++) {
         LoadedServerDll = CsrLoadedServerDll[ i ];
         if (LoadedServerDll && LoadedServerDll->PerProcessDataLength) {
-            DbgPrint("CSRSRV: ServerDll[%d] PerProcessDataLength=%d ptr=%p\n",
-                     i, LoadedServerDll->PerProcessDataLength, ProcessDataPtr);
             CsrRootProcess->ServerDllPerProcessData[i] = ProcessDataPtr;
             ProcessDataPtr = (PVOID)QUAD_ALIGN((ULONG)ProcessDataPtr + LoadedServerDll->PerProcessDataLength);
         }
@@ -143,7 +137,6 @@ CsrServerInitialization(
             CsrRootProcess->ServerDllPerProcessData[i] = NULL;
         }
     }
-    DbgPrint("CSRSRV: root PerProcessData end=%p\n", ProcessDataPtr);
 
     //
     // Let server dlls know about the root process.
@@ -152,44 +145,18 @@ CsrServerInitialization(
     for (i=0; i<CSR_MAX_SERVER_DLL; i++) {
         LoadedServerDll = CsrLoadedServerDll[ i ];
         if (LoadedServerDll && LoadedServerDll->AddProcessRoutine) {
-            DbgPrint("CSRSRV: calling AddProcessRoutine[%d]\n", i);
             (*LoadedServerDll->AddProcessRoutine)( NULL, CsrRootProcess );
-            { PVOID _t = RtlAllocateHeap(CsrHeap, 0, 528);
-              DbgPrint("CSRSRV: heap after AddProcess[%d]: %p\n", i, _t);
-              if (_t) RtlFreeHeap(CsrHeap, 0, _t); }
             }
         }
-    {
-        PVOID _t;
-        _t = RtlAllocateHeap(CsrHeap, 0, 64);
-        DbgPrint("CSRSRV: heap test after AddProcess (64)=%p\n", _t);
-        if (_t) RtlFreeHeap(CsrHeap, 0, _t);
-        _t = RtlAllocateHeap(CsrHeap, 0, 528);
-        DbgPrint("CSRSRV: heap test after AddProcess (528)=%p\n", _t);
-        if (_t) RtlFreeHeap(CsrHeap, 0, _t);
-    }
 
     //
     // Initialize the Windows Server API Port, and one or more
     // request threads.
     //
 
-    {
-        PVOID test = RtlAllocateHeap(CsrHeap, 0, 528);
-        DbgPrint("CSRSRV: heap test before init/8: alloc(528)=%p\n", test);
-        if (test) RtlFreeHeap(CsrHeap, 0, test);
-    }
-
     DbgPrint("CSRSRV: init/8 CsrApiPortInitialize\n");
     Status = CsrApiPortInitialize();
-    DbgPrint("CSRSRV: init/8 returned %08x\n", Status);
     ASSERT( NT_SUCCESS( Status ) );
-
-    {
-        PVOID test = RtlAllocateHeap(CsrHeap, 0, 528);
-        DbgPrint("CSRSRV: heap test after init/8: alloc(528)=%p\n", test);
-        if (test) RtlFreeHeap(CsrHeap, 0, test);
-    }
 
     DbgPrint("CSRSRV: init/9 DbgSsInitialize\n");
     Status = DbgSsInitialize( CsrApiPort, CsrUiLookup , NULL, NULL );

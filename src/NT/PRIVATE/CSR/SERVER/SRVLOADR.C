@@ -120,8 +120,6 @@ CsrLoadServerDll(
                  ModuleName, ServerDllIndex,
                  InitRoutineString ? InitRoutineString : "(default)");
 	Status = LdrLoadDll( UNICODE_NULL, NULL, &ModuleNameString_U, &ModuleHandle );
-        DbgPrint("CSRSRV: LdrLoadDll('%s') status=%08lx handle=%p\n",
-                 ModuleName, Status, ModuleHandle);
         if ( !NT_SUCCESS(Status) ) {
 
             PUNICODE_STRING ErrorStrings[2];
@@ -202,8 +200,6 @@ CsrLoadServerDll(
         }
 
     if (NT_SUCCESS( Status )) {
-        DbgPrint("CSRSRV: calling init routine for '%s' at %p\n",
-                 ModuleName, ServerDllInitialization);
         try {
             Status = (*ServerDllInitialization)( LoadedServerDll );
             }
@@ -212,8 +208,6 @@ CsrLoadServerDll(
             DbgPrint("CSRSRV: init routine '%s' CRASHED, status=%08lx\n",
                      ModuleName, Status);
             }
-        DbgPrint("CSRSRV: init routine '%s' returned status=%08lx\n",
-                 ModuleName, Status);
         if (NT_SUCCESS( Status )) {
             CsrTotalPerProcessDataLength += QUAD_ALIGN(LoadedServerDll->PerProcessDataLength);
             CsrTotalPerThreadDataLength += QUAD_ALIGN(LoadedServerDll->PerThreadDataLength);
@@ -240,11 +234,6 @@ CsrLoadServerDll(
         RtlFreeHeap( CsrHeap, 0, LoadedServerDll );
         }
 
-    {
-        PVOID _t = RtlAllocateHeap(CsrHeap, 0, 64);
-        DbgPrint("CSRSRV: CsrLoadServerDll('%s') done, heap test=%p\n", ModuleName, _t);
-        if (_t) RtlFreeHeap(CsrHeap, 0, _t);
-    }
     return( Status );
 }
 

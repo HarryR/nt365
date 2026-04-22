@@ -1662,6 +1662,15 @@ BOOL META WINAPI ExtTextOutW
     BOOL bRet = FALSE;
     PLDC pldc;
     DC_METADC16OK(hdc,plhe,bRet);
+#undef DbgPrint
+    {
+        static int _n = 0;
+        if (_n < 6) {
+            _n++;
+            DbgPrint("GDI32: ExtTextOutW hdc=%p iType=%d c=%u fl=%08x\n",
+                     hdc, plhe->iType, c, fl);
+        }
+    }
 
 // NEWFRAME support for backward compatibility.
 // Ship the transform to the server side if needed.

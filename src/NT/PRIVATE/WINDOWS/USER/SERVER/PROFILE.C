@@ -101,6 +101,24 @@ UINT idSection)
 
     Status = NtOpenKey(&aFastRegMap[idSection].hKeyCache,
             KEY_READ | KEY_WRITE | KEY_NOTIFY, &OA);
+    if (!NT_SUCCESS(Status)) {
+        //
+        // A PMAP_* section is meant to resolve to a real registry path
+        // that lives in the DEFAULT/SOFTWARE hives. If this open fails,
+        // every subsequent FastGetProfileStringW/IntFromID against this
+        // section falls through to its caller-supplied default — silent
+        // misconfiguration that manifests as invisible window frames,
+        // missing system colors, zero-width borders, etc.
+        //
+        // Log the miss so the registry gap surfaces at boot rather than
+        // being discovered weeks later via tofu in a login dialog.
+        //
+        DbgPrint("USERSRV: *** PMAP[%d] open FAILED on '%ws' status=%08x — "
+                 "registry falls through to hardcoded defaults ***\n",
+                 idSection,
+                 UnicodeStringBuf,
+                 Status);
+    }
     return(NT_SUCCESS(Status));
 }
 

@@ -897,8 +897,6 @@ HFF        *phff
 
 // MicroNT: store filename AFTER IFIMETRICS fill to avoid overwrite.
     wcscpy(pff->pwszFileName, pwszFileName);
-    DbgPrint("BMFD: bBmfdLoadFont — stored filename '%ws' at offset %d\n",
-             pff->pwszFileName, dpwszFileName);
 
     return TRUE;
 }
