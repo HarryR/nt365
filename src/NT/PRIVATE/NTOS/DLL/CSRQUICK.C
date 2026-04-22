@@ -240,7 +240,11 @@ CsrClientSendMessage( VOID )
                 }
             }
         else {
+            DbgPrint("CSRDLL: IN-PROCESS CsrpProcessApiRequest Msg=%p ApiNumber=%08lx\n",
+                     Msg, Msg->ApiNumber);
             CsrpProcessApiRequest(Msg,p->MessageStack);
+            DbgPrint("CSRDLL: IN-PROCESS post-dispatch Msg=%p Action=%d (would overwrite)\n",
+                     Msg, Msg->Action);
             Msg->Action = CsrQLpcReturn;
             }
 
@@ -263,7 +267,26 @@ CsrClientSendMessage( VOID )
             break;
             }
         }
-    DbgPrint("CSRDLL: CsrClientSendMessage exit ReturnValue=%08x\n", Msg->ReturnValue);
+    DbgPrint("CSRDLL: CsrClientSendMessage exit ReturnValue=%08x Action=%d\n",
+             Msg->ReturnValue, Msg->Action);
+
+    //
+    // Protocol-level dispatch failure: server couldn't route the message
+    // (unregistered ServerDllIndex, out-of-range ApiTableIndex). Msg->
+    // ReturnValue holds the NTSTATUS explaining why. Translate to a Win32
+    // error for GetLastError() and return 0 so call sites that already
+    // treat 0 as failure (the idiomatic CSR-client convention) take the
+    // error path instead of consuming the NTSTATUS as an API return value.
+    //
+    // Without this, clients like cjGetNonFontObject in gdi32 memmove ~3GB
+    // using STATUS_ILLEGAL_FUNCTION (0xC00000AF) as a byte count and
+    // instantly fault.
+    //
+    if (Msg->Action == CsrQLpcError) {
+        Teb->LastErrorValue = RtlNtStatusToDosError((NTSTATUS)Msg->ReturnValue);
+        return 0;
+    }
+
     if (MessageStack->LastErrorValue)
     {
         Teb->LastErrorValue = MessageStack->LastErrorValue;

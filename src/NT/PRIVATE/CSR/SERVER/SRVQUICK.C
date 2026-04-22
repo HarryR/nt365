@@ -492,11 +492,23 @@ DbgPrint("CSRSS: CantHappen Teb %x... Spinning\n",Teb);while(1);DbgPrint("CSRSS:
                     ((PCHAR)p->MessageStack + p->MessageStack->Base);
 
 
+                DbgPrint("SRVQUICK: DedicatedClientThread pre-dispatch Msg=%p ApiNumber=%08lx\n",
+                         Msg, Msg->ApiNumber);
                 CsrpProcessApiRequest(Msg,p->MessageStack);
 
                 }
 
-            Msg->Action = CsrQLpcReturn;
+            //
+            // CsrpProcessApiRequest may have tagged the message with
+            // CsrQLpcError when the target ServerDllIndex / ApiTableIndex
+            // was invalid. Preserve that tag; only convert the normal
+            // success path to CsrQLpcReturn.
+            //
+            DbgPrint("SRVQUICK: DedicatedClientThread post-dispatch Msg=%p Action=%d\n",
+                     Msg, Msg->Action);
+            if (Msg->Action != CsrQLpcError) {
+                Msg->Action = CsrQLpcReturn;
+            }
 
             if (t->Flags & CSR_THREAD_TERMINATING) {
 
@@ -675,6 +687,7 @@ CsrClientCallback( VOID )
             Msg->Action = CsrQLpcReturn;
 
             if (p->MessageStack->BatchCount) { // Process any batch.
+                DbgPrint("SRVQUICK: CsrClientCallback(batch) CsrpProcessApiRequest\n");
                 CsrpProcessApiRequest(
                     (PCSR_QLPC_API_MSG)
                     ((PCHAR)p->MessageStack + p->MessageStack->Base),
@@ -705,8 +718,18 @@ CsrClientCallback( VOID )
                 ((PCHAR)p->MessageStack + p->MessageStack->Base);
 
             if (Msg->Action == CsrQLpcCall) {
+                DbgPrint("SRVQUICK: CsrClientCallback(inner) CsrpProcessApiRequest Msg=%p\n", Msg);
                 CsrpProcessApiRequest(Msg,p->MessageStack);
-                Msg->Action = CsrQLpcReturn;
+                DbgPrint("SRVQUICK: CsrClientCallback(inner) post-dispatch Action=%d\n", Msg->Action);
+                //
+                // Preserve the CsrQLpcError tag set by CsrpProcessApiRequest
+                // on dispatch failure (STATUS_ILLEGAL_FUNCTION in ReturnValue).
+                // Without this guard, line 719's blanket CsrQLpcReturn assign
+                // would erase the error signal before the client could see it.
+                //
+                if (Msg->Action != CsrQLpcError) {
+                    Msg->Action = CsrQLpcReturn;
+                }
                 }
             else {
                 break;
@@ -739,6 +762,7 @@ CsrpProcessApiRequest(
     ULONG LastReturnValue = 0;
     ULONG Count = Stack->BatchCount;
     PTEB pteb = NtCurrentTeb();
+    BOOLEAN DispatchFailed = FALSE;
 
 #if DBG
     cAllCSAndBatch += Count;
@@ -767,6 +791,8 @@ CsrpProcessApiRequest(
         if (ServerDllIndex >= CSR_MAX_SERVER_DLL ||
             (LoadedServerDll = CsrLoadedServerDll[ ServerDllIndex ]) == NULL
            ) {
+            DbgPrint("SRVQUICK: CsrpProcessApiRequest bail ApiNumber=%08lx ServerDllIndex=%lx LoadedServerDll=%p\n",
+                     CurrentMsg->ApiNumber, ServerDllIndex, LoadedServerDll);
             IF_DEBUG {
                 DbgPrint( "CSRSS: %lx is invalid ServerDllIndex (%08x)\n",
                           ServerDllIndex, LoadedServerDll
@@ -775,6 +801,7 @@ CsrpProcessApiRequest(
                 }
 
             LastReturnValue = (ULONG)STATUS_ILLEGAL_FUNCTION;
+            DispatchFailed = TRUE;
             break;
 
         } else {
@@ -783,6 +810,8 @@ CsrpProcessApiRequest(
                 LoadedServerDll->ApiNumberBase;
 
             if (ApiTableIndex >= LoadedServerDll->MaxApiNumber ) {
+                DbgPrint("SRVQUICK: CsrpProcessApiRequest bail ApiNumber=%08lx ApiTableIndex=%lx MaxApiNumber=%lx\n",
+                         CurrentMsg->ApiNumber, ApiTableIndex, LoadedServerDll->MaxApiNumber);
                 IF_DEBUG {
                     DbgPrint( "CSRSS: %lx is invalid ApiTableIndex for %Z(%x)\n",
                               LoadedServerDll->ApiNumberBase + ApiTableIndex,
@@ -792,6 +821,7 @@ CsrpProcessApiRequest(
                     }
 
                 LastReturnValue = (ULONG)STATUS_ILLEGAL_FUNCTION;
+                DispatchFailed = TRUE;
                 break;
             } else {
 
@@ -848,7 +878,21 @@ CsrpProcessApiRequest(
 // until the very end so that the flush function can use it.
 
     Msg->ReturnValue = LastReturnValue;
+    if (DispatchFailed) {
+        //
+        // Tag the outbound message so the client can distinguish a real
+        // server return value from a dispatch failure. LastReturnValue
+        // holds the NTSTATUS explaining why dispatch bailed (e.g.
+        // STATUS_ILLEGAL_FUNCTION when the target ServerDllIndex is not
+        // registered). The caller's reply-unblocker (line ~499 in this
+        // file) checks this flag before overwriting Action.
+        //
+        Msg->Action = CsrQLpcError;
+        DbgPrint("SRVQUICK: CsrpProcessApiRequest tagged Msg=%p Msg->Action=%d Msg->ReturnValue=%08x\n",
+                 Msg, Msg->Action, Msg->ReturnValue);
+    }
     Stack->BatchCount = 0;
+    DbgPrint("SRVQUICK: CsrpProcessApiRequest EXIT Msg=%p Action=%d\n", Msg, Msg->Action);
 }
 
 EXCEPTION_DISPOSITION

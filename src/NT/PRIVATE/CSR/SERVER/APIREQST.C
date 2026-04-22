@@ -420,6 +420,8 @@ CsrApiRequestThread(
         if (ServerDllIndex >= CSR_MAX_SERVER_DLL ||
             (LoadedServerDll = CsrLoadedServerDll[ ServerDllIndex ]) == NULL
            ) {
+            DbgPrint("APIREQST: bail ApiNumber=%08lx ServerDllIndex=%lx LoadedServerDll=%p\n",
+                     ApiNumber, ServerDllIndex, LoadedServerDll);
             IF_DEBUG {
                 DbgPrint( "CSRSS: %lx is invalid ServerDllIndex (%08x)\n",
                           ServerDllIndex, LoadedServerDll
@@ -438,6 +440,8 @@ CsrApiRequestThread(
                 CSR_APINUMBER_TO_APITABLEINDEX( ApiNumber ) -
                 LoadedServerDll->ApiNumberBase;
             if (ApiTableIndex >= LoadedServerDll->MaxApiNumber ) {
+                DbgPrint("APIREQST: bail ApiNumber=%08lx ApiTableIndex=%lx MaxApiNumber=%lx\n",
+                         ApiNumber, ApiTableIndex, LoadedServerDll->MaxApiNumber);
                 IF_DEBUG {
                     DbgPrint( "CSRSS: %lx is invalid ApiTableIndex for %Z\n",
                               LoadedServerDll->ApiNumberBase + ApiTableIndex,

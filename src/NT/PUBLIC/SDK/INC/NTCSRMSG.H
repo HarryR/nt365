@@ -173,9 +173,24 @@ CsrClientThreadConnect(
     VOID
     );
 
+//
+// CSR quick-LPC message kind. The Action field in CSR_QLPC_API_MSG
+// discriminates call/reply/error. Its ABI size is a 32-bit word; only
+// the set of legal values changes over time. Adding new values is
+// backward-compatible: older code that compares == CsrQLpcCall correctly
+// treats everything else as "not a call".
+//
+// - CsrQLpcCall:   request in flight (client->server, or a server->client callback)
+// - CsrQLpcReturn: success reply -- caller may trust ReturnValue as the API result
+// - CsrQLpcError:  dispatch failed before the API ran -- ReturnValue carries the
+//                  NTSTATUS error (e.g. STATUS_ILLEGAL_FUNCTION when the target
+//                  ServerDllIndex is not registered). Client-side LPC glue in
+//                  CsrClientSendMessage translates this into GetLastError() + 0.
+//
 typedef enum _QLPC_ACTION {
-    CsrQLpcCall,
-    CsrQLpcReturn
+    CsrQLpcCall   = 0,
+    CsrQLpcReturn = 1,
+    CsrQLpcError  = 2
 } QLPC_ACTION, *PQLPC_ACTION;
 
 typedef struct _CSR_QLPC_API_MSG {
