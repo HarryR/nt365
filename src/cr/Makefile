@@ -99,7 +99,8 @@ all: luajit
 # rt/libc_internal.h, rt/k32_internal.h for the shared internal layout.
 RT_OBJS := rt/entry.o \
            $(patsubst %.c,%.o,$(wildcard rt/libc_*.c)) \
-           $(patsubst %.c,%.o,$(wildcard rt/k32_*.c))
+           $(patsubst %.c,%.o,$(wildcard rt/k32_*.c)) \
+           $(patsubst %.c,%.o,$(wildcard rt/test_*.c))
 
 librt.a: $(RT_OBJS)
 	$(AR) rcs $@ $^
@@ -144,9 +145,14 @@ LUAJIT_TLDFLAGS := -nostdlib -nostartfiles -nodefaultlibs \
                    -Wl,--major-subsystem-version,3,--minor-subsystem-version,50 \
                    -Wl,--image-base,0x00400000 \
                    -Wl,--file-alignment,0x200,--section-alignment,0x1000 \
+                   -Wl,--kill-at \
                    -L$(MKFILE_DIR)
 
-LUAJIT_TLIBS := -lrt -lmingwex -lntdllcrt -lntdll -lgcc
+# --whole-archive on librt so selftest-only entries (rt/test_thread.c)
+# get linked even without call-site references, so ffi.C can resolve
+# them at runtime. mingwex / ntdll stay normal-linkage.
+LUAJIT_TLIBS := -Wl,--whole-archive -lrt -Wl,--no-whole-archive \
+                -lmingwex -lntdllcrt -lntdll -lgcc
 
 $(LUAJIT_EXE): librt.a
 	# Force relink: LuaJIT's Makefile sees its own luajit.exe as up-to-

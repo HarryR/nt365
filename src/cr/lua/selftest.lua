@@ -35,6 +35,7 @@ require('test.mm')
 require('test.lpc')
 require('test.sys')
 require('test.tree')
+require('test.thread')
 
 local ok = t.summary()
 print("")
