@@ -1,18 +1,22 @@
 -- Module — synthetic Node under \System\Modules. Pure leaf (no
 -- children, no open — modules aren't openable by name from user mode).
--- Fields expose the snapshot captured at enumeration time.
+-- Fields forward to the __mod snapshot table filled by modlist.lua.
+
+local function from_mod(key)
+    return function(n) return n.__mod[key] end
+end
 
 local M = {}
 
 M.fields = {
-    image_path  = function(n) return n.__image_path  end,
-    image_base  = function(n) return n.__image_base  end,
-    mapped_base = function(n) return n.__mapped_base end,
-    image_size  = function(n) return n.__image_size  end,
-    flags       = function(n) return n.__flags       end,
-    load_order  = function(n) return n.__load_order  end,
-    init_order  = function(n) return n.__init_order  end,
-    load_count  = function(n) return n.__load_count  end,
+    image_path  = from_mod("image_path"),
+    image_base  = from_mod("image_base"),
+    mapped_base = from_mod("mapped_base"),
+    image_size  = from_mod("image_size"),
+    flags       = from_mod("flags"),
+    load_order  = from_mod("load_order"),
+    init_order  = from_mod("init_order"),
+    load_count  = from_mod("load_count"),
 }
 
 M.descriptions = {

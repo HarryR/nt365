@@ -144,11 +144,71 @@ local function query_buffer(info_class, initial_size)
     error('NtQuerySystemInformation: buffer did not converge after 10 grows')
 end
 
--- Iterate all processes. Yields (process_info_ptr, threads_array_ptr)
--- per step — threads_array_ptr points at the first SYSTEM_THREAD_INFORMATION
--- trailing the process record; caller reads info.NumberOfThreads of them.
--- The underlying buffer is captured in the coroutine upvalue; pointers
--- into it stay valid until the iterator is dropped.
+local str = require('nt.dll.str')
+
+local function handle_to_int(h) return tonumber(ffi.cast('intptr_t', h)) end
+
+-- Copy one SYSTEM_PROCESS_INFORMATION + its trailing
+-- SYSTEM_THREAD_INFORMATION[] into plain Lua tables. After this
+-- returns the kernel buffer can be freed at any time — no cdata
+-- references leak out.
+local function copy_process(info_ptr, threads_ptr)
+    -- str.from_utf16 is null-pointer tolerant (returns "") so this
+    -- just falls through to a "(System)" label for the kernel idle /
+    -- System pseudo-processes which have no image path.
+    local image = str.from_utf16(info_ptr.ImageName)
+    if image == "" then image = "(System)" end
+    local p = {
+        pid              = handle_to_int(info_ptr.UniqueProcessId),
+        parent_pid       = handle_to_int(info_ptr.InheritedFromUniqueProcessId),
+        image            = image,
+        priority         = info_ptr.BasePriority,
+        thread_count     = info_ptr.NumberOfThreads,
+        create_time      = info_ptr.CreateTime.QuadPart,
+        user_time        = info_ptr.UserTime.QuadPart,
+        kernel_time      = info_ptr.KernelTime.QuadPart,
+        virtual_size     = info_ptr.VirtualSize,
+        peak_virtual     = info_ptr.PeakVirtualSize,
+        working_set      = info_ptr.WorkingSetSize,
+        peak_working_set = info_ptr.PeakWorkingSetSize,
+        page_faults      = info_ptr.PageFaultCount,
+        paged_pool       = info_ptr.QuotaPagedPoolUsage,
+        non_paged_pool   = info_ptr.QuotaNonPagedPoolUsage,
+        pagefile         = info_ptr.PagefileUsage,
+        peak_pagefile    = info_ptr.PeakPagefileUsage,
+        private_pages    = info_ptr.PrivatePageCount,
+        io_read_ops      = info_ptr.ReadOperationCount,
+        io_write_ops     = info_ptr.WriteOperationCount,
+        io_other_ops     = info_ptr.OtherOperationCount,
+        io_read_bytes    = info_ptr.ReadTransferCount.QuadPart,
+        io_write_bytes   = info_ptr.WriteTransferCount.QuadPart,
+        io_other_bytes   = info_ptr.OtherTransferCount.QuadPart,
+        threads          = {},
+    }
+    for i = 0, p.thread_count - 1 do
+        local t = threads_ptr[i]
+        p.threads[i+1] = {
+            tid              = handle_to_int(t.ClientId.UniqueThread),
+            pid              = handle_to_int(t.ClientId.UniqueProcess),
+            start_address    = tonumber(ffi.cast('uintptr_t', t.StartAddress)),
+            priority         = t.Priority,
+            base_priority    = t.BasePriority,
+            context_switches = t.ContextSwitches,
+            thread_state     = t.ThreadState,
+            wait_reason      = t.WaitReason,
+            wait_time        = t.WaitTime,
+            kernel_time      = t.KernelTime.QuadPart,
+            user_time        = t.UserTime.QuadPart,
+            create_time      = t.CreateTime.QuadPart,
+        }
+    end
+    return p
+end
+
+-- Iterate all processes. Yields a Lua table per process — all fields
+-- and threads copied out of the kernel buffer at yield time so the
+-- caller may retain yielded values indefinitely without any cdata
+-- lifetime concerns.
 function M.each_process()
     local buf = query_buffer(SystemProcessInformation, 32768)
     local proc_size = ffi.sizeof('SYSTEM_PROCESS_INFORMATION')
@@ -158,21 +218,42 @@ function M.each_process()
             local info    = ffi.cast('SYSTEM_PROCESS_INFORMATION *', ptr)
             local threads = ffi.cast('SYSTEM_THREAD_INFORMATION *',
                                       ptr + proc_size)
-            coroutine.yield(info, threads)
+            coroutine.yield(copy_process(info, threads))
             if info.NextEntryOffset == 0 then return end
             ptr = ptr + info.NextEntryOffset
         end
     end)
 end
 
--- Iterate all loaded kernel modules. Yields one RTL_PROCESS_MODULE_INFORMATION
--- pointer per step. Buffer captured in the coroutine upvalue.
+-- Copy one RTL_PROCESS_MODULE_INFORMATION into a Lua table. FullPathName
+-- is an in-struct char[256] (ANSI), so ffi.string on its address reads
+-- up to the first NUL regardless of whether the buffer outlives.
+local function copy_module(m)
+    local full_ptr = ffi.cast('char *', m.FullPathName)
+    return {
+        image_path  = ffi.string(full_ptr),
+        basename    = ffi.string(full_ptr + m.OffsetToFileName),
+        mapped_base = tonumber(ffi.cast('uintptr_t', m.MappedBase)),
+        image_base  = tonumber(ffi.cast('uintptr_t', m.ImageBase)),
+        image_size  = m.ImageSize,
+        flags       = m.Flags,
+        load_order  = m.LoadOrderIndex,
+        init_order  = m.InitOrderIndex,
+        load_count  = m.LoadCount,
+    }
+end
+
+-- Iterate loaded kernel modules. Yields a Lua table per module — no
+-- cdata lifetime concerns for callers.
 function M.each_module()
-    local buf = query_buffer(SystemModuleInformation, 8192)
+    local buf  = query_buffer(SystemModuleInformation, 8192)
     local list = ffi.cast('RTL_PROCESS_MODULES *', buf)
     return coroutine.wrap(function()
+        -- Touch buf inside the coroutine so the closure anchors it;
+        -- list is a cast (Shape 7), wouldn't keep buf alive on its own.
+        local _ = buf
         for i = 0, list.NumberOfModules - 1 do
-            coroutine.yield(list.Modules[i])
+            coroutine.yield(copy_module(list.Modules[i]))
         end
     end)
 end

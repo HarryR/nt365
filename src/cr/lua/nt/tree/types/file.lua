@@ -93,21 +93,26 @@ M.fields = {
     end,
 }
 
--- Directory enumeration via NtQueryDirectoryFile. Only attempted on
--- handles where FileStandardInformation reports Directory=1 — Serial
--- and Null devices answer FILE_STANDARD_INFORMATION but Directory is
--- false, so we fall through to an empty iterator without firing a
--- doomed syscall.
+-- Directory enumeration via NtQueryDirectoryFile. Opens a scoped
+-- handle (NOT node:open() — we don't want the walker to accumulate a
+-- cached __handle per directory) and reuses it both for the Directory=1
+-- probe and for the query loop. When the coroutine ends the local h
+-- goes out of scope and NT_HANDLE.__gc closes it immediately.
+--
+-- Serial and Null devices answer FILE_STANDARD_INFORMATION but with
+-- Directory=0, so we short-circuit to an empty iterator without firing
+-- a doomed NtQueryDirectoryFile.
 --
 -- Skip the '.' and '..' pseudo-entries so iteration doesn't infinite-
 -- loop via the current Node's own path.
 function M.children(node)
-    local info = safe_standard(node)
-    if not (info and info.Directory ~= 0) then
+    local ok, h = pcall(M.open, node)
+    if not ok then return function() return nil end end
+    local iok, info = pcall(fs.query_standard, h)
+    if not iok or not info or info.Directory == 0 then
         return function() return nil end
     end
     return coroutine.wrap(function()
-        local h   = node:open()
         local buf = ffi.new('char[4096]')
         local first = true
         while true do

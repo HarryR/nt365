@@ -36,7 +36,11 @@ end
 
 function M.children(node)
     return coroutine.wrap(function()
-        local dir   = node:open()
+        -- Scoped handle: open a fresh one just for this iteration and
+        -- let it die with the coroutine. Do NOT use node:open() —
+        -- that caches on Node.__handle and turns every walked directory
+        -- into a retained kernel handle.
+        local dir   = M.open(node)
         local buf   = ffi.new('char[4096]')
         local ctx   = ffi.new('ULONG[1]')
         local first = true

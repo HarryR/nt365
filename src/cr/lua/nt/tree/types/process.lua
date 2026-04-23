@@ -1,8 +1,8 @@
--- Process — synthetic Node under \Processes. Carries snapshot fields
--- captured at enumeration time (proclist.lua populates them).
--- :open() goes via NtOpenProcess using CLIENT_ID; :info() works
--- against a live handle. :children() yields Thread Nodes from the
--- frozen thread snapshot — no re-query per thread.
+-- Process — synthetic Node under \Processes. Carries the process
+-- snapshot as a plain Lua table on self.__proc (filled by proclist.lua
+-- from sys.each_process). :open() via NtOpenProcess(CLIENT_ID) gives a
+-- live handle for :info()-style introspection. :children() yields
+-- Thread Nodes from the frozen thread list.
 
 local ffi  = require('ffi')
 local ps   = require('nt.dll.ps')
@@ -19,60 +19,55 @@ local M = {}
 
 function M.open(node)
     local cid = ffi.new('CLIENT_ID')
-    cid.UniqueProcess = ffi.cast('HANDLE', node.__pid)
+    cid.UniqueProcess = ffi.cast('HANDLE', node.__proc.pid)
     cid.UniqueThread  = nil
     return ps.NtOpenProcess(PROCESS_QUERY_INFORMATION, ps.empty_oa(), cid)
 end
 
--- Yield one Thread Node per snapshot entry. Each Thread inherits the
--- parent's __pid so its CLIENT_ID-based open works without re-query.
+-- Yield one Thread Node per entry in the frozen thread snapshot. The
+-- thread's __thread record is a plain Lua table (copied by sys), so
+-- thread fields and open-by-CLIENT_ID have no cdata dependency.
 function M.children(node)
     return coroutine.wrap(function()
         for _, t in ipairs(node.__threads or {}) do
             local name = tostring(t.tid)
             local tn = tree.Node.new(node, name, join(node.path, name), "Thread")
-            tn.__tid              = t.tid
-            tn.__pid              = node.__pid
-            tn.__start_address    = t.start_address
-            tn.__priority         = t.priority
-            tn.__base_priority    = t.base_priority
-            tn.__context_switches = t.context_switches
-            tn.__thread_state     = t.thread_state
-            tn.__wait_reason      = t.wait_reason
-            tn.__wait_time        = t.wait_time
-            tn.__kernel_time      = t.kernel_time
-            tn.__user_time        = t.user_time
-            tn.__create_time      = t.create_time
+            tn.__thread = t
             coroutine.yield(tn)
         end
     end)
 end
 
+-- All fields forward to the __proc snapshot. Names match sys.copy_process.
+local function from_proc(key)
+    return function(n) return n.__proc[key] end
+end
+
 M.fields = {
-    pid              = function(n) return n.__pid              end,
-    parent_pid       = function(n) return n.__parent_pid       end,
-    image            = function(n) return n.__image            end,
-    threads          = function(n) return n.__thread_count     end,
-    priority         = function(n) return n.__priority         end,
-    create_time      = function(n) return n.__create_time      end,
-    user_time        = function(n) return n.__user_time        end,
-    kernel_time      = function(n) return n.__kernel_time      end,
-    virtual_size     = function(n) return n.__virtual_size     end,
-    peak_virtual     = function(n) return n.__peak_virtual     end,
-    working_set      = function(n) return n.__working_set      end,
-    peak_working_set = function(n) return n.__peak_working_set end,
-    page_faults      = function(n) return n.__page_faults      end,
-    paged_pool       = function(n) return n.__paged_pool       end,
-    non_paged_pool   = function(n) return n.__non_paged_pool   end,
-    pagefile         = function(n) return n.__pagefile         end,
-    peak_pagefile    = function(n) return n.__peak_pagefile    end,
-    private_pages    = function(n) return n.__private_pages    end,
-    io_read_ops      = function(n) return n.__io_read_ops      end,
-    io_write_ops     = function(n) return n.__io_write_ops     end,
-    io_other_ops     = function(n) return n.__io_other_ops     end,
-    io_read_bytes    = function(n) return n.__io_read_bytes    end,
-    io_write_bytes   = function(n) return n.__io_write_bytes   end,
-    io_other_bytes   = function(n) return n.__io_other_bytes   end,
+    pid              = from_proc("pid"),
+    parent_pid       = from_proc("parent_pid"),
+    image            = from_proc("image"),
+    threads          = from_proc("thread_count"),
+    priority         = from_proc("priority"),
+    create_time      = from_proc("create_time"),
+    user_time        = from_proc("user_time"),
+    kernel_time      = from_proc("kernel_time"),
+    virtual_size     = from_proc("virtual_size"),
+    peak_virtual     = from_proc("peak_virtual"),
+    working_set      = from_proc("working_set"),
+    peak_working_set = from_proc("peak_working_set"),
+    page_faults      = from_proc("page_faults"),
+    paged_pool       = from_proc("paged_pool"),
+    non_paged_pool   = from_proc("non_paged_pool"),
+    pagefile         = from_proc("pagefile"),
+    peak_pagefile    = from_proc("peak_pagefile"),
+    private_pages    = from_proc("private_pages"),
+    io_read_ops      = from_proc("io_read_ops"),
+    io_write_ops     = from_proc("io_write_ops"),
+    io_other_ops     = from_proc("io_other_ops"),
+    io_read_bytes    = from_proc("io_read_bytes"),
+    io_write_bytes   = from_proc("io_write_bytes"),
+    io_other_bytes   = from_proc("io_other_bytes"),
 }
 
 M.descriptions = {

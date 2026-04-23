@@ -59,8 +59,10 @@ local M = {}
 local REPL = "\xEF\xBF\xBD"   -- UTF-8 encoding of U+FFFD
 
 -- UTF-16 → UTF-8. Iterates code units, pairs surrogates, handles the
--- four UTF-8 length classes (1/2/3/4 bytes).
+-- four UTF-8 length classes (1/2/3/4 bytes). Null-pointer tolerant:
+-- nil wp or nchars <= 0 returns "" rather than dereferencing.
 function M.from_wchars(wp, nchars)
+    if wp == nil or nchars <= 0 then return "" end
     local out = {}
     local i = 0
     while i < nchars do
@@ -101,7 +103,7 @@ function M.from_wchars(wp, nchars)
 end
 
 -- UNICODE_STRING → UTF-8 Lua string. us.Length is in bytes, so halve
--- for wchar count.
+-- for wchar count. Delegates to from_wchars for the null guard.
 function M.from_utf16(us)
     return M.from_wchars(us.Buffer, us.Length / 2)
 end

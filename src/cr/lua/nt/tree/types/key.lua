@@ -54,7 +54,9 @@ end
 
 function M.children(node)
     return coroutine.wrap(function()
-        local key = node:open()
+        -- Scoped handle (see dir.lua for the rationale — keeps the
+        -- walker from accumulating a cached __handle per key).
+        local key = M.open(node)
 
         -- Values first.
         local vbuf = ffi.new('char[4096]')

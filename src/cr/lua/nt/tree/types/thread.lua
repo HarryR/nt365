@@ -1,7 +1,7 @@
 -- Thread — synthetic Node under \Processes\<pid>\<tid>. Carries the
--- snapshot fields copied out of SYSTEM_THREAD_INFORMATION. :open()
--- goes via NtOpenThread using the (pid, tid) CLIENT_ID so :info()
--- works against a live handle.
+-- snapshot record on self.__thread (a plain Lua table from
+-- sys.copy_process). :open() via NtOpenThread uses the (pid, tid)
+-- CLIENT_ID so :info() works against a live handle.
 
 local ffi = require('ffi')
 local ps  = require('nt.dll.ps')
@@ -32,28 +32,34 @@ local M = {}
 
 function M.open(node)
     local cid = ffi.new('CLIENT_ID')
-    cid.UniqueProcess = ffi.cast('HANDLE', node.__pid)
-    cid.UniqueThread  = ffi.cast('HANDLE', node.__tid)
+    cid.UniqueProcess = ffi.cast('HANDLE', node.__thread.pid)
+    cid.UniqueThread  = ffi.cast('HANDLE', node.__thread.tid)
     return ps.NtOpenThread(THREAD_QUERY_INFORMATION, ps.empty_oa(), cid)
 end
 
+local function from_thread(key)
+    return function(n) return n.__thread[key] end
+end
+
 M.fields = {
-    tid              = function(n) return n.__tid end,
-    pid              = function(n) return n.__pid end,
-    start_address    = function(n) return n.__start_address end,
-    priority         = function(n) return n.__priority end,
-    base_priority    = function(n) return n.__base_priority end,
-    context_switches = function(n) return n.__context_switches end,
+    tid              = from_thread("tid"),
+    pid              = from_thread("pid"),
+    start_address    = from_thread("start_address"),
+    priority         = from_thread("priority"),
+    base_priority    = from_thread("base_priority"),
+    context_switches = from_thread("context_switches"),
+    wait_time        = from_thread("wait_time"),
+    create_time      = from_thread("create_time"),
+    user_time        = from_thread("user_time"),
+    kernel_time      = from_thread("kernel_time"),
     thread_state     = function(n)
-        return THREAD_STATES[n.__thread_state] or n.__thread_state
+        local v = n.__thread.thread_state
+        return THREAD_STATES[v] or v
     end,
     wait_reason      = function(n)
-        return WAIT_REASONS[n.__wait_reason] or n.__wait_reason
+        local v = n.__thread.wait_reason
+        return WAIT_REASONS[v] or v
     end,
-    wait_time        = function(n) return n.__wait_time end,
-    create_time      = function(n) return n.__create_time end,
-    user_time        = function(n) return n.__user_time end,
-    kernel_time      = function(n) return n.__kernel_time end,
 }
 
 M.descriptions = {
