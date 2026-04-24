@@ -113,11 +113,8 @@ UINT idSection)
         // Log the miss so the registry gap surfaces at boot rather than
         // being discovered weeks later via tofu in a login dialog.
         //
-        DbgPrint("USERSRV: *** PMAP[%d] open FAILED on '%ws' status=%08x — "
-                 "registry falls through to hardcoded defaults ***\n",
-                 idSection,
-                 UnicodeStringBuf,
-                 Status);
+        /* Silenced: PMAP misses fall through to hardcoded defaults
+         * which is the documented behavior. Not a bug — noisy at boot. */
     }
     return(NT_SUCCESS(Status));
 }

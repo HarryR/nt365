@@ -837,6 +837,7 @@ AttemptLogon(
     //
     // Actually try to logon the user
     //
+    UserToken = NULL;
     Status = LogonUser( pGlobals->LsaHandle,
                         pGlobals->AuthenticationPackage,
                         &UserNameString,
@@ -849,6 +850,10 @@ AttemptLogon(
                         (PVOID *)&pGlobals->Profile,
                         &pGlobals->ProfileLength,
                         &SubStatus);
+
+    DbgPrint("WINLOGON: LogonUser status=%08lx UserToken=%p LogonId=%x-%x "
+             "sub=%08lx\n",
+             Status, UserToken, LogonId.HighPart, LogonId.LowPart, SubStatus);
 
     if (!NT_SUCCESS(Status)) {
         DeleteLogonSid(LogonSid);
@@ -1053,6 +1058,10 @@ AttemptLogon(
     //
 
     pGlobals->LogonId = LogonId;
+
+    DbgPrint("WINLOGON: AttemptLogon pre-SecurityChangeUser: UserToken=%p "
+             "LogonId=%x-%x LogonSid=%p\n",
+             UserToken, LogonId.HighPart, LogonId.LowPart, LogonSid);
 
     if (!SecurityChangeUser(pGlobals, UserToken, &Quotas, LogonSid, TRUE)) {
         DbgPrint("WINLOGON: AttemptLogon — SecurityChangeUser FAILED; returning DLG_FAILURE\n");

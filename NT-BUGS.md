@@ -348,3 +348,104 @@ broken in the kernel you're running for as long as you've been
 running it, and nobody noticed because every DLL you ever loaded
 was linked by your own toolchain, which put the IAT in a writable
 section."
+
+---
+
+## 3. Kernel SD-handling code dereferences user-derived pointers without guards
+
+### The punchline
+
+Several functions in `ntoskrnl!Se*` that operate on a `SECURITY_DESCRIPTOR`
+treat fields like `Owner`, `Group`, `Sacl`, `Dacl` as guaranteed-non-NULL
+and guaranteed-valid, and call helpers like `SeLengthSid()` /
+`AclSize` reads on them without first checking. When a malformed or NULL
+pointer slips through, the kernel takes a `c0000005` access violation in
+ring-0 and bugchecks with `KMODE_EXCEPTION_NOT_HANDLED`.
+
+In MicroNT, this fires today during the first interactive logon's
+profile-load path: winlogon → `RestoreUserProfile` → `GiveUserDefaultProfile`
+→ `MyRegLoadKey` (succeeds) → `SetupNewDefaultHive` →
+`ApplySecurityToRegistryTree` → `RegSetKeySecurity` →
+`NtSetSecurityObject` → kernel-side hits the unguarded deref and STOP'd
+with the very informative
+
+```
+*** STOP: 0x0000001E (0xC0000005, 0x80168BFD, 0x00000000, 0x00000001)
+KMODE_EXCEPTION_NOT_HANDLED
+```
+
+The faulting instruction `movzx eax, BYTE PTR [ecx+0x1]` with `ecx==0`
+is a `SeLengthSid(NULL)` — reading `SID->SubAuthorityCount` at offset +1.
+
+### Concrete instance found and patched
+
+`SeAssignSecurity` in `src/NT/PRIVATE/NTOS/SE/SEASSIGN.C`, the self-relative
+copy-out phase around line 727:
+
+```c
+// before fix:
+RtlMoveMemory( Field, NewOwner, SeLengthSid(NewOwner) );  // bugcheck if NewOwner==NULL
+((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Owner = (PSID)RtlPointerToOffset(Base,Field);
+Field += NewOwnerSize;
+
+if (NewGroup != NULL) {                                    // Group is guarded — Owner isn't
+    RtlMoveMemory( Field, NewGroup, SeLengthSid(NewGroup) );
+}
+((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Group = (PSID)RtlPointerToOffset(Base,Field);
+// ^ also a latent bug: Group offset set even when Group was NULL,
+//   leaving it pointing past the buffer at uninitialised memory.
+```
+
+The Owner branch was patched to mirror the Group NULL-check (both now also
+correctly write a NULL/zero-offset into the resulting self-relative SD
+when the source was NULL).
+
+### Why this is the bigger pattern, not a one-off
+
+The kernel's contract is that any pointer crossing the user→kernel
+boundary must be probed and captured before deref. `SeCaptureSecurityDescriptor`
+does this rigorously — `ProbeForRead` everywhere, `try/except` around every
+deref, NULL checks before each field access. But callers downstream that
+receive an already-"captured" SD (`SeAssignSecurity`, the
+self-relative-builder helpers) silently assume:
+
+  - Owner is never NULL (per the documented contract of
+    `SepGetDefaultsSubjectContext`)
+  - Group is sometimes NULL (and is checked)
+  - Sacl/Dacl AclSize fields are valid USHORTs (no validation)
+
+Any of these assumptions can be violated by a malformed token (LSA build
+bug, missing `DefaultOwnerIndex` setup, etc.) or by a user-mode caller
+that crafts an `ExplicitDescriptor` with fields the upstream capture
+didn't probe.
+
+### Audit targets
+
+Anything in `src/NT/PRIVATE/NTOS/SE/` that walks an SD's Owner/Group/Sacl/Dacl
+without guards. Quick grep:
+
+```
+grep -rnE 'SeLengthSid\s*\(|->AclSize\b|RtlpOwnerAddrSecurityDescriptor|RtlpGroupAddrSecurityDescriptor' \
+   src/NT/PRIVATE/NTOS/SE/
+```
+
+Each hit deserves: (a) a NULL guard if the field could be NULL, and
+(b) ideally an SEH wrap if the pointer could be user-derived.
+
+### Real-world implication
+
+In a hostile environment this class of bug becomes a **local
+denial-of-service / kernel panic vector** at minimum, and depending on
+the exact deref pattern (e.g. arbitrary-offset reads driven by
+attacker-controlled SubAuthorityCount or AclSize values) potentially an
+**information leak or escalation** vector. Classic kernel-trust-boundary
+mistake, exactly the shape that ate Microsoft for a decade of Patch
+Tuesdays. We're getting away with it now because MicroNT runs as one
+trusted user; a real multi-user system would have to take this seriously.
+
+### For Raymond
+
+Hypothetical title: *"Why does winlogon take down my entire OS just by
+trying to give me a default profile?"* Answer: "Because the security
+subsystem assumed the token would always have a non-NULL default owner,
+and you're the first person in 30 years to feed it one that didn't."

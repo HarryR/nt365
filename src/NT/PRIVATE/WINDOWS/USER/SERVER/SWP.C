@@ -1345,6 +1345,59 @@ void ChangeStates(
             SetVisible(pwnd, TRUE);
 
             /*
+             * MicroNT: auto-promote to foreground when a top-level window
+             * becomes visible on the current input desktop and nothing
+             * else holds the foreground queue.
+             *
+             * Normally xxxSwitchDesktop's foreground walk picks a window
+             * at the moment the desktop becomes active. On fast hardware
+             * (and specifically winlogon → userinit → shell race on
+             * modern CPUs), SwitchDesktop can fire before the shell has
+             * even reached main(), let alone created its first window —
+             * so the walk finds nothing and gpqForeground stays NULL
+             * forever. With no foreground queue the RIT has nowhere to
+             * post mouse/keyboard events and input is silently dropped.
+             *
+             * Promoting here closes the race: whichever top-level window
+             * shows up first on the newly-active desktop becomes fg.
+             * Only acts when:
+             *   - no current foreground (we're the first)
+             *   - window is on the current RIT input desktop
+             *   - window is top-level (not a child)
+             */
+            /*
+             * MicroNT: auto-promote to foreground when a top-level
+             * application window becomes visible on the current RIT
+             * input desktop and nothing else holds the foreground.
+             *
+             * Real NT relies on xxxSwitchDesktop's fallback walk
+             * (pdesk->spwnd->spwndChild, first WFVISIBLE wins) to
+             * pick a foreground at the moment the desktop becomes
+             * active. On fast hardware this races: winlogon can fire
+             * SwitchDesktop before the shell has even reached main(),
+             * so the walk finds no visible child, gpqForeground stays
+             * NULL, and every RIT input event silently drops — cursor
+             * moves but no window proc ever sees a click.
+             *
+             * Closing the race here: the first top-level app window
+             * that becomes visible on the current input desktop takes
+             * the foreground. Exclusions:
+             *   - TestwndChild: only top-level
+             *   - pwnd == pdesk->spwnd: SwitchDesktop itself fires
+             *     SWP_SHOWWINDOW on the desktop root
+             *   - spwndParent != pdesk->spwnd: menus, tooltips,
+             *     owned popups, etc.
+             */
+            if (gpqForeground == NULL &&
+                    gspdeskRitInput != NULL &&
+                    GETPTI(pwnd)->spdesk == gspdeskRitInput &&
+                    !TestwndChild(pwnd) &&
+                    pwnd != gspdeskRitInput->spwnd &&
+                    pwnd->spwndParent == gspdeskRitInput->spwnd) {
+                xxxSetForegroundWindow(pwnd);
+            }
+
+            /*
              * If we're redrawing, create an SPB for this window if
              * needed.
              */

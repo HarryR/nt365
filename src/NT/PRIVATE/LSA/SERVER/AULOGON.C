@@ -472,6 +472,19 @@ Return Value:
     // Duplicate the token handle back into the calling process
     //
 
+    Arguments->Token = NULL;
+    DbgPrint("LSA: AULOGON(server): sizeof(Args)=%u off(Token)=%u "
+             "off(Quotas)=%u off(LogonId)=%u off(SubStatus)=%u "
+             "off(SourceContext)=%u\n",
+             (ULONG)sizeof(*Arguments),
+             (ULONG)((PCHAR)&Arguments->Token - (PCHAR)Arguments),
+             (ULONG)((PCHAR)&Arguments->Quotas - (PCHAR)Arguments),
+             (ULONG)((PCHAR)&Arguments->LogonId - (PCHAR)Arguments),
+             (ULONG)((PCHAR)&Arguments->SubStatus - (PCHAR)Arguments),
+             (ULONG)((PCHAR)&Arguments->SourceContext - (PCHAR)Arguments));
+    DbgPrint("LSA: AULOGON: NtDuplicateObject source-Token=%p "
+             "ClientProcess=%p\n",
+             Token, ClientRequest->LogonProcessContext->ClientProcess);
     Status = NtDuplicateObject(
                  NtCurrentProcess(),
                  Token,
@@ -482,6 +495,8 @@ Return Value:
                  DUPLICATE_SAME_ACCESS |
                  DUPLICATE_CLOSE_SOURCE
                  );
+    DbgPrint("LSA: AULOGON: NtDuplicateObject status=%08lx Arguments->Token=%p\n",
+             Status, Arguments->Token);
 
 
     if ( !NT_SUCCESS(Status) ) {

@@ -163,8 +163,15 @@ class Hive:
     def _nk(self, name: str, parent: int, flags: int,
             subkey_count: int, subkey_list: int,
             value_count: int, value_list: int,
-            security: int = 0xFFFFFFFF) -> int:
-        """CM_KEY_NODE ('nk') cell. 76 byte fixed header + compressed name."""
+            security: int = 0xFFFFFFFF,
+            max_name_len: int = 0, max_class_len: int = 0,
+            max_value_name_len: int = 0, max_value_data_len: int = 0) -> int:
+        """CM_KEY_NODE ('nk') cell. 76 byte fixed header + compressed name.
+
+        MaxNameLen/MaxValueNameLen are reported by RegQueryInfoKey in WCHARs
+        (even for compressed-name keys — the kernel returns the length as if
+        the name were stored uncompressed). MaxValueDataLen is in bytes.
+        """
         name_b = name.encode("ascii")
         cell = self._alloc(76 + len(name_b))
 
@@ -178,7 +185,9 @@ class Hive:
             + struct.pack("<II", subkey_list, 0xFFFFFFFF)      # +28  SubKeyLists
             + struct.pack("<II", value_count, value_list)      # +36  ValueList
             + struct.pack("<II", security, 0xFFFFFFFF)         # +44  Security, Class
-            + struct.pack("<IIII", 0, 0, 0, 0)                 # +52  MaxNameLen..
+            + struct.pack("<IIII",                             # +52  MaxNameLen..
+                          max_name_len, max_class_len,
+                          max_value_name_len, max_value_data_len)
             + struct.pack("<I", 0)                             # +68  WorkVar
             + struct.pack("<HH", len(name_b), 0)               # +72  NameLength, ClassLength
             + name_b                                           # +76  Name
@@ -304,6 +313,13 @@ class Hive:
         # Children must be sorted alphabetically for binary search
         children = sorted(key.subkeys.items(), key=lambda kv: kv[0].upper())
 
+        # RegQueryInfoKey returns these pre-computed maxes straight from the nk.
+        # Name/ValueName lengths reported in WCHAR count (2 × char count for
+        # our ASCII/UTF-8 input); ValueDataLen in bytes.
+        max_name_len = max((len(n) * 2 for n, _ in children), default=0)
+        max_value_name_len = max((len(n) * 2 for n, _, _ in key.values), default=0)
+        max_value_data_len = max((len(d) for _, _, d in key.values), default=0)
+
         # Allocate the nk with placeholder subkey_list; patch after emitting children
         nk_cell = self._nk(
             name, parent_cell, key.flags,
@@ -312,6 +328,9 @@ class Hive:
             value_count=len(value_cells),
             value_list=value_list,
             security=security_cell,
+            max_name_len=max_name_len,
+            max_value_name_len=max_value_name_len,
+            max_value_data_len=max_value_data_len,
         )
 
         # Root's parent points to itself
@@ -750,7 +769,10 @@ def build_micront_software_hive(profile: str = "headless") -> Hive:
 
         # "Shell" is what userinit launches as the user's desktop shell.
         # progman.exe = NT 3.5's Program Manager (staged in System32/).
-        wl.set_sz("Shell", "progman.exe")
+        # Switched to cmd.exe temporarily while debugging progman's
+        # invisible-window issue — cmd goes through csrss's console
+        # code path instead of USER/GDI, so it's a good control.
+        wl.set_sz("Shell", "cmd.exe")
 
         # ServiceControllerStart — winlogon starts this before lsass.
         # We don't have services.exe yet; winlogon logs a warning but
@@ -775,6 +797,18 @@ def build_micront_software_hive(profile: str = "headless") -> Hive:
             .set_sz("Helv", "MS Sans Serif") \
             .set_sz("Tms Rmn", "MS Serif") \
             .set_sz("Courier New", "Courier")
+
+        # Program Manager common groups — progman's LoadCommonGroups()
+        # (PMINIT.C:913) enumerates subkeys of HKLM\SOFTWARE\Program Groups
+        # and loads each subkey's default (unnamed) REG_BINARY value as a
+        # raw GROUPDEF blob (the on-disk .GRP file format). Without at
+        # least one entry here, progman starts with a blank MDI client
+        # — no group windows, nothing to click. Seed the canonical
+        # "Main" group from the in-tree MAIN.GRP shipped with PROGMAN.
+        from pathlib import Path as _Path
+        main_grp = _Path(__file__).resolve().parent.parent / \
+            "NT" / "PRIVATE" / "WINDOWS" / "SHELL" / "PROGMAN" / "MAIN.GRP"
+        h["Program Groups\\Main"].set_binary("", main_grp.read_bytes())
 
     if profile != 'micront':
         # IniFileMapping — BaseSrvInitializeIniFileMappings reads this tree

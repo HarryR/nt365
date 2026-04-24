@@ -613,6 +613,14 @@ Return Value:
 
                 if (!SepValidOwnerSubjectContext(SubjectContext,NewOwner) ) {
 
+                    DbgPrint("SE: SeAssignSecurity STATUS_INVALID_OWNER — "
+                             "explicit Owner=%p (Rev=%02x SubAuthCount=%02x) "
+                             "rejected by caller's SubjectContext "
+                             "(SubjectContextOwner=%p)\n",
+                             NewOwner,
+                             NewOwner ? ((UCHAR*)NewOwner)[0] : 0,
+                             NewOwner ? ((UCHAR*)NewOwner)[1] : 0,
+                             SubjectContextOwner);
                     RequestorCanAssignDescriptor = FALSE;
                     Status = STATUS_INVALID_OWNER;
 
@@ -724,14 +732,39 @@ Return Value:
                     }
                 }
 
-                RtlMoveMemory( Field, NewOwner, SeLengthSid(NewOwner) );
-                ((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Owner = (PSID)RtlPointerToOffset(Base,Field);
-                Field += NewOwnerSize;
+                /*
+                 * MicroNT: guard Owner with NULL check, symmetric to the
+                 * Group path below. SepGetDefaultsSubjectContext documents
+                 * that Owner "will always be returned as a non-zero
+                 * pointer" — but that invariant is only as strong as the
+                 * token that provides it. If a token ever lands here with
+                 * a NULL default-owner slot (e.g. malformed LSA token
+                 * build, SYSTEM token edge case), SeLengthSid(NULL)
+                 * dereferences offset +1 and bugchecks the kernel with
+                 * KMODE_EXCEPTION_NOT_HANDLED at c0000005. Caller's bad
+                 * state should become an error return, not a bugcheck.
+                 * For self-relative form, NULL = offset 0 (absent).
+                 */
+                if (NewOwner != NULL) {
+                    RtlMoveMemory( Field, NewOwner, SeLengthSid(NewOwner) );
+                    ((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Owner =
+                        (PSID)RtlPointerToOffset(Base,Field);
+                    Field += NewOwnerSize;
+                } else {
+                    ((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Owner = NULL;
+                }
 
                 if (NewGroup != NULL) {
                     RtlMoveMemory( Field, NewGroup, SeLengthSid(NewGroup) );
+                    ((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Group =
+                        (PSID)RtlPointerToOffset(Base,Field);
+                } else {
+                    /* Also fix the existing latent bug: the original code
+                     * set Group offset to Field even when no Group was
+                     * copied, leaving it pointing at uninitialised memory
+                     * past the allocation. NULL = offset 0 = absent. */
+                    ((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Group = NULL;
                 }
-                ((SECURITY_DESCRIPTOR *)(*NewDescriptor))->Group = (PSID)RtlPointerToOffset(Base,Field);
 
                 Status = STATUS_SUCCESS;
             }

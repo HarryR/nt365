@@ -1403,6 +1403,19 @@ PDESKTOP xxxCreateDesktop(
         Lock(&(pdesk->spwnd), pwnd);
         Lock(&(pdi->spwnd), pwnd);
 
+        /*
+         * MicroNT: mark the desktop root window WFVISIBLE. WINSTA.C:252
+         * does this for the per-winsta "desktop owner", but the path
+         * for per-desktop root windows was missing it — which made
+         * _IsWindowVisible return FALSE for every window on any
+         * desktop created by CreateDesktop (e.g. hdeskApplications),
+         * because the walk up through spwndParent hits this root and
+         * sees no WFVISIBLE. InvalidateRect/UpdateWindow then drop
+         * the update region, WM_PAINT never fires, and nothing ever
+         * draws. Mirror the WINSTA.C convention here.
+         */
+        SetWF(pwnd, WFVISIBLE);
+
         #ifdef WINMAN
         LayerSetDesktopWindow(pwnd->pwindow);
         #endif
@@ -1870,7 +1883,11 @@ BOOL xxxSwitchDesktop(
     Unlock(&pdesk->spwndForeground);
 
     /*
-     * Now set it to the foreground.
+     * Now set it to the foreground. If no visible window exists yet,
+     * leave gpqForeground NULL — a later SWP_SHOWWINDOW on the first
+     * window to appear on this desktop will auto-promote itself to
+     * foreground (see SWP.C). This covers the winlogon → shell race
+     * where SwitchDesktop fires before the shell's main window exists.
      */
     if (pwndSetForeground == NULL) {
         xxxSetForegroundWindow2(NULL, NULL, 0);
@@ -2393,13 +2410,21 @@ BOOL xxxResolveDesktop(
          * based on the session.
          */
         if (fWinStaDefaulted) {
-            if (!ImpersonateClient())
+            DbgPrint("USERSRV: xxxResolveDesktop fWinStaDefaulted, "
+                     "about to impersonate + test token\n");
+            if (!ImpersonateClient()) {
+                DbgPrint("USERSRV: ImpersonateClient FAILED\n");
                 return FALSE;
+            }
             Status = NtOpenThreadToken(NtCurrentThread(),
                     TOKEN_QUERY, (BOOLEAN)TRUE, &hToken);
+            DbgPrint("USERSRV: NtOpenThreadToken status=%08lx hToken=%p\n",
+                     Status, hToken);
             if (NT_SUCCESS(Status)) {
                 fInteractive = NT_SUCCESS(_UserTestTokenForInteractive(hToken,
                         NULL));
+                DbgPrint("USERSRV: fInteractive=%d after TestTokenForInteractive\n",
+                         fInteractive);
 
                 if (fInteractive) {
                     pszWinSta = L"WinSta0";

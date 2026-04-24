@@ -116,6 +116,66 @@ run_nmake() {
     # Always regenerate _objects.mac to stay in sync with SOURCES
     python3 "$SCRIPT_DIR/tools/gen_objects.py" "$linux_dir"
 
+    # NMAKE-based dep tracking is unreliable for NT components: source
+    # files in the parent dir of the build subdir (e.g. SE/UP builds .c
+    # from SE/) and header edits anywhere don't always trigger a recompile.
+    # Pre-pass: stat-compare sources against the .obj files in obj/i386 and
+    # remove any stale outputs so NMAKE rebuilds them.
+    #
+    # Two passes:
+    #   1) Per-source: if foo.c is newer than foo.obj, rm foo.obj.
+    #   2) Per-header: if any .h/.hxx/.inc is newer than the OLDEST .obj,
+    #      nuke ALL .obj in obj/i386 (we can't tell which TUs include
+    #      which header without a real dependency graph; coarse but
+    #      correct). Also covers asm/include changes.
+    #
+    # Doesn't cover cross-component header changes (editing a header
+    # under PUBLIC/SDK/INC won't reach components that build elsewhere
+    # unless we explicitly invoke their build_* target).
+    {
+        local _obj_dir="$linux_dir/obj/i386"
+        local _src_dirs=("$linux_dir" "$linux_dir/.." "$linux_dir/i386")
+        local _d _src _base _obj _stem
+        local _nuked=0
+
+        # Pass 1: stale .obj per source file
+        for _d in "${_src_dirs[@]}"; do
+            [ -d "$_d" ] || continue
+            for _src in "$_d"/*.c "$_d"/*.cxx "$_d"/*.cpp "$_d"/*.asm \
+                        "$_d"/*.C "$_d"/*.CXX "$_d"/*.CPP "$_d"/*.ASM; do
+                [ -f "$_src" ] || continue
+                _base="$(basename "$_src")"
+                _stem="${_base%.*}"
+                # Match case-insensitive against existing .obj
+                _obj="$(find "$_obj_dir" -maxdepth 1 -iname "${_stem}.obj" 2>/dev/null | head -1)"
+                if [ -n "$_obj" ] && [ "$_src" -nt "$_obj" ]; then
+                    echo "  stale: $_base (newer than $(basename "$_obj"))"
+                    rm -f "$_obj"
+                fi
+            done
+        done
+
+        # Pass 2: header edits invalidate everything (can't tell which TU
+        # includes which .h without a real dep scanner)
+        if [ -d "$_obj_dir" ] && ls "$_obj_dir"/*.obj >/dev/null 2>&1; then
+            local _oldest_obj
+            _oldest_obj="$(ls -t "$_obj_dir"/*.obj 2>/dev/null | tail -1)"
+            for _d in "${_src_dirs[@]}"; do
+                [ -d "$_d" ] || continue
+                for _src in "$_d"/*.h "$_d"/*.hxx "$_d"/*.hpp "$_d"/*.inc \
+                            "$_d"/*.H "$_d"/*.HXX "$_d"/*.HPP "$_d"/*.INC; do
+                    [ -f "$_src" ] || continue
+                    if [ -n "$_oldest_obj" ] && [ "$_src" -nt "$_oldest_obj" ]; then
+                        echo "  header changed: $(basename "$_src") (newer than $(basename "$_oldest_obj")) — nuking $_obj_dir/*.obj"
+                        rm -f "$_obj_dir"/*.obj
+                        _nuked=1
+                        break 2
+                    fi
+                done
+            done
+        fi
+    }
+
     local rel_path="${linux_dir#$NT_ROOT}"
     local makedir_win="${NT_ROOT_WIN}$(echo "$rel_path" | sed 's|/|\\|g')"
 

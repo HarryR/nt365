@@ -70,7 +70,6 @@ typedef enum _LSAP_AU_API_NUMBER {
 // upon the type of call being made.  The following data structures are
 // the call-specific body formats.
 //
-
 typedef struct _LSAP_LOOKUP_PACKAGE_ARGS {
     ULONG AuthenticationPackage;       // OUT parameter
     ULONG PackageNameLength;
@@ -89,6 +88,21 @@ typedef struct _LSAP_LOGON_USER_ARGS {
     NTSTATUS SubStatus;                // OUT parameter
     PVOID ProfileBuffer;               // OUT parameter
     ULONG ProfileBufferLength;         // OUT parameter
+    /*
+     * MicroNT: explicit 4-byte pad here so LogonId starts at an
+     * 8-byte-aligned offset with or without the compiler doing it
+     * for us. LUID/LARGE_INTEGER-bearing fields have caused layout
+     * drift across the LSA LPC boundary — one TU's compile
+     * landed LogonId at offset 60 (4-aligned) while the other
+     * landed it at offset 64 (8-aligned, 4 bytes of implicit pad).
+     * Token (the next HANDLE) then sat at a different offset on
+     * each side, and the new process handle arrived in the
+     * caller's Quotas.PagedPoolLimit slot instead of UserToken.
+     * Explicit padding pins the layout regardless of what either
+     * side's compiler decides about __int64/double/LARGE_INTEGER
+     * alignment under /Zp8.
+     */
+    ULONG _LsapPad_BeforeLogonId;
     LUID LogonId;                      // OUT parameter
     HANDLE Token;                      // OUT parameter
     QUOTA_LIMITS Quotas;               // OUT parameter
@@ -125,6 +139,7 @@ typedef struct _LSAP_AU_API_MESSAGE {
         };
     };
 } LSAP_AU_API_MESSAGE, *PLSAP_AU_API_MESSAGE;
+
 
 
 

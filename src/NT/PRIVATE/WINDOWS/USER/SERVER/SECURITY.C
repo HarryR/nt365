@@ -420,7 +420,9 @@ _UserTestTokenForInteractive(
     NTSTATUS Status;
 
     RtlEnterCriticalSection(&gcsUserSrv);
-    
+
+    DbgPrint("USERSRV: TestTokenForInteractive ENTRY Token=%p\n", Token);
+
     /*
      * !!!
      *
@@ -443,6 +445,9 @@ _UserTestTokenForInteractive(
                  );
 
     if (Status != STATUS_BUFFER_TOO_SMALL) {
+        DbgPrint("USERSRV: TestTokenForInteractive 1st NtQueryInfoToken "
+                 "status=%08lx (expected STATUS_BUFFER_TOO_SMALL), bailing\n",
+                 Status);
         RtlLeaveCriticalSection(&gcsUserSrv);
         return Status;
         }
@@ -477,6 +482,12 @@ _UserTestTokenForInteractive(
          * A valid session id has been returned.  Compare it
          * with the id of the logged on user.
          */
+        DbgPrint("USERSRV: TestTokenForInteractive: token LUID=%x-%x "
+                 "winsta->luidUser=%x-%x\n",
+                 pStats->AuthenticationId.HighPart,
+                 pStats->AuthenticationId.LowPart,
+                 pwinsta->luidUser.HighPart,
+                 pwinsta->luidUser.LowPart);
         if (pStats->AuthenticationId.QuadPart == pwinsta->luidUser.QuadPart)
             Status = STATUS_SUCCESS;
         else

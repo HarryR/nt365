@@ -769,9 +769,20 @@ Return Value:
     // Fill in Owner field in new SD
     //
 
-    RtlMoveMemory( Field, NewOwner, SeLengthSid(NewOwner) );
-    NewDescriptor->Owner = (PSID)RtlPointerToOffset(Base,Field);
-    Field += NewOwnerSize;
+    /*
+     * MicroNT: same NULL-guard fix as SeAssignSecurity. If NewOwner is
+     * NULL (token's default owner missing), the original
+     * SeLengthSid(NewOwner) dereferences offset +1 and bugchecks the
+     * kernel with KMODE_EXCEPTION_NOT_HANDLED. For self-relative SDs,
+     * NULL is encoded as offset 0 (absent).
+     */
+    if (NewOwner != NULL) {
+        RtlMoveMemory( Field, NewOwner, SeLengthSid(NewOwner) );
+        NewDescriptor->Owner = (PSID)RtlPointerToOffset(Base,Field);
+        Field += NewOwnerSize;
+    } else {
+        NewDescriptor->Owner = NULL;
+    }
 
     if (!NewOwnerPresent) {
 
@@ -796,8 +807,13 @@ Return Value:
     // Fill in Group field in new SD
     //
 
-    RtlMoveMemory( Field, NewGroup, SeLengthSid(NewGroup) );
-    NewDescriptor->Group = (PSID)RtlPointerToOffset(Base,Field);
+    /* MicroNT: NULL-guard same as Owner above. */
+    if (NewGroup != NULL) {
+        RtlMoveMemory( Field, NewGroup, SeLengthSid(NewGroup) );
+        NewDescriptor->Group = (PSID)RtlPointerToOffset(Base,Field);
+    } else {
+        NewDescriptor->Group = NULL;
+    }
 
     if (!NewGroupPresent) {
 

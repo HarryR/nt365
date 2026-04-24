@@ -585,9 +585,15 @@ HWND APIENTRY CreateFrameWindow(register PRECT prc, WORD nCmdShow)
       lstrcat(szBuffer, szUserName);
   }
 #endif
+  /* MicroNT: create visible so WFVISIBLE is set at xxxCreateWindowEx time.
+   * A later ShowWindow() in our USER currently fires WM_SHOWWINDOW but
+   * doesn't reliably set WFVISIBLE for a window that was created hidden
+   * — separate USER bug we haven't tracked down. Including WS_VISIBLE
+   * in the initial style sidesteps it; this is what most NT apps do
+   * anyway for the main frame. */
   hwndProgman = CreateWindow(szProgmanClass,
                              szBuffer,
-			                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+			                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE,
                              prc->left, prc->top,
                              prc->right-prc->left,
                              prc->bottom-prc->top,
@@ -1351,9 +1357,18 @@ VOID NEAR PASCAL ReadConfigFile(int nCmdShow)
   else {
 
 DefaultPosition:
-      /* NOTE: cx = 0 - CW_USEDEFAULT == CW_USEDEFAULT (0x8000) */
-      rgiPos[0] = rgiPos[1] = CW_USEDEFAULT;
-      rgiPos[2] = rgiPos[3] = 0;
+      /*
+       * The original Win16 code stashed CW_USEDEFAULT in left/top and 0
+       * in right/bottom, relying on "cx = 0 - CW_USEDEFAULT == CW_USEDEFAULT
+       * (0x8000)" via 16-bit unsigned wrap. In Win32 CW_USEDEFAULT is
+       * 0x80000000 (INT_MIN); "0 - INT_MIN" is signed-integer overflow UB
+       * and the resulting cx/cy don't round-trip to CW_USEDEFAULT reliably.
+       * Fill the rect with a concrete full-screen box instead.
+       */
+      rgiPos[0] = 0;
+      rgiPos[1] = 0;
+      rgiPos[2] = GetSystemMetrics(SM_CXSCREEN);
+      rgiPos[3] = GetSystemMetrics(SM_CYSCREEN);
       rgiPos[4] = SW_SHOWNORMAL;
   }
 

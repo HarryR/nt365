@@ -303,12 +303,28 @@ SetProcessToken(
         PrimaryTokenInfo.Token  = TokenToAssign;
         PrimaryTokenInfo.Thread = ProcessInformation->hThread;
 
+        {
+            TOKEN_STATISTICS ts;
+            ULONG rl;
+            NTSTATUS sq = NtQueryInformationToken(TokenToAssign,
+                        TokenStatistics, &ts, sizeof(ts), &rl);
+            DbgPrint("WINLOGON: SetProcessToken: dup'd UserToken=%p "
+                     "AuthId=%x-%x (NtQueryInfoToken status=%08lx) — "
+                     "about to NtSetInfoProcess(ProcessAccessToken)\n",
+                     TokenToAssign,
+                     NT_SUCCESS(sq) ? ts.AuthenticationId.HighPart : -1,
+                     NT_SUCCESS(sq) ? ts.AuthenticationId.LowPart : -1,
+                     sq);
+        }
+
         Status = NtSetInformationProcess(
                     ProcessInformation->hProcess,
                     ProcessAccessToken,
                     (PVOID)&PrimaryTokenInfo,
                     (ULONG)sizeof(PROCESS_ACCESS_TOKEN)
                     );
+        DbgPrint("WINLOGON: SetProcessToken: NtSetInfoProcess status=%08lx\n",
+                 Status);
         //
         // Restore the privilege to its previous state
         //
@@ -2193,6 +2209,9 @@ SetUserProcessData(
 {
     NTSTATUS    Status;
 
+    DbgPrint("WINLOGON: SetUserProcessData ENTRY UserToken=%p UserSid=%p\n",
+             UserToken, UserSid);
+
     //
     // Free an existing UserSid
     //
@@ -2240,6 +2259,21 @@ SetUserProcessData(
 
     UserProcessData->UserToken = UserToken;
     UserProcessData->UserSid = UserSid;
+
+    if (UserToken != NULL) {
+        TOKEN_STATISTICS ts;
+        ULONG rl;
+        NTSTATUS sq = NtQueryInformationToken(UserToken,
+                    TokenStatistics, &ts, sizeof(ts), &rl);
+        DbgPrint("WINLOGON: SetUserProcessData: UserToken=%p LUID=%x-%x "
+                 "(NtQuery status=%08lx)\n",
+                 UserToken,
+                 NT_SUCCESS(sq) ? ts.AuthenticationId.HighPart : -1,
+                 NT_SUCCESS(sq) ? ts.AuthenticationId.LowPart : -1,
+                 sq);
+    } else {
+        DbgPrint("WINLOGON: SetUserProcessData: UserToken=NULL (SYSTEM/logoff)\n");
+    }
 
     //
     // Save the user's quota limits
@@ -2636,6 +2670,18 @@ ImpersonateUser(
         ObjectAttributes.SecurityQualityOfService = &SecurityQualityOfService;
 
 
+        {
+            PSECURITY_DESCRIPTOR sd = UserProcessData->NewThreadTokenSD;
+            if (sd) {
+                ULONG *w = (ULONG *)sd;
+                DbgPrint("WINLOGON: ImpersonateUser NewThreadTokenSD=%p "
+                         "Rev=%02x Control=%04x Owner=%p Group=%p Sacl=%p Dacl=%p\n",
+                         sd, ((UCHAR*)sd)[0], *(USHORT*)((UCHAR*)sd+2),
+                         (PVOID)w[1], (PVOID)w[2], (PVOID)w[3], (PVOID)w[4]);
+            } else {
+                DbgPrint("WINLOGON: ImpersonateUser NewThreadTokenSD=NULL\n");
+            }
+        }
         Status = NtDuplicateToken( UserToken,
                                    TOKEN_IMPERSONATE,
                                    &ObjectAttributes,

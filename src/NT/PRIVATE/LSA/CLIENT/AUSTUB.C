@@ -525,6 +525,23 @@ Routine Description:
     (*LogonId)             = Arguments->LogonId;
     (*Token)               = Arguments->Token;
     (*Quotas)              = Arguments->Quotas;
+    {
+        ULONG *raw = (ULONG *)Arguments;
+        ULONG off_token = (ULONG)((PCHAR)&Arguments->Token - (PCHAR)Arguments);
+        ULONG off_quotas = (ULONG)((PCHAR)&Arguments->Quotas - (PCHAR)Arguments);
+        ULONG total = sizeof(*Arguments);
+        DbgPrint("LSA: AUSTUB: post-ZwRequest Token=%p (off=%u) "
+                 "LogonId=%x-%x Quotas.PagedPoolLimit=%p "
+                 "Quotas.NonPagedPoolLimit=%p (off=%u) sizeof(Args)=%u "
+                 "DataLen=%u TotalLen=%u\n",
+                 Arguments->Token, off_token,
+                 Arguments->LogonId.HighPart, Arguments->LogonId.LowPart,
+                 (PVOID)Arguments->Quotas.PagedPoolLimit,
+                 (PVOID)Arguments->Quotas.NonPagedPoolLimit, off_quotas,
+                 total,
+                 (ULONG)Message.PortMessage.u1.s1.DataLength,
+                 (ULONG)Message.PortMessage.u1.s1.TotalLength);
+    }
 
 
     if ( NT_SUCCESS(Status) ) {

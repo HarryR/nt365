@@ -1183,11 +1183,20 @@ RestoreUserProfile(
 
     pUserProfile = &(pGlobals->UserProfile);
 
+    DbgPrint("WINLOGON: RestoreUserProfile ENTRY UserToken=%p UserSid=%p "
+             "WinlogonSid=%p UserProfile=%p\n",
+             pGlobals->UserProcessData.UserToken,
+             pGlobals->UserProcessData.UserSid,
+             pGlobals->WinlogonSid,
+             pUserProfile);
+
     //
     // Get the Sid string for the current user
     //
 
+    DbgPrint("WINLOGON: RestoreUserProfile — calling GetSidString\n");
     SidString = GetSidString(pGlobals);
+    DbgPrint("WINLOGON: RestoreUserProfile — GetSidString returned %p\n", SidString);
     ASSERT(SidString != NULL);
     if (SidString == NULL) {
         WLPrint(("failed to get sid string for user"));
@@ -1227,6 +1236,9 @@ RestoreUserProfile(
         // the user to logon.
         // 4-5-93 johannec
         //
+    DbgPrint("WINLOGON: RestoreUserProfile — calling TestUserAccessToProfile "
+             "(HKEY_USERS=%p SidString=\"%ws\")\n",
+             HKEY_USERS, SidString);
     if (TestUserAccessToProfile(pGlobals, HKEY_USERS, SidString)) {
         VerbosePrint(("Profile is already loaded, sid = <%S>", SidString));
         if (MyRegUnLoadKey(HKEY_USERS, SidString) != ERROR_SUCCESS) {
@@ -1247,26 +1259,36 @@ RestoreUserProfile(
         }
     }
 
+    DbgPrint("WINLOGON: RestoreUserProfile — calling IsProfileMandatory\n");
     if (IsMandatory = IsProfileMandatory(lpProfilePath)) {
         VerbosePrint(("Profile is mandatory"));
     }
+    DbgPrint("WINLOGON: RestoreUserProfile — IsMandatory=%d; calling IsUserAGuest\n", IsMandatory);
 
     if (IsGuest = IsUserAGuest(pGlobals)) {
         VerbosePrint(("User is a guest"));
     }
+    DbgPrint("WINLOGON: RestoreUserProfile — IsGuest=%d\n", IsGuest);
 
     /*
      * Determine if the local copy of the profilemage is available.
      */
     if (!IsResident && !IsMandatory && !IsGuest) {
+        DbgPrint("WINLOGON: RestoreUserProfile — calling GetLocalProfileImage\n");
         IsLocalReachable = GetLocalProfileImage(pGlobals, &IsKeepLocal, &bNewUser);
+        DbgPrint("WINLOGON: RestoreUserProfile — GetLocalProfileImage -> %d "
+                 "KeepLocal=%d NewUser=%d\n",
+                 IsLocalReachable, IsKeepLocal, bNewUser);
         if (!IsKeepLocal) {
+            DbgPrint("WINLOGON: RestoreUserProfile — GetTempProfileFileName\n");
             GetTempProfileFileName(&pUserProfile->LocalProfileImage, TRUE);
         }
     }
     else {
+        DbgPrint("WINLOGON: RestoreUserProfile — GetTempProfileFileName (else)\n");
         GetTempProfileFileName(&pUserProfile->LocalProfileImage, TRUE);
     }
+    DbgPrint("WINLOGON: RestoreUserProfile — past profile-image detection\n");
 
     lpProfileImage = pUserProfile->LocalProfileImage;
 
@@ -1277,6 +1299,8 @@ RestoreUserProfile(
      * extensions on profile file names.
      * We save this temp file for the unloading of the profile at logoff.
      */
+    DbgPrint("WINLOGON: RestoreUserProfile — IsResident=%d\n", IsResident);
+
     if (IsResident) {
 
         VerbosePrint(("user profile is resident in file %S, loading user key from that file", lpProfilePath));
@@ -1310,8 +1334,12 @@ RestoreUserProfile(
     /*
      * Decide if the central profilemage is available.
      */
+    DbgPrint("WINLOGON: RestoreUserProfile — calling IsCentralProfileReachable\n");
     IsCentralReachable = IsCentralProfileReachable(pGlobals, lpProfilePath,
                                                     &bCreateCentralProfile);
+    DbgPrint("WINLOGON: RestoreUserProfile — IsCentralReachable=%d "
+             "bCreateCentralProfile=%d\n",
+             IsCentralReachable, bCreateCentralProfile);
     if (!IsCentralReachable) {
         if (!IsProfilePathNULL) {
             error = GetLastError();
@@ -1432,10 +1460,14 @@ RestoreUserProfile(
 
 OverwriteLocalProfile:
 
+        DbgPrint("WINLOGON: RestoreUserProfile — at OverwriteLocalProfile "
+                 "IsMandatory=%d IsGuest=%d\n", IsMandatory, IsGuest);
         if (!IsMandatory || IsGuest) {
 
+            DbgPrint("WINLOGON: RestoreUserProfile — calling GiveUserDefaultProfile\n");
             error = GiveUserDefaultProfile(pGlobals, SidString,
                                                     lpProfileImage);
+            DbgPrint("WINLOGON: RestoreUserProfile — GiveUserDefaultProfile -> %ld\n", error);
             bProfileLoaded = (error == ERROR_SUCCESS);
             if (bProfileLoaded) {
 
@@ -2140,22 +2172,33 @@ BOOL TestUserAccessToProfile(PGLOBALS pGlobals, HKEY hKey, LPTSTR lpSubKey)
         // Impersonate the user
         //
 
+        DbgPrint("WINLOGON: TestUserAccessToProfile — calling ImpersonateUser "
+                 "(UserToken=%p)\n", pGlobals->UserProcessData.UserToken);
         ImpersonationHandle = ImpersonateUser(&pGlobals->UserProcessData, NULL);
+        DbgPrint("WINLOGON: TestUserAccessToProfile — ImpersonateUser -> %p\n",
+                 ImpersonationHandle);
 
         if (ImpersonationHandle == NULL) {
             WLPrint(("MyRegLoadKey : Failed to impersonate user"));
             return(FALSE);
         }
 
+        DbgPrint("WINLOGON: TestUserAccessToProfile — calling RegOpenKeyEx "
+                 "HKEY_USERS\\%ws\n", lpSubKey);
         error = RegOpenKeyEx(HKEY_USERS, lpSubKey, 0, KEY_READ, &hSubKey);
+        DbgPrint("WINLOGON: TestUserAccessToProfile — RegOpenKeyEx returned %ld\n",
+                 error);
 
         //
         // Revert to being 'ourself'
         //
 
+        DbgPrint("WINLOGON: TestUserAccessToProfile — calling StopImpersonating(%p)\n",
+                 ImpersonationHandle);
         if (!StopImpersonating(ImpersonationHandle)) {
             WLPrint(("MyRegLoadKey : Failed to revert to self"));
         }
+        DbgPrint("WINLOGON: TestUserAccessToProfile — StopImpersonating returned\n");
 
         if (error == ERROR_SUCCESS) {
             RegCloseKey(hSubKey);
@@ -2190,11 +2233,16 @@ Routine Description:
     // Enable the restore privilege
     //
 
+    DbgPrint("WINLOGON: MyRegLoadKey — RtlAdjustPrivilege(SE_RESTORE,TRUE)\n");
     Status = RtlAdjustPrivilege(SE_RESTORE_PRIVILEGE, TRUE, FALSE, &WasEnabled);
+    DbgPrint("WINLOGON: MyRegLoadKey — RtlAdjustPrivilege status=%08lx\n", Status);
 
     if (NT_SUCCESS(Status)) {
 
+        DbgPrint("WINLOGON: MyRegLoadKey — calling RegLoadKey(%p, %ws, %ws)\n",
+                 hKey, lpSubKey, lpFile);
         error = RegLoadKey(hKey, lpSubKey, lpFile);
+        DbgPrint("WINLOGON: MyRegLoadKey — RegLoadKey returned %d\n", error);
 
         //
         // Restore the privilege to its previous state
@@ -2805,12 +2853,53 @@ ApplySecurityToRegistryTree(
     //
     // Set the security on the root key
     //
+    DbgPrint("WINLOGON: ApplySecurityToRegistryTree ENTRY UserToken=%p RootKey=%p "
+             "SDAll=%p SDNoWrite=%p SecInfo=%08lx\n",
+             UserToken, RootKey, SecDescAllAccess, SecDescNoWrite, SecurityInformation);
+    DbgPrint("WINLOGON: ApplySecurityToRegistryTree — calling TestKeyForUserAllAccess\n");
     if (Error = TestKeyForUserAllAccess(UserToken, RootKey, SecurityInformation, &bAllAccess) ) {
+        DbgPrint("WINLOGON: TestKeyForUserAllAccess FAILED %ld\n", Error);
         return(Error);
     }
+    DbgPrint("WINLOGON: ApplySecurityToRegistryTree — TestKeyForUserAllAccess bAll=%d\n",
+             bAllAccess);
 
     if (bAllAccess) {
+        DbgPrint("WINLOGON: ApplySecurityToRegistryTree — RegSetKeySecurity(All)\n");
+        {
+            /* Query the user token's Owner / PrimaryGroup — kernel's
+             * SeCaptureSecurityDescriptor substitutes these for NULL
+             * Owner/Group fields in a user-mode SD. If either of those
+             * token SID pointers is bogus (LSA build bug, same class
+             * as the LSAP_LOGON_USER_ARGS pad bug), the kernel reads
+             * an invalid SID header and bugchecks. */
+            BYTE buf[512];
+            ULONG need;
+            NTSTATUS s;
+            s = NtQueryInformationToken(UserToken,
+                                        TokenOwner, buf, sizeof(buf), &need);
+            DbgPrint("WINLOGON: Token Owner status=%08lx need=%u\n", s, need);
+            if (NT_SUCCESS(s)) {
+                PSID owner = ((TOKEN_OWNER*)buf)->Owner;
+                DbgPrint("WINLOGON: Token Owner SID=%p (Rev=%02x SubAuthCount=%02x)\n",
+                         owner,
+                         owner ? ((UCHAR*)owner)[0] : 0,
+                         owner ? ((UCHAR*)owner)[1] : 0);
+            }
+            s = NtQueryInformationToken(UserToken,
+                                        TokenPrimaryGroup, buf, sizeof(buf), &need);
+            DbgPrint("WINLOGON: Token PrimaryGroup status=%08lx need=%u\n", s, need);
+            if (NT_SUCCESS(s)) {
+                PSID grp = ((TOKEN_PRIMARY_GROUP*)buf)->PrimaryGroup;
+                DbgPrint("WINLOGON: Token PrimaryGroup SID=%p (Rev=%02x SubAuthCount=%02x)\n",
+                         grp,
+                         grp ? ((UCHAR*)grp)[0] : 0,
+                         grp ? ((UCHAR*)grp)[1] : 0);
+            }
+        }
         Error = RegSetKeySecurity(RootKey, SecurityInformation, SecDescAllAccess);
+        DbgPrint("WINLOGON: ApplySecurityToRegistryTree — RegSetKeySecurity(All) returned %ld\n",
+                 Error);
 
         if (Error != ERROR_SUCCESS) {
             WLPrint(("Failed to set security on registry key, error = %d", Error));
@@ -2818,7 +2907,10 @@ ApplySecurityToRegistryTree(
         }
     }
     else {
+        DbgPrint("WINLOGON: ApplySecurityToRegistryTree — RegSetKeySecurity(NoWrite)\n");
         Error = RegSetKeySecurity(RootKey, SecurityInformation, SecDescNoWrite);
+        DbgPrint("WINLOGON: ApplySecurityToRegistryTree — RegSetKeySecurity(NoWrite) returned %ld\n",
+                 Error);
 
         if (Error != ERROR_SUCCESS) {
             WLPrint(("Failed to set security on registry key, error = %d", Error));
@@ -3058,11 +3150,15 @@ GiveUserDefaultProfile(
     HKEY hKeyDefault;
     LPTSTR lpBackupFile;
 
+    DbgPrint("WINLOGON: GiveUserDefaultProfile ENTRY SidString=\"%ws\" "
+             "profileImage=\"%ws\"\n", lpSidString, lpProfileImageFile);
     //
     // Calculate the full name of the user-default hive
     //
 
     UserDefaultHive = AllocAndExpandEnvironmentStrings(USER_DEFAULT_HIVE);
+    DbgPrint("WINLOGON: GiveUserDefaultProfile — expanded hive path=\"%ws\"\n",
+             UserDefaultHive ? UserDefaultHive : L"(null)");
     if (UserDefaultHive == NULL) {
         WLPrint(("GiveUserDefaultProfile: Failed to expand user-default hive file name"));
         return(ERROR_OUTOFMEMORY);
@@ -3074,6 +3170,7 @@ GiveUserDefaultProfile(
     // recreation.
     //
 
+    DbgPrint("WINLOGON: GiveUserDefaultProfile — backup phase\n");
     Error = TRUE;
     if (lpBackupFile = (LPTSTR)LocalAlloc(LPTR,
                       sizeof(TCHAR) * (lstrlen(lpProfileImageFile) + 5))) {
@@ -3082,6 +3179,7 @@ GiveUserDefaultProfile(
         lstrcat(lpBackupFile, TEXT(".bak"));
         Error = !MoveFileEx(lpProfileImageFile, lpBackupFile, MOVEFILE_REPLACE_EXISTING);
     }
+    DbgPrint("WINLOGON: GiveUserDefaultProfile — backup Error=%d\n", Error);
     if (Error) {
         Error = GetLastError();
         if (Error != ERROR_FILE_NOT_FOUND) {
@@ -3094,8 +3192,11 @@ GiveUserDefaultProfile(
     // Copy the user-default hive to the users hive file
     //
 
+    DbgPrint("WINLOGON: GiveUserDefaultProfile — calling CopyFile(%ws -> %ws)\n",
+             UserDefaultHive, lpProfileImageFile);
     if (!(Success = CopyFile(UserDefaultHive, lpProfileImageFile, FALSE))){
         Error = GetLastError();
+        DbgPrint("WINLOGON: GiveUserDefaultProfile — CopyFile FAILED gle=%lu\n", Error);
         ReportWinlogonEvent(pGlobals,
                             EVENTLOG_ERROR_TYPE,
                             EVENT_COPY_USER_DEFAULT_FAILED,
@@ -3128,11 +3229,17 @@ GiveUserDefaultProfile(
         // system default hive and give the user that instead.
         //
 
+        DbgPrint("WINLOGON: GiveUserDefaultProfile — calling RegOpenKey(HKEY_USERS\\.DEFAULT)\n");
         Error = RegOpenKey(HKEY_USERS, DEFAULT_KEY, &hKeyDefault);
+        DbgPrint("WINLOGON: GiveUserDefaultProfile — RegOpenKey -> %ld hKeyDefault=%p\n",
+                 Error, hKeyDefault);
 
         if (!Error) {
 
+            DbgPrint("WINLOGON: GiveUserDefaultProfile — calling MyRegSaveKey(%p -> %ws)\n",
+                     hKeyDefault, lpProfileImageFile);
             Error = MyRegSaveKey(hKeyDefault, lpProfileImageFile, NULL);
+            DbgPrint("WINLOGON: GiveUserDefaultProfile — MyRegSaveKey -> %ld\n", Error);
 
             if (Error) {
                 WLPrint(("Failed to save default key to user profile file, error = %d", Error));
@@ -3168,12 +3275,18 @@ GiveUserDefaultProfile(
     // Load it into the registry, under the user's key
     //
 
+    DbgPrint("WINLOGON: GiveUserDefaultProfile — post-copy Success=%d\n", Success);
     if (Success) {
 
+        DbgPrint("WINLOGON: GiveUserDefaultProfile — calling MyRegLoadKey"
+                 "(HKEY_USERS\\%ws -> %ws, restore=TRUE)\n",
+                 lpSidString, lpProfileImageFile);
         Error = MyRegLoadKey(pGlobals, HKEY_USERS, lpSidString, lpProfileImageFile, TRUE);
+        DbgPrint("WINLOGON: GiveUserDefaultProfile — MyRegLoadKey -> %ld\n", Error);
 
         if (!Error) {
 
+            DbgPrint("WINLOGON: GiveUserDefaultProfile — calling SetupNewDefaultHive\n");
             if (!SetupNewDefaultHive(pGlobals, lpSidString)) {
                 ReportWinlogonEvent(pGlobals,
                                     EVENTLOG_ERROR_TYPE,
