@@ -1,0 +1,11 @@
+#include <windows.h>
+
+#include <ntverp.h>
+
+#define	VER_FILETYPE	VFT_DRV
+#define	VER_FILESUBTYPE	VFT2_DRV_SYSTEM
+#define VER_FILEDESCRIPTION_STR     "MicroNT NVMe storage controller driver"
+#define VER_INTERNALNAME_STR        "nvme2k.sys"
+#define VER_ORIGINALFILENAME_STR    "nvme2k.sys"
+
+#include "common.ver"

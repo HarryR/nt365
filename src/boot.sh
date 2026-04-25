@@ -22,6 +22,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ESP_IMG="$REPO_ROOT/build/disk/esp.img"
+NVME_IMG="$REPO_ROOT/build/disk/nvme.img"
+NVME_SIZE_MB=64
 
 # --- Argument parsing --------------------------------------------------------
 
@@ -71,6 +73,17 @@ if [ ! -f "$ESP_IMG" ]; then
     exit 1
 fi
 
+# NVMe data disk - second drive for the SCSI/NVMe stack to surface.
+# Auto-created on first boot as an MBR + FAT16 formatted image; persists
+# across runs so anything Lua writes survives. Delete the file by hand
+# to start fresh.
+if [ ! -f "$NVME_IMG" ]; then
+    echo "[boot.sh] creating MBR+FAT16 NVMe data disk: $NVME_IMG (${NVME_SIZE_MB} MiB)"
+    mkdir -p "$(dirname "$NVME_IMG")"
+    python3 "$SCRIPT_DIR/tools/mknvmeimg.py" \
+        "$NVME_IMG" --size-mb "$NVME_SIZE_MB"
+fi
+
 cp /usr/share/OVMF/OVMF_VARS_4M.fd OVMF_VARS_4M.fd
 
 # --- QEMU --------------------------------------------------------------------
@@ -97,6 +110,12 @@ cp /usr/share/OVMF/OVMF_VARS_4M.fd OVMF_VARS_4M.fd
 #   virtio-serial-pci       ->  1AF4:1003 (transitional default)  ->  vioser.sys
 #   virtio-keyboard-pci     ->  1AF4:1052 (modern only)            ->  vioinput.sys
 #   virtio-mouse-pci        ->  1AF4:1052 (modern only)            ->  vioinput.sys
+#   nvme                    ->  PCI class 01:08:02 (NVMe)          ->  nvme2k.sys
+#                                                                       (via scsiport.sys / scsidisk.sys)
+#
+# NVMe: separate raw-image data disk; atdisk + IDE still own the boot
+# device for milestone A. Once the SCSI stack is verified end-to-end we
+# move boot to NVMe and drop atdisk.
 #
 # virtio-serial: the PCI device hosts ports; we attach a single
 # virtconsole port to a pty chardev. QEMU prints the pty path on stdout
@@ -117,6 +136,8 @@ exec qemu-system-x86_64 -m "$MEM" \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,file=./OVMF_VARS_4M.fd \
     -drive file="$ESP_IMG",format=raw,if=ide \
+    -drive file="$NVME_IMG",format=raw,if=none,id=nvm \
+    -device nvme,drive=nvm,serial=microntdev \
     -chardev stdio,id=serialmux,mux=on \
     -serial chardev:serialmux \
     -object rng-random,id=rng0,filename=/dev/urandom \

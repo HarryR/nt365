@@ -217,123 +217,12 @@ HalReportResourceUsage(VOID)
 
 /* HalGetInterruptVector is in interrupt.c */
 
-/* ===== DMA ===== */
+/* DMA primitives moved to dma.c (HalGetAdapter / HalAllocateCommonBuffer
+ * / HalAllocateAdapterChannel / IoMapTransfer / IoFlushAdapterBuffers /
+ * IoFreeAdapterChannel / IoFreeMapRegisters / HalReadDmaCounter /
+ * HalAllocateCrashDumpRegisters / HalFlushCommonBuffer / HalFreeCommonBuffer). */
 
-NTSTATUS
-HalAllocateAdapterChannel(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN PWAIT_CONTEXT_BLOCK Wcb,
-    IN ULONG NumberOfMapRegisters,
-    IN PDRIVER_CONTROL ExecutionRoutine
-    )
-{
-    return 0xC0000001;
-}
-
-PVOID
-HalAllocateCommonBuffer(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN ULONG Length,
-    OUT PPHYSICAL_ADDRESS LogicalAddress,
-    IN BOOLEAN CacheEnabled
-    )
-{
-    return NULL;
-}
-
-PVOID
-HalAllocateCrashDumpRegisters(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN ULONG NumberOfMapRegisters
-    )
-{
-    return NULL;
-}
-
-BOOLEAN
-HalFlushCommonBuffer(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN ULONG Length,
-    IN PHYSICAL_ADDRESS LogicalAddress,
-    IN PVOID VirtualAddress
-    )
-{
-    return TRUE;
-}
-
-VOID
-HalFreeCommonBuffer(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN ULONG Length,
-    IN PHYSICAL_ADDRESS LogicalAddress,
-    IN PVOID VirtualAddress,
-    IN BOOLEAN CacheEnabled
-    )
-{
-}
-
-PADAPTER_OBJECT
-HalGetAdapter(
-    IN PDEVICE_DESCRIPTION DeviceDescription,
-    IN OUT PULONG NumberOfMapRegisters
-    )
-{
-    return NULL;
-}
-
-ULONG
-HalReadDmaCounter(
-    IN PADAPTER_OBJECT AdapterObject
-    )
-{
-    return 0;
-}
-
-/* ===== IO Manager DMA/partition stubs ===== */
-
-BOOLEAN
-IoFlushAdapterBuffers(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN PMDL Mdl,
-    IN PVOID MapRegisterBase,
-    IN PVOID CurrentVa,
-    IN ULONG Length,
-    IN BOOLEAN WriteToDevice
-    )
-{
-    return TRUE;
-}
-
-VOID
-IoFreeAdapterChannel(
-    IN PADAPTER_OBJECT AdapterObject
-    )
-{
-}
-
-VOID
-IoFreeMapRegisters(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN PVOID MapRegisterBase,
-    IN ULONG NumberOfMapRegisters
-    )
-{
-}
-
-PHYSICAL_ADDRESS
-IoMapTransfer(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN PMDL Mdl,
-    IN PVOID MapRegisterBase,
-    IN PVOID CurrentVa,
-    IN OUT PULONG Length,
-    IN BOOLEAN WriteToDevice
-    )
-{
-    PHYSICAL_ADDRESS pa;
-    pa.QuadPart = 0;
-    return pa;
-}
+/* ===== IO Manager partition stubs ===== */
 
 VOID
 IoAssignDriveLetters(

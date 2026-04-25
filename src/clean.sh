@@ -88,6 +88,7 @@ for f in ntoskrnl.lib ntoskrnl.exp hal.exp tmp.lib tmp.exp \
          csrsrv.dll csrsrv.exp csrsrv.lib \
          basesrv.dll basesrv.exp basesrv.lib \
          atdisk.sys null.sys fastfat.sys \
+         class.lib scsiport.lib scsiport.exp scsiport.sys scsidisk.sys nvme2k.sys \
          gdisrvl.lib efloat.lib fscaler.lib ttfd.lib bmfd.lib vtfd.lib halftone.lib \
          gdi32.dll gdi32.exp gdi32p.exp gdi32p.lib \
          usersrvl.lib \

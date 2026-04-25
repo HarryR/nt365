@@ -55,27 +55,15 @@ RtlZeroMemory (
 
 #endif
 
-#if MCA
-
-#include "ixmca.h"
-
-#else
-
-#include "ixisa.h"
-
-#endif
-
 #include "ix8259.inc"
 
-//
-// Define map register translation entry structure.
-//
-
-typedef struct _TRANSLATION_ENTRY {
-    PVOID VirtualAddress;
-    ULONG PhysicalAddress;
-    ULONG Index;
-} TRANSLATION_ENTRY, *PTRANSLATION_ENTRY;
+/*
+ * ADAPTER_OBJECT is opaque to drivers; the HAL owns the layout.
+ * The full definition lives in dma.c (PCI bus-master DMA only).
+ * Forward-declare here so halp.h consumers see a complete pointer
+ * type without dragging the layout in.
+ */
+struct _ADAPTER_OBJECT;
 
 //
 // Some devices require a phyicially contiguous data buffers for DMA transfers.
@@ -92,28 +80,19 @@ typedef struct _TRANSLATION_ENTRY {
 // addresses less than 0x01000000.  All of the map registers are allocated
 // initialially; however, the map buffers are allocated base in the number of
 // adapters which are allocated.
-//
-// If the master adapter is NULL in the adapter object then device does not
-// require any map registers.
-//
-
-extern PADAPTER_OBJECT MasterAdapterObject;
-
-extern POBJECT_TYPE *IoAdapterObjectType;
-
-extern BOOLEAN LessThan16Mb;
-
-extern BOOLEAN HalpEisaDma;
-
-//
-// Map buffer prameters.  These are initialized in HalInitSystem
-//
-
-extern PHYSICAL_ADDRESS HalpMapBufferPhysicalAddress;
-extern ULONG HalpMapBufferSize;
-
+/*
+ * HalpBusType - identifies the firmware-reported machine class
+ * (PC, EISA, MCA, ...). Set in halinit.c from the loader block.
+ * MicroNT only ever sees PC; the variable is kept because the
+ * existing init code references it.
+ *
+ * (The original NT 3.5 HAL also exported MasterAdapterObject,
+ * IoAdapterObjectType, LessThan16Mb, HalpEisaDma,
+ * HalpMapBufferPhysicalAddress, HalpMapBufferSize, HalpCpuType.
+ * MicroNT is PCI-bus-master only - none of those are referenced
+ * by anything in the tree, so they were removed alongside ixisa.h.)
+ */
 extern ULONG HalpBusType;
-extern ULONG HalpCpuType;
 
 //
 // The following macros are taken from mm\i386\mi386.h.  We need them here

@@ -376,6 +376,39 @@ _ensure_serlog() {
 }
 build_atdisk() { run_nmake "$NTOS/DD/HARDDISK" "ATDISK - IDE disk driver"; }
 build_serial() { _ensure_serlog && run_nmake "$NTOS/DD/SERIAL" "SERIAL - NT 3.5 serial port driver"; }
+
+# --- SCSI subsystem ---------------------------------------------------------
+# Three-way build chain pulled from the NT 3.5 source dump:
+#   class.lib      - shared SCSI class-driver helper code
+#   scsiport.sys   - the framework miniports register against
+#   scsidisk.sys   - disk class driver (\Device\Harddisk<N>\Partition<P>)
+# scsidisk depends on class.lib + scsiport.lib, so build in this order.
+# Each component needs its own obj/i386 to land .obj / .res; nmake doesn't
+# create these for us when the parent dir is fresh.
+build_dd_class()    {
+    mkdir -p "$NTOS/DD/CLASS/obj/i386"
+    run_nmake "$NTOS/DD/CLASS"    "CLASS - SCSI class-driver helper lib"
+}
+build_dd_scsiport() {
+    mkdir -p "$NTOS/DD/SCSIPORT/obj/i386"
+    # makedll=1 -> MAKEFILE.DEF does the second link step that produces
+    # scsiport.sys (the loadable driver) on top of scsiport.lib + .exp.
+    # Same flag we use for videoprt.sys (the other EXPORT_DRIVER in the tree).
+    run_nmake "$NTOS/DD/SCSIPORT" "SCSIPORT - SCSI miniport framework" makedll=1
+}
+build_dd_scsidisk() {
+    mkdir -p "$NTOS/DD/SCSIDISK/obj/i386"
+    run_nmake "$NTOS/DD/SCSIDISK" "SCSIDISK - SCSI disk class driver"
+}
+
+# nvme2k.sys — NVMe storage controller, ported from
+# https://github.com/techomancer/nvme2k (BSD-3). SCSI miniport on top
+# of scsiport.sys; SCSIDISK presents the resulting device as
+# \Device\Harddisk<N>\Partition<P>.
+build_dd_nvme2k() {
+    mkdir -p "$NTOS/DD/NVME2K/obj/i386"
+    run_nmake "$NTOS/DD/NVME2K" "NVME2K - NVMe storage controller (SCSI miniport)"
+}
 build_null()   { run_nmake "$NTOS/DD/NULL"     "NULL - null device driver"; }
 build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"; }
 build_npfs()   { run_nmake "$NTOS/NPFS"       "NPFS - Named Pipe filesystem driver"; }

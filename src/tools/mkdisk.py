@@ -485,6 +485,12 @@ _CORE_FILES: list[tuple[str, Path]] = [
     ("System32/ntdll.dll",           SDK_LIB / "ntdll.dll"),
     # Storage / FS / COM.
     ("System32/Drivers/atdisk.sys",  SDK_LIB / "atdisk.sys"),
+    # SCSI subsystem - port framework + disk class driver. NVMe miniport
+    # plugs in on top; SCSIDISK presents the resulting volume as
+    # \Device\Harddisk<N>\Partition<P> for fastfat to mount.
+    ("System32/Drivers/scsiport.sys", SDK_LIB / "scsiport.sys"),
+    ("System32/Drivers/scsidisk.sys", SDK_LIB / "scsidisk.sys"),
+    ("System32/Drivers/nvme2k.sys",   SDK_LIB / "nvme2k.sys"),
     ("System32/Drivers/null.sys",    SDK_LIB / "null.sys"),
     ("System32/Drivers/fastfat.sys", SDK_LIB / "fastfat.sys"),
     ("System32/Drivers/npfs.sys",    SDK_LIB / "npfs.sys"),

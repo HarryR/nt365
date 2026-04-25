@@ -1,0 +1,35 @@
+!IF 0
+
+Copyright (c) 2026 MicroNT
+SPDX-License-Identifier: BSD-3-Clause   (see LICENSE in this directory)
+
+Module: nvme2k.sys — NVMe storage controller driver, ported into the
+MicroNT tree from the upstream nvme2k project (originally a Windows
+2000 / NT4-era driver). Builds as a SCSI miniport on top of NT 3.5's
+scsiport.sys; SCSIDISK presents the resulting SRB stream as
+\Device\Harddisk<N>\Partition<P> to the rest of the OS.
+
+Upstream source: https://github.com/techomancer/nvme2k
+
+PCI device class: 01-08-02 (Mass Storage / Non-Volatile Memory / NVMe).
+QEMU exposes this with `-device nvme,drive=...,serial=...`.
+
+!ENDIF
+
+MAJORCOMP=ntos
+MINORCOMP=dd
+
+TARGETNAME=nvme2k
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=MINIPORT
+
+INCLUDES=..\..\inc
+
+TARGETLIBS=$(BASEDIR)\public\sdk\lib\*\scsiport.lib
+
+SOURCES=nvme2k.c       \
+        nvme2k_cpl.c   \
+        nvme2k_scsi.c  \
+        nvme2k_nvme.c  \
+        utils.c        \
+        nvme2k.rc

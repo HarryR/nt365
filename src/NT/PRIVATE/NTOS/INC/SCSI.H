@@ -193,6 +193,25 @@ typedef union _CDB {
     } MODE_SENSE, *PMODE_SENSE;
 
     //
+    // 10-byte MODE SENSE - SCSI-3 / NT4 era. Backported into NT 3.5's
+    // scsi.h so SCSI-3-aware miniports (nvme2k, etc.) compile against
+    // the shared CDB union. Layout matches NT4's public DDK scsi.h.
+    //
+
+    struct _MODE_SENSE10 {
+        UCHAR OperationCode;       // SCSIOP_MODE_SENSE10 (0x5A)
+        UCHAR Reserved1 : 3;
+        UCHAR Dbd : 1;
+        UCHAR Reserved2 : 1;
+        UCHAR LogicalUnitNumber : 3;
+        UCHAR PageCode : 6;
+        UCHAR Pc : 2;
+        UCHAR Reserved3[4];
+        UCHAR AllocationLength[2];
+        UCHAR Control;
+    } MODE_SENSE10, *PMODE_SENSE10;
+
+    //
     // Mode select
     //
 

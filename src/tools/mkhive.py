@@ -486,11 +486,20 @@ def build_system_hive(init_exe: str | None = None,
     # Video Init (port driver) must load before Video (miniports). Virtio
     # group sits after Extended base so PCI bus-walk drivers (viorng,
     # vioser, ...) load once the kernel + HAL are fully up.
+    # SCSI miniport group loads scsiport.sys + nvme2k.sys (and any
+    # future virtio-scsi etc.); SCSI Class loads scsidisk.sys after
+    # the miniports have published their devices. Both go between
+    # Virtio and File System so a SCSI-backed volume could in theory
+    # be mounted by fastfat - though for milestone A atdisk still
+    # owns the boot device and the SCSI/NVMe stack just exposes a
+    # second drive for testing.
     control["ServiceGroupOrder"] \
         .set_multi_sz("List", [
             "Base",
             "Extended base",
             "Virtio",
+            "SCSI miniport",
+            "SCSI Class",
             "File System",
             "Video Init",
             "Video",
@@ -517,6 +526,38 @@ def build_system_hive(init_exe: str | None = None,
         .set_dword("Type",         1) \
         .set_dword("Start",        0) \
         .set_dword("ErrorControl", 1)
+
+    # SCSI miniport framework. Provides ScsiPortInitialize + the SRB
+    # dispatch surface that miniports (nvme2k, etc.) register against.
+    # Ported in from the NT 3.5 source dump (DD/SCSIPORT). Loads under
+    # the "SCSI miniport" group so it's up before any miniport calls
+    # ScsiPortInitialize.
+    services["scsiport"] \
+        .set_dword("Type",         1) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "SCSI miniport")
+
+    # nvme2k - NVMe storage controller miniport. Ported from
+    # https://github.com/techomancer/nvme2k (BSD-3). Registers via
+    # scsiport; SCSIDISK then presents the namespace as a regular
+    # \Device\Harddisk<N>. DependOnService ensures scsiport loads first.
+    services["nvme2k"] \
+        .set_dword("Type",         1) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "SCSI miniport") \
+        .set_multi_sz("DependOnService", ["scsiport"])
+
+    # SCSI disk class driver. Walks all SCSI miniports' device chains,
+    # parses partition tables, and surfaces \Device\Harddisk<N>\Partition<P>
+    # for fastfat / NtReadFile to operate on. Loads after the miniports.
+    services["scsidisk"] \
+        .set_dword("Type",         1) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "SCSI Class") \
+        .set_multi_sz("DependOnService", ["scsiport"])
     services["null"] \
         .set_dword("Type",         1) \
         .set_dword("Start",        1) \
