@@ -569,6 +569,16 @@ def build_system_hive(init_exe: str | None = None,
         .set_dword("ErrorControl", 1) \
         .set_sz("Group", "Virtio")
 
+    # virtio-input — keyboard / mouse / tablet via virtio-keyboard-pci,
+    # virtio-mouse-pci, etc. (modern device ID 0x1052). At skeleton
+    # stage just dumps events to the kernel debug log; future passes
+    # bind to kbdclass / mouclass via IOCTL_INTERNAL_*_CONNECT.
+    services["vioinput"] \
+        .set_dword("Type",         1) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "Virtio")
+
     # (Input + video drivers — i8042prt, kbdclass, mouclass, videoprt,
     # bochsvga — ship on disk but are not auto-started. The eventual
     # pure-Lua UI layer will register + start them from userland when

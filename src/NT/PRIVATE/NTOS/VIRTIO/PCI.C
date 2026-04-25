@@ -26,6 +26,17 @@
 #include "virtio.h"
 #include "virtio_pci.h"
 
+/*
+ * Per-cap / per-BAR walk traces are noisy once more than one virtio
+ * device exists - hide them behind DBG. Errors and the one-line
+ * post-init summary stay visible at all build levels.
+ */
+#if DBG
+#define VTRACE(args) DbgPrint args
+#else
+#define VTRACE(args) ((void)0)
+#endif
+
 /* ------------------------------------------------------------------ *
  * Forward decls - vtable members.
  * ------------------------------------------------------------------ */
@@ -387,14 +398,14 @@ VpciWalkCaps(PVIRTIO_PCI_DEV vpdev)
        per PCI spec the cap pointer at 0x34 is undefined otherwise. */
     got = HalGetBusDataByOffset(PCIConfiguration, vpdev->BusNumber,
                                 vpdev->SlotNumber, &pci_status, 0x06, 2);
-    DbgPrint("VIRTIO pci: PCI Status reg = 0x%04x got=%u (caps-list-avail bit=%u)\n",
-             pci_status, got, (pci_status >> 4) & 1);
+    VTRACE(("VIRTIO pci: PCI Status reg = 0x%04x got=%u (caps-list-avail bit=%u)\n",
+             pci_status, got, (pci_status >> 4) & 1));
 
     /* Read CapPtr (1 byte at config offset 0x34). */
     got = HalGetBusDataByOffset(PCIConfiguration, vpdev->BusNumber,
                                 vpdev->SlotNumber, &cap_off,
                                 PCI_CAP_PTR_OFFSET, 1);
-    DbgPrint("VIRTIO pci: CapPtr@0x34 = 0x%02x got=%u\n", cap_off, got);
+    VTRACE(("VIRTIO pci: CapPtr@0x34 = 0x%02x got=%u\n", cap_off, got));
     if (got < 1 || cap_off == 0) {
         DbgPrint("VIRTIO pci: no capabilities at slot 0x%x\n",
                  vpdev->SlotNumber);
@@ -413,8 +424,8 @@ VpciWalkCaps(PVIRTIO_PCI_DEV vpdev)
             return STATUS_DEVICE_DATA_ERROR;
         }
         cap_vndr = cap.CapVndr;
-        DbgPrint("VIRTIO pci: cap @off=0x%02x vndr=0x%02x next=0x%02x len=%u cfg_type=%u\n",
-                 cap_off, cap_vndr, cap.CapNext, cap.CapLen, cap.CfgType);
+        VTRACE(("VIRTIO pci: cap @off=0x%02x vndr=0x%02x next=0x%02x len=%u cfg_type=%u\n",
+                cap_off, cap_vndr, cap.CapNext, cap.CapLen, cap.CfgType));
         if (cap_vndr == PCI_CAP_ID_VENDOR_SPECIFIC) {
             /* virtio cap. Bar must be in range; some BIOSes emit
                garbage caps - sanity-check before believing them. */
@@ -423,8 +434,8 @@ VpciWalkCaps(PVIRTIO_PCI_DEV vpdev)
                 cap_off = cap.CapNext;
                 continue;
             }
-            DbgPrint("VIRTIO pci: cap type=%u bar=%u offset=0x%x len=%u\n",
-                     cap.CfgType, cap.Bar, cap.Offset, cap.Length);
+            VTRACE(("VIRTIO pci: cap type=%u bar=%u offset=0x%x len=%u\n",
+                    cap.CfgType, cap.Bar, cap.Offset, cap.Length));
             switch (cap.CfgType) {
             case VIRTIO_PCI_CAP_COMMON_CFG:
                 vpdev->Bars[cap.Bar].Length = cap.Offset + cap.Length;
@@ -492,8 +503,8 @@ VpciReadBar(ULONG bus, ULONG slot, ULONG bar_idx,
                               &orig_lo, bar_off, 4) != 4)
         return STATUS_DEVICE_DATA_ERROR;
 
-    DbgPrint("VIRTIO pci: BAR%u@0x%02x raw=0x%08x\n",
-             bar_idx, bar_off, orig_lo);
+    VTRACE(("VIRTIO pci: BAR%u@0x%02x raw=0x%08x\n",
+            bar_idx, bar_off, orig_lo));
 
     if (orig_lo & 0x1) {
         /* I/O BAR - virtio modern caps don't target I/O. */
@@ -522,8 +533,8 @@ VpciReadBar(ULONG bus, ULONG slot, ULONG bar_idx,
                               bar_off + 4, 4);
         HalSetBusDataByOffset(PCIConfiguration, bus, slot, &orig_hi,
                               bar_off + 4, 4);
-        DbgPrint("VIRTIO pci: BAR%u 64-bit; high half raw=0x%08x probe=0x%08x\n",
-                 bar_idx + 1, orig_hi, probe_hi);
+        VTRACE(("VIRTIO pci: BAR%u 64-bit; high half raw=0x%08x probe=0x%08x\n",
+                bar_idx + 1, orig_hi, probe_hi));
     }
 
     /* Compute size: 64-bit mask (probe_hi:probe_lo&~0xF), invert + 1. */
@@ -534,9 +545,9 @@ VpciReadBar(ULONG bus, ULONG slot, ULONG bar_idx,
     out_paddr->LowPart  = orig_lo & ~0xFul;
     *out_len = (size > 0xFFFFFFFFul) ? 0xFFFFFFFFul : (ULONG)size;
 
-    DbgPrint("VIRTIO pci: BAR%u resolved paddr=0x%08x:%08x size=0x%x type=%u\n",
-             bar_idx, (ULONG)out_paddr->HighPart, out_paddr->LowPart,
-             *out_len, type_bits);
+    VTRACE(("VIRTIO pci: BAR%u resolved paddr=0x%08x:%08x size=0x%x type=%u\n",
+            bar_idx, (ULONG)out_paddr->HighPart, out_paddr->LowPart,
+            *out_len, type_bits));
     return STATUS_SUCCESS;
 }
 
@@ -583,9 +594,9 @@ VpciMapBars(PVIRTIO_PCI_DEV vpdev)
                      i, paddr.LowPart, vpdev->Bars[i].Length);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        DbgPrint("VIRTIO pci: BAR%u paddr=0x%x len=%u -> VA %p\n",
-                 i, paddr.LowPart, vpdev->Bars[i].Length,
-                 vpdev->Bars[i].VirtAddr);
+        VTRACE(("VIRTIO pci: BAR%u paddr=0x%x len=%u -> VA %p\n",
+                i, paddr.LowPart, vpdev->Bars[i].Length,
+                vpdev->Bars[i].VirtAddr));
     }
 
     /* Resolve region pointers from (bar << 28 | offset) → actual VA. */
@@ -661,6 +672,11 @@ VirtioPciInit(
     vpdev->Vdev.DeviceId = device_id;
     vpdev->Vdev.State    = VirtioStateReset;
     InitializeListHead(&vpdev->Vdev.VqList);
+
+    DbgPrint("VIRTIO pci: bus%u slot 0x%x devid 0x%x ready "
+             "(common=%p notify=%p isr=%p devcfg=%p)\n",
+             vpdev->BusNumber, vpdev->SlotNumber, device_id,
+             vpdev->Common, vpdev->Notify, vpdev->Isr, vpdev->DeviceCfg);
 
     return STATUS_SUCCESS;
 }

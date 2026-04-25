@@ -312,6 +312,15 @@ if ok2 then
     end
 end
 
+-- Hold the system up for a window so we can exercise virtio-input
+-- (kernel-debug DbgPrint trace from vioinput.sys is the consumer for
+-- now — keys + mouse motion in QEMU's VGA window land in the boot log).
+-- Remove once a real input-driven Lua loop replaces this stand-in.
+local ke = require('nt.dll.ke')
+print("")
+print("vioinput test window: 30s — interact with QEMU VGA window now")
+ke.NtDelayExecution(false, ke.timeout(30))
+
 -- Shut down cleanly. NT 3.5 requires SeShutdownPrivilege (value 19
 -- per ntseapi.h); our init process runs under the kernel's token so
 -- RtlAdjustPrivilege will enable it. ShutdownPowerOff routes through

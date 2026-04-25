@@ -549,8 +549,9 @@ build_bochsvga(){
 build_virtio() { run_nmake "$NTOS/VIRTIO" "VIRTIO - bus + ring + PCI legacy (virtio.lib)"; }
 
 # Virtio device drivers — each links against virtio.lib.
-build_viorng() { run_nmake "$NTOS/DD/VIORNG" "VIORNG - virtio-rng entropy driver"; }
-build_vioser() { run_nmake "$NTOS/DD/VIOSER" "VIOSER - virtio-console driver"; }
+build_viorng()   { run_nmake "$NTOS/DD/VIORNG"   "VIORNG - virtio-rng entropy driver"; }
+build_vioser()   { run_nmake "$NTOS/DD/VIOSER"   "VIOSER - virtio-console driver"; }
+build_vioinput() { run_nmake "$NTOS/DD/VIOINPUT" "VIOINPUT - virtio-input keyboard/mouse driver"; }
 
 # --- Userland (native NT) ----------------------------------------------------
 
@@ -713,6 +714,7 @@ DRIVER_TARGETS=(
     virtio
     viorng
     vioser
+    vioinput
 )
 
 # Userland: just the native-NT runtime. rtl_user (user-mode RTL),

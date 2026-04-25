@@ -501,6 +501,7 @@ _CORE_FILES: list[tuple[str, Path]] = [
     # Virtio device drivers (link against the shared virtio.lib).
     ("System32/Drivers/viorng.sys",   SDK_LIB / "viorng.sys"),
     ("System32/Drivers/vioser.sys",   SDK_LIB / "vioser.sys"),
+    ("System32/Drivers/vioinput.sys", SDK_LIB / "vioinput.sys"),
 ]
 
 

@@ -93,8 +93,10 @@ cp /usr/share/OVMF/OVMF_VARS_4M.fd OVMF_VARS_4M.fd
 # transport regardless. Modern-only classes (input, gpu, vsock, fs)
 # get their 0x1040+ IDs unconditionally.
 #
-#   virtio-rng-pci      ->  1AF4:1005 (transitional default)  ->  viorng.sys
-#   virtio-serial-pci   ->  1AF4:1003 (transitional default)  ->  vioser.sys
+#   virtio-rng-pci          ->  1AF4:1005 (transitional default)  ->  viorng.sys
+#   virtio-serial-pci       ->  1AF4:1003 (transitional default)  ->  vioser.sys
+#   virtio-keyboard-pci     ->  1AF4:1052 (modern only)            ->  vioinput.sys
+#   virtio-mouse-pci        ->  1AF4:1052 (modern only)            ->  vioinput.sys
 #
 # virtio-serial: the PCI device hosts ports; we attach a single
 # virtconsole port to a pty chardev. QEMU prints the pty path on stdout
@@ -122,5 +124,7 @@ exec qemu-system-x86_64 -m "$MEM" \
     -device virtio-serial-pci,id=vser0 \
     -chardev pty,id=vcon0 \
     -device virtconsole,chardev=vcon0 \
+    -device virtio-keyboard-pci \
+    -device virtio-mouse-pci \
     -no-reboot \
     $DISPLAY_FLAGS $GDB_FLAGS $TRACE_FLAGS

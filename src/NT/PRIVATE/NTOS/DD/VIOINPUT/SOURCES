@@ -1,0 +1,28 @@
+!IF 0
+
+Copyright (c) 2026 MicroNT
+
+Module: vioinput.sys — virtio-input device driver. Surfaces input
+events from a virtio-input device (keyboard / mouse / tablet) and
+forwards them into the NT 3.5 keyboard/mouse class drivers via the
+older IOCTL_INTERNAL_KEYBOARD_CONNECT / IOCTL_INTERNAL_MOUSE_CONNECT
+model. Links against the shared virtio.lib (NTOS/VIRTIO).
+
+QEMU device: virtio-keyboard-pci, virtio-mouse-pci, virtio-tablet-pci
+(modern only — vendor 0x1AF4 device 0x1052).
+
+!ENDIF
+
+MAJORCOMP=ntos
+MINORCOMP=dd
+
+TARGETNAME=vioinput
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=DRIVER
+
+INCLUDES=..\..\inc;..\..\virtio\inc
+
+TARGETLIBS=$(BASEDIR)\public\sdk\lib\*\virtio.lib
+
+SOURCES=vioinput.c \
+        vioinput.rc
