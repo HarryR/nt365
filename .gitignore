@@ -58,6 +58,16 @@ src/NT/PUBLIC/SDK/LIB/I386/smdll.lib
 # device drivers (viorng/vioser/etc). Pure build output, no bootstrap
 # chicken-egg, gitignored like the other built-from-source .libs above.
 src/NT/PUBLIC/SDK/LIB/I386/virtio.lib
+# Storage stack EXPORT_DRIVER + class lib outputs (DD/CLASS, DD/SCSIPORT).
+# The .sys ships via mkdisk.py; the .lib/.exp are link-time stubs only.
+src/NT/PUBLIC/SDK/LIB/I386/class.lib
+src/NT/PUBLIC/SDK/LIB/I386/scsiport.lib
+src/NT/PUBLIC/SDK/LIB/I386/scsiport.exp
+# NDIS + TDI EXPORT_DRIVER outputs (NDIS/WRAPPER, TDI/WRAPPER).
+src/NT/PUBLIC/SDK/LIB/I386/ndis.lib
+src/NT/PUBLIC/SDK/LIB/I386/ndis.exp
+src/NT/PUBLIC/SDK/LIB/I386/tdi.lib
+src/NT/PUBLIC/SDK/LIB/I386/tdi.exp
 # csrsrv.dll + basesrv.dll — built from CSR/SERVER + WINDOWS/BASE/SERVER.
 # Unlike kernel32.lib / ntdll.lib / smdll.lib (which are linked against
 # by lots of in-tree components so we track the .lib import stubs),

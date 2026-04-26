@@ -462,6 +462,8 @@ VioInputAttachOne(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath,
     ULONG          intVector = 0;
     KIRQL          intLevel = 0;
     KAFFINITY      affinity = 0;
+    /* VpciVqsFind writes vq_size[0..num_vqs-1]; declare as array. */
+    u16            vqsizes[VIRTIO_INPUT_NUM_VQS];
     u16            vqsize;
 
     DbgPrint("VIOINPUT: attaching instance %u at bus0 slot 0x%02x\n",
@@ -575,7 +577,9 @@ VioInputAttachOne(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath,
     VioInputCreateClassLink(dev, &devName);
 
     /* (5) Both vqs. */
-    st = VirtioFindVqs(&dev->Pci.Vdev, VIRTIO_INPUT_NUM_VQS, &vqsize);
+    st = VirtioFindVqs(&dev->Pci.Vdev, VIRTIO_INPUT_NUM_VQS, vqsizes);
+    /* Both queues typically have the same depth; pick min defensively. */
+    vqsize = (vqsizes[0] < vqsizes[1]) ? vqsizes[0] : vqsizes[1];
     if (!NT_SUCCESS(st)) {
         DbgPrint("VIOINPUT[%u]: VirtioFindVqs failed 0x%08x\n", instance, st);
         goto fail_dev;

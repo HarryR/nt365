@@ -92,6 +92,10 @@ typedef struct _VIRTIO_PCI_COMMON_CFG {
 } VIRTIO_PCI_COMMON_CFG, *PVIRTIO_PCI_COMMON_CFG;
 
 #include <poppack.h>
+/* poppack.h sets pack(2) in NT 3.5's SDK (pre-push/pop). Reset to
+   /Zp8 default so VIRTIO_PCI_DEV / VIRTIO_PCI_BAR_MAP below match
+   callers' layout. See virtio.h for the wider story. */
+#pragma pack()
 
 /* ------------------------------------------------------------------ *
  * Per-device wrapper. Embeds the generic VIRTIO_DEV; each driver

@@ -69,6 +69,10 @@ typedef struct _VRING_USED {
 } VRING_USED, *PVRING_USED;
 
 #include <poppack.h>
+/* poppack.h sets pack(2) in NT 3.5's SDK (pre-push/pop). Reset to
+   /Zp8 default so VRING below matches caller layout. See virtio.h
+   for the wider story. */
+#pragma pack()
 
 /* Logical ring view: pointers into the contiguous ring allocation. */
 typedef struct _VRING {

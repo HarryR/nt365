@@ -364,13 +364,14 @@ VpciVqSetup(
 static VOID
 VpciVqRelease(PVIRTIO_DEV vdev, PVIRTQUEUE vq)
 {
-    PVIRTIO_PCI_DEV vpdev = VIRTIO_TO_PCI(vdev);
+    UNREFERENCED_PARAMETER(vdev);
 
-    /* Disable the queue. Modern spec sec 4.1.4.3.2: a disabled queue
-       must be re-set-up before reuse; for our teardown that's fine. */
-    VpciCommonW16(&vpdev->Common->QueueSelect, vq->QueueId);
-    VpciCommonW16(&vpdev->Common->QueueEnable, 0);
-
+    /* Modern spec §4.1.4.3.2: queue_enable is a one-shot 0→1 latch.
+       The driver MUST NOT write 0 once 1 (without VIRTIO_F_RING_RESET,
+       which we don't negotiate). To "disable" queues, the caller must
+       reset the device (status←0) BEFORE calling VpciVqRelease — that
+       clears all queue_enable bits device-side. We just unlink + free
+       the host-side bookkeeping. */
     RemoveEntryList(&vq->QueueLink);
     VirtqDestroy(vq);
 }

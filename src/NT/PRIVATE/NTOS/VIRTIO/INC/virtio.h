@@ -24,6 +24,16 @@
 
 #include <ntddk.h>
 
+/* NT 3.5's SDK pshpack*.h / poppack.h pair predates MSVC's pack(push)/
+   pack(pop) convention: poppack.h unconditionally sets pack(2) instead
+   of popping. So any file that includes ntddk.h is left at pack=2,
+   regardless of the /Zp8 cmdline default. Reset pack so VIRTIO_DEV /
+   VIRTQUEUE / etc. below have a known layout, identical between this
+   file and any caller that includes it. (Localised fix; SDK-wide
+   replacement of pshpack/poppack with the MSVC 4.2 push/pop versions
+   is the eventual root-cause fix.) */
+#pragma pack()
+
 /* ------------------------------------------------------------------ *
  * Bare types. Unikraft uses __u8/__u16/__u32/__u64 + __virtio_le16/etc.
  * NT already has UCHAR/USHORT/ULONG/ULONGLONG; we alias the virtio-spec

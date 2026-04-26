@@ -1,0 +1,11 @@
+#include <windows.h>
+
+#include <ntverp.h>
+
+#define	VER_FILETYPE	VFT_DRV
+#define	VER_FILESUBTYPE	VFT2_DRV_NETWORK
+#define VER_FILEDESCRIPTION_STR     "MicroNT TCP/IP transport driver"
+#define VER_INTERNALNAME_STR        "tcpip.sys"
+#define VER_ORIGINALFILENAME_STR    "tcpip.sys"
+
+#include "common.ver"

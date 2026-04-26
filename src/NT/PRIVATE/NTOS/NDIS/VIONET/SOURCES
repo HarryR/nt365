@@ -1,0 +1,40 @@
+!IF 0
+
+Copyright (c) 2026 MicroNT
+
+Module: vionet.sys — virtio-net NDIS 3.0 miniport driver. Sits on
+top of ndis.sys and our shared virtio.lib. tcpip.sys binds to it
+automatically once both ndis.sys + tcpip.sys are loaded.
+
+PCI device: virtio-net-pci, vendor 0x1AF4 device 0x1041 (modern) /
+0x1000 (transitional). QEMU exposes it via:
+    -netdev user,id=n0 -device virtio-net-pci,netdev=n0
+
+Two virtqueues only: rxq (device->driver, queue 0) and txq
+(driver->device, queue 1). Modern features negotiated:
+    VIRTIO_F_VERSION_1
+    VIRTIO_NET_F_MAC      (read MAC from device config)
+    VIRTIO_NET_F_STATUS   (read link state from device config)
+
+Explicitly NOT negotiated: MRG_RXBUF, GUEST_CSUM, GUEST_TSO*,
+CTRL_VQ. Keeps the driver simple; we accept the cost of one buffer
+per RX'd frame.
+
+!ENDIF
+
+MAJORCOMP=ntos
+MINORCOMP=ndis
+
+TARGETNAME=vionet
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=DRIVER
+
+INCLUDES=..\..\inc;..\..\virtio\inc
+
+TARGETLIBS=$(BASEDIR)\public\sdk\lib\*\ndis.lib    \
+           $(BASEDIR)\public\sdk\lib\*\virtio.lib
+
+C_DEFINES=-DNDIS_MINIPORT_DRIVER -DBINARY_COMPATIBLE=0
+
+SOURCES=vionet.c \
+        vionet.rc

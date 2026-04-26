@@ -409,6 +409,47 @@ build_dd_nvme2k() {
     mkdir -p "$NTOS/DD/NVME2K/obj/i386"
     run_nmake "$NTOS/DD/NVME2K" "NVME2K - NVMe storage controller (SCSI miniport)"
 }
+
+# --- NDIS framework ---------------------------------------------------------
+# ndis.sys - the NDIS wrapper / framework. EXPORT_DRIVER pattern (same as
+# scsiport.sys / videoprt.sys); miniports register against it via
+# NdisMRegisterMiniport, protocols bind via NdisRegisterProtocol.
+# Ported wholesale from NT 3.5 source (NTOS/NDIS/WRAPPER).
+build_ndis_wrapper() {
+    mkdir -p "$NTOS/NDIS/WRAPPER/obj/i386"
+    run_nmake "$NTOS/NDIS/WRAPPER" "NDIS - NDIS wrapper / framework" makedll=1
+}
+
+# vionet.sys - virtio-net NDIS 3.0 miniport. New code (~600 lines),
+# uses our shared virtio.lib for queue plumbing and ndis.lib for the
+# framework boundary. tcpip.sys auto-binds when both are loaded.
+build_ndis_vionet() {
+    mkdir -p "$NTOS/NDIS/VIONET/obj/i386"
+    run_nmake "$NTOS/NDIS/VIONET" "VIONET - virtio-net NDIS miniport"
+}
+
+# --- TDI + TCPIP ------------------------------------------------------------
+# tdi.sys     - TDI wrapper (EXPORT_DRIVER); transport drivers and TDI
+#               clients link against it.
+# ip.lib      - IP / ARP / ICMP / IGMP statically linked into tcpip.sys
+#               (LIBRARY in TCPIP/obj/, consumed by tcp's build).
+# tcpip.sys   - TCP/UDP transport driver + IP merged. Surfaces the TDI
+#               device set: \Device\Tcp, \Device\Udp, \Device\Ip,
+#               \Device\RawIp.
+# Ported wholesale from NT 3.5 source (NTOS/TDI/{WRAPPER,TCPIP/{IP,TCP}}).
+build_tdi_wrapper() {
+    mkdir -p "$NTOS/TDI/WRAPPER/obj/i386"
+    run_nmake "$NTOS/TDI/WRAPPER" "TDI - TDI wrapper (tdi.sys)" makedll=1
+}
+build_tdi_tcpip_ip() {
+    mkdir -p "$NTOS/TDI/TCPIP/IP/obj/i386"
+    mkdir -p "$NTOS/TDI/TCPIP/obj/i386"  # ip.lib lands at TCPIP/obj/i386/
+    run_nmake "$NTOS/TDI/TCPIP/IP" "TDI/TCPIP/IP - IP/ARP/ICMP (ip.lib)"
+}
+build_tdi_tcpip_tcp() {
+    mkdir -p "$NTOS/TDI/TCPIP/TCP/obj/i386"
+    run_nmake "$NTOS/TDI/TCPIP/TCP" "TDI/TCPIP/TCP - TCP/UDP transport (tcpip.sys)"
+}
 build_null()   { run_nmake "$NTOS/DD/NULL"     "NULL - null device driver"; }
 build_fastfat(){ run_nmake "$NTOS/FASTFAT"     "FASTFAT - FAT filesystem driver"; }
 build_npfs()   { run_nmake "$NTOS/NPFS"       "NPFS - Named Pipe filesystem driver"; }
@@ -748,6 +789,21 @@ DRIVER_TARGETS=(
     viorng
     vioser
     vioinput
+    # SCSI subsystem (dependency order: class.lib -> scsiport -> scsidisk).
+    # nvme2k is a SCSI miniport on top of scsiport.
+    dd_class
+    dd_scsiport
+    dd_scsidisk
+    dd_nvme2k
+    # Networking. ndis.sys is the framework miniports register against;
+    # tdi.sys is the wrapper TDI clients link to; tcpip.sys (which has
+    # ip.lib statically linked in) is the actual TCP/UDP/IP transport.
+    # Build order matters: tcpip.sys depends on ndis.lib + tdi.lib + ip.lib.
+    ndis_wrapper
+    ndis_vionet
+    tdi_wrapper
+    tdi_tcpip_ip
+    tdi_tcpip_tcp
 )
 
 # Userland: just the native-NT runtime. rtl_user (user-mode RTL),

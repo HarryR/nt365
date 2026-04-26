@@ -112,6 +112,12 @@ cp /usr/share/OVMF/OVMF_VARS_4M.fd OVMF_VARS_4M.fd
 #   virtio-mouse-pci        ->  1AF4:1052 (modern only)            ->  vioinput.sys
 #   nvme                    ->  PCI class 01:08:02 (NVMe)          ->  nvme2k.sys
 #                                                                       (via scsiport.sys / scsidisk.sys)
+#   virtio-net-pci          ->  1AF4:1000 (transitional default)   ->  vionet.sys
+#                                                                       (NDIS 3.0 miniport; tcpip.sys binds on top)
+#
+# Networking: -netdev user gives QEMU's built-in user-mode NAT +
+# DHCP server (10.0.2.2). No host bridge configuration required.
+# Guest gets 10.0.2.15 from QEMU's DHCP, gateway 10.0.2.2, DNS 10.0.2.3.
 #
 # NVMe: separate raw-image data disk; atdisk + IDE still own the boot
 # device for milestone A. Once the SCSI stack is verified end-to-end we
@@ -147,5 +153,7 @@ exec qemu-system-x86_64 -m "$MEM" \
     -device virtconsole,chardev=vcon0 \
     -device virtio-keyboard-pci \
     -device virtio-mouse-pci \
+    -netdev user,id=n0 \
+    -device virtio-net-pci,netdev=n0 \
     -no-reboot \
     $DISPLAY_FLAGS $GDB_FLAGS $TRACE_FLAGS

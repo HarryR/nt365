@@ -508,6 +508,14 @@ _CORE_FILES: list[tuple[str, Path]] = [
     ("System32/Drivers/viorng.sys",   SDK_LIB / "viorng.sys"),
     ("System32/Drivers/vioser.sys",   SDK_LIB / "vioser.sys"),
     ("System32/Drivers/vioinput.sys", SDK_LIB / "vioinput.sys"),
+    # Networking stack: ndis.sys is the framework, vionet.sys is the
+    # virtio-net miniport on top, tdi.sys is the TDI wrapper used by
+    # transport drivers, tcpip.sys is the TCP/UDP/IP transport that
+    # binds upward against tdi clients and downward against vionet.
+    ("System32/Drivers/ndis.sys",     SDK_LIB / "ndis.sys"),
+    ("System32/Drivers/vionet.sys",   SDK_LIB / "vionet.sys"),
+    ("System32/Drivers/tdi.sys",      SDK_LIB / "tdi.sys"),
+    ("System32/Drivers/tcpip.sys",    SDK_LIB / "tcpip.sys"),
 ]
 
 

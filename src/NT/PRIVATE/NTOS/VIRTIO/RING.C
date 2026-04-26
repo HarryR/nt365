@@ -198,7 +198,6 @@ VirtqEnqueue(
     PVRING_DESC desc;
 
     ASSERT(vq != NULL);
-    ASSERT(cookie != NULL);
     ASSERT(sg != NULL);
 
     vqi = VQ_TO_INT(vq);

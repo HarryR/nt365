@@ -493,6 +493,9 @@ def build_system_hive(init_exe: str | None = None,
     # be mounted by fastfat - though for milestone A atdisk still
     # owns the boot device and the SCSI/NVMe stack just exposes a
     # second drive for testing.
+    # Networking: NDIS (framework) -> NDIS Miniport (vionet) -> TDI
+    # (tdi.sys + tcpip.sys). DependOnService on each driver enforces
+    # the actual link-time order; group ordering is the broader bucket.
     control["ServiceGroupOrder"] \
         .set_multi_sz("List", [
             "Base",
@@ -501,6 +504,9 @@ def build_system_hive(init_exe: str | None = None,
             "SCSI miniport",
             "SCSI Class",
             "File System",
+            "NDIS",
+            "NDIS Miniport",
+            "TDI",
             "Video Init",
             "Video",
             "Keyboard Class",
@@ -641,6 +647,100 @@ def build_system_hive(init_exe: str | None = None,
         .set_dword("Start",        1) \
         .set_dword("ErrorControl", 1) \
         .set_sz("Group", "Pointer Class")
+
+    # Networking stack ----------------------------------------------------
+    #
+    # Five service entries that compose into a working TCP/IP guest:
+    #
+    #   ndis   -> framework (ndis.sys)
+    #   vionet -> virtio-net miniport (vionet.sys)
+    #   tdi    -> TDI wrapper (tdi.sys)
+    #   tcpip  -> TCP/UDP/IP transport (tcpip.sys)
+    #
+    # NDIS reads <service>\Linkage\Bind to discover adapters and calls
+    # MPInitialize once per entry. <service>\Parameters\<basename>\
+    # holds per-adapter config the miniport reads via NdisOpenConfiguration.
+    # tcpip's own Linkage\Bind names which adapter(s) the protocol attaches
+    # to. DependOnService enforces driver load order on top of the broader
+    # ServiceGroupOrder bucket.
+
+    # ndis.sys - the framework. EXPORT_DRIVER but still needs a Services
+    # entry; the kernel's service-loader instantiates it like any other
+    # KERNEL_DRIVER. Has no upstream deps.
+    services["ndis"] \
+        .set_dword("Type",         1) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "NDIS")
+
+    # vionet.sys - virtio-net NDIS miniport. Loads after ndis; the
+    # Linkage\Bind list is what triggers NDIS to call our MPInitialize
+    # once per entry. With one virtio-net device, one entry.
+    vionet = services["vionet"]
+    vionet.set_dword("Type",         1) \
+          .set_dword("Start",        1) \
+          .set_dword("ErrorControl", 1) \
+          .set_sz("Group", "NDIS Miniport") \
+          .set_multi_sz("DependOnService", ["ndis"])
+    # Linkage\Bind = ["\Device\Vionet1"]. NDIS parses out the trailing
+    # "Vionet1" as BaseFileName and looks for Parameters\Vionet1\.
+    vionet["Linkage"] \
+        .set_multi_sz("Bind",   ["\\Device\\Vionet1"]) \
+        .set_multi_sz("Export", ["\\Device\\Vionet1"]) \
+        .set_multi_sz("Route",  ["\"vionet\""])
+    # Per-adapter "service-like" config key. NDIS-3 convention: the adapter
+    # name from Linkage\Bind doubles as a top-level Services key, and NDIS
+    # reads its config from Services\<adapter>\Parameters\ - NOT from the
+    # miniport's own Parameters subkey.
+    #
+    # Specifically NDIS calls RtlQueryRegistryValues with
+    #   path = RTL_REGISTRY_SERVICES + "Vionet1"  (= Services\Vionet1)
+    # then the query table switches into the "Parameters" subkey and reads
+    # BusType + BusNumber from there. If either isn't set, NDIS sets the
+    # value to -1 and NdisInitializeInterrupt later bails with
+    # NDIS_STATUS_FAILURE (see WRAPPER.C:3341).
+    #
+    # NDIS_INTERFACE_TYPE for PCIBus is 5; bus 0 since QEMU's -machine pc
+    # has only bus 0.
+    services["Vionet1"]["Parameters"] \
+        .set_dword("BusType",   5) \
+        .set_dword("BusNumber", 0)
+
+    # tcpip.sys reads per-adapter IP config from
+    #   Services\<Adapter>\Parameters\Tcpip
+    # (note: NOT under tcpip's own service key — that's only for the
+    # protocol-level params like ARPCacheLife). Static config tuned for
+    # QEMU's -netdev user NAT: guest 10.0.2.15, gateway 10.0.2.2, DNS
+    # 10.0.2.3 - those are QEMU's hard-coded defaults.
+    services["Vionet1"]["Parameters"]["Tcpip"] \
+        .set_dword("EnableDHCP",     0) \
+        .set_multi_sz("IPAddress",      ["10.0.2.15"]) \
+        .set_multi_sz("SubnetMask",     ["255.255.255.0"]) \
+        .set_multi_sz("DefaultGateway", ["10.0.2.2"])
+
+    # tdi.sys - TDI wrapper. EXPORT_DRIVER, like ndis. Transport drivers
+    # (tcpip, etc.) link against tdi.lib at build time and depend on the
+    # loaded tdi.sys at runtime.
+    services["tdi"] \
+        .set_dword("Type",         1) \
+        .set_dword("Start",        1) \
+        .set_dword("ErrorControl", 1) \
+        .set_sz("Group", "TDI")
+
+    # tcpip.sys - TCP/UDP/IP transport. Surfaces \Device\Tcp, \Device\Udp,
+    # \Device\Ip, \Device\RawIp. Linkage\Bind names which adapter(s) the
+    # protocol attaches to.
+    tcpip = services["tcpip"]
+    tcpip.set_dword("Type",         1) \
+         .set_dword("Start",        1) \
+         .set_dword("ErrorControl", 1) \
+         .set_sz("Group", "TDI") \
+         .set_multi_sz("DependOnService", ["ndis", "tdi"])
+    tcpip["Linkage"].set_multi_sz("Bind", ["\\Device\\Vionet1"])
+    # Parameters subtree for IP config. Empty for now - tcpip will use its
+    # built-in defaults (no IP address; DHCP wiring + Adapters\<name>
+    # subkeys come in a follow-up once we confirm the stack loads).
+    tcpip["Parameters"]
 
     # (videoprt / bochsvga / i8042prt: not auto-started - the Lua UI
     # layer will register + start them when it's ready.)
