@@ -752,6 +752,23 @@ sc06:
 sc07:   mov     ecx,[ebx]+PcTss
         mov     [ecx]+TssEsp0,eax
 
+;
+; Mirror Esp0 into IA32_SYSENTER_ESP (MSR 0x175).  SYSENTER doesn't
+; consult the TSS — it loads ESP straight from the MSR — so the TSS
+; write above (used by HW interrupt gates) is necessary but not
+; sufficient.  Without this wrmsr the next user-mode SYSENTER on the
+; new thread would land on the *old* thread's kernel stack and trash
+; whatever was there, eventually #DFing.  ML predates WRMSR; raw 0F 30.
+;
+; Preserve edx (= new thread, read on the very next instruction) and
+; eax (= Esp0, also feeds wrmsr's low-32 input).  ecx is rebuilt below.
+;
+        push    edx
+        mov     ecx,0175H               ; IA32_SYSENTER_ESP
+        xor     edx,edx
+        db      0Fh, 30h                ; WRMSR (eax already = Esp0)
+        pop     edx
+
         mov     esp,[edx]+ThKernelStack ; set new stack pointer
         mov     eax,[edx]+ThTeb         ; (eax)->user TEB
         mov     [ebx]+PcTeb,eax
@@ -1228,6 +1245,24 @@ ae10:   sub     eax,NPX_FRAME_LENGTH
         cli                                     ; processors while we do this
         mov     edx,PCR[PcTss]
         mov     [edx]+TssEsp0,eax               ; set Esp0 value
+
+;
+; Mirror Esp0 into IA32_SYSENTER_ESP (MSR 0x175) so the next user-mode
+; SYSENTER from this thread lands on the correct kernel stack. SYSENTER
+; doesn't consult the TSS — it loads ESP directly from the MSR — so the
+; TSS write above is necessary (for HW interrupt entries that DO consult
+; TSS) but not sufficient. We do both.
+;
+; ML 6.11d predates Pentium WRMSR; emit the opcode (0F 30) raw.
+;
+        push    eax
+        push    edx
+        mov     ecx,0175H                       ; IA32_SYSENTER_ESP
+        xor     edx,edx
+        db      0Fh, 30h                        ; WRMSR
+        pop     edx
+        pop     eax
+
         popfd
         stdRET    _Ki386AdjustEsp0
 

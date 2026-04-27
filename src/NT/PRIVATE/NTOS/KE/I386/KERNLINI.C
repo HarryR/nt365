@@ -100,6 +100,11 @@ Ke386CpuID (
     PULONG  OutEdx
     );
 
+VOID
+KiSetupSysenter (
+    VOID
+    );
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT,KiInitializeKernel)
 #pragma alloc_text(INIT,KiInitializePcr)
@@ -108,7 +113,118 @@ Ke386CpuID (
 #pragma alloc_text(INIT,KiSwapIDT)
 #pragma alloc_text(INIT,KeSetup80387OrEmulate)
 #pragma alloc_text(INIT,KiGetFeatureBits)
+#pragma alloc_text(INIT,KiSetupSysenter)
 #endif
+
+/*
+ *  KiFastSystemCall is the SYSENTER trap handler in TRAP.ASM.  We need its
+ *  address to program IA32_SYSENTER_EIP.  __cdecl suppresses the @N stdcall
+ *  decoration so the linker matches the asm-side `_KiFastSystemCall` label.
+ */
+extern VOID __cdecl KiFastSystemCall(VOID);
+
+VOID
+KiSetupSysenter (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    Programs the IA32_SYSENTER_CS / EIP / ESP MSRs on the current processor
+    so user-mode SYSENTER instructions land at KiFastSystemCall.  Per-CPU;
+    called once from KiInitializeKernel after KeFeatureBits is up to date.
+
+    Per-thread IA32_SYSENTER_ESP updates happen in Ki386AdjustEsp0
+    (CTXSWAP.ASM) so each context switch keeps the MSR pointing at the
+    current thread's kernel stack.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    PKPCR Pcr;
+    ULONG KernelStackTop;
+    ULONG SepPresent;
+
+    /*
+     *  Detect SEP via CPUID directly rather than via KeFeatureBits.
+     *  KiGetFeatureBits early-returns 0 if Prcb->CpuID is false, and
+     *  Prcb->CpuID is set by the EFLAGS.ID-toggle test in CPU.ASM —
+     *  which can fail under TCG / weird emulator configurations even
+     *  when CPUID itself is fully functional.  A direct probe here is
+     *  the architectural source of truth.
+     *
+     *  CPUID = 0F A2.  Pre-PII assemblers (CL 8.50, ML 6.11d) don't
+     *  know the mnemonic; emit raw bytes.  CPUID *is* universal on
+     *  any CPU we'd boot on; if it #UDs we have bigger problems.
+     */
+    _asm {
+        push    ebx
+        mov     eax, 1
+        _emit   0Fh
+        _emit   0A2h                    ; CPUID
+        and     edx, 0x800              ; CPUID.01:EDX[11] = SEP
+        mov     SepPresent, edx
+        pop     ebx
+    }
+
+    if (SepPresent == 0) {
+        /*
+         *  Re-using HAL_INITIALIZATION_FAILED (0x5C) for this fatal
+         *  config error — sub-code 0xB2 chosen to mirror the existing
+         *  0xB1 CPUType<=3 bug-check at the top of KiInitializeKernel.
+         */
+        KeBugCheckEx(HAL_INITIALIZATION_FAILED, 0xB2, 0, 0, 0);
+    }
+
+    /*
+     *  Set the feature bit too — other code may want to query it.
+     */
+    KeFeatureBits |= KF_SYSENTER;
+
+    Pcr = KeGetPcr();
+    KernelStackTop = Pcr->TSS->Esp0;
+
+    /*
+     *  WRMSR is encoded as raw bytes — ML 6.11d / CL 8.50 predate it.
+     *
+     *      IA32_SYSENTER_CS   = 0x174  ← KGDT_R0_CODE  (SS = +8, user CS = +16,
+     *                                                   user SS = +24 — NT's GDT
+     *                                                   layout satisfies all four)
+     *      IA32_SYSENTER_EIP  = 0x176  ← &KiFastSystemCall
+     *      IA32_SYSENTER_ESP  = 0x175  ← TSS.Esp0 of current (idle) thread; per-
+     *                                    thread updates handled in CTXSWAP.ASM.
+     */
+
+    _asm {
+        mov     ecx, 0174h
+        mov     eax, 8
+        xor     edx, edx
+        _emit   0Fh
+        _emit   30h                     ; WRMSR
+
+        mov     ecx, 0176h
+        mov     eax, offset KiFastSystemCall
+        xor     edx, edx
+        _emit   0Fh
+        _emit   30h                     ; WRMSR
+
+        mov     ecx, 0175h
+        mov     eax, KernelStackTop
+        xor     edx, edx
+        _emit   0Fh
+        _emit   30h                     ; WRMSR
+    }
+}
 
 
 #if 0
@@ -444,6 +560,15 @@ Return Value:
     KiReleaseSpinLock(&KiDispatcherLock);
 
     KeRaiseIrql(HIGH_LEVEL, &OldIrql);
+
+    //
+    // Program SYSENTER MSRs on this processor.  Must happen before any
+    // user-mode thread can issue a fast syscall — KiInitializeKernel is
+    // the last per-CPU init point before the idle thread starts and threads
+    // can be scheduled.
+    //
+
+    KiSetupSysenter();
 
     //
     // This processor has initialized
@@ -880,6 +1005,21 @@ KiGetFeatureBits ()
 
         if (ProcessorFeatures & 0x10) {
             NtBits |= KF_RDTSC;
+        }
+    }
+
+    //
+    // SEP (CPUID.01:EDX[11]) is architectural and reported the same way
+    // regardless of vendor — QEMU TCG, KVM, real hardware all set the
+    // bit identically.  Probe it outside the vendor-branched block so we
+    // don't depend on the vendor string matching one of NT 3.5's two
+    // hardcoded values (NT predates the QEMU CPU identifier strings).
+    //
+
+    if (Prcb->CpuID) {
+        Ke386CpuID (1, &Junk, &Junk, &Junk, &ProcessorFeatures);
+        if (ProcessorFeatures & 0x800) {
+            NtBits |= KF_SYSENTER;
         }
     }
 

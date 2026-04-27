@@ -40,6 +40,7 @@ require('test.sync')
 require('test.io')
 require('test.os')
 require('test.afd')
+require('test.sysenter')
 
 local ok = t.summary()
 print("")

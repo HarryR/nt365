@@ -33,6 +33,14 @@ include ntnap.inc
 
 EXTRN           _NapDllInit:near
 EXTRN           _NapRecordInfo:near
+;
+; The four sites below historically issued `INT 2Eh` directly with eax = svc#,
+; edx = arg-ptr.  After the SYSENTER conversion we no longer have an INT 2E
+; vector, so call the public stdcall stub instead.  Costs an extra call/ret
+; (~4 cycles) per perf-counter sample — negligible against NtQueryPerformance-
+; Counter's own work.
+;
+EXTRNP          _NtQueryPerformanceCounter, 2
 
 NapStart        equ     [ebp - 08h]
 NapEnd          equ     [ebp - 010h]
@@ -258,13 +266,8 @@ cPublicProc _NapCalibrate   , ,near
 ; Now call NtQueryPerformanceCounter to get the starting count;
 ; Store this locally
 
-        push    0                       ; don't need frequency: pass 0
         lea     eax, NapStart           ; (eax) = pointer to counter
-        push    eax                     ; pass pointer to counter
-        mov     eax, NapCounterServiceNumber
-        lea     edx, [esp]              ; (edx) -> arguments
-        int     2Eh                     ; get the current counter value
-        add     esp, 08h                ; remove counter parameters
+        stdCall _NtQueryPerformanceCounter, <eax, 0> ; was inline INT 2Eh; now via stub
 
 ; Restore caller's registers
 
@@ -279,13 +282,8 @@ cPublicProc _NapCalibrate   , ,near
 
 ; Now get the ending counter.
 
-        push    0                       ; don't need frequency: pass 0
         lea     eax, NapEnd             ; (eax) = pointer to counter
-        push    eax                     ; pass pointer to counter
-        mov     eax, NapCounterServiceNumber
-        lea     edx, [esp]              ; (edx) -> arguments
-        int     2Eh                     ; get the current counter value
-        add     esp, 08h                ; remove counter parameters
+        stdCall _NtQueryPerformanceCounter, <eax, 0> ; was inline INT 2Eh; now via stub
 
 ; Compute the time for this call and increment the nukmber of calls.
 
@@ -339,19 +337,25 @@ cPublicProc _NapProfileDispatch , ,near
 ; Now call NtQueryPerformanceCounter to get the starting count;
 ; Store this locally
 
-        push    0                       ; don't need frequency: pass 0
         lea     eax, NapStart           ; (eax) = pointer to counter
-        push    eax                     ; pass pointer to counter
-        mov     eax, NapCounterServiceNumber
-        lea     edx, [esp]              ; (edx) -> arguments
-        int     2Eh                     ; get the current counter value
-        add     esp, 08h                ; remove counter parameters
+        stdCall _NtQueryPerformanceCounter, <eax, 0> ; was inline INT 2Eh; now via stub
 
 ; Restore caller's registers
 
         stdCall   _NapRestoreRegs
 
-        INT     2Eh                     ; invoke system service
+;
+; Dispatch the actual user system service being profiled.  Historically this
+; was a bare `INT 2Eh` with eax=svc#, edx=arg-ptr taken from the original
+; caller's stack frame.  After the SYSENTER conversion no INT 2E vector
+; exists; reaching this path would #GP.  Profiling is dormant in the current
+; build (no caller flips NAPCONTROL.Paused), so we leave this with a clear
+; diagnostic — a bug-check int 3 — rather than silently #GP.  Re-enabling
+; NAP profiling requires reworking _NapProfileDispatch to reconstruct the
+; standard sysenter stub stack shape (push svc args into a local frame and
+; sysenter from there), which is out of scope for the SYSENTER cutover.
+;
+        int     3                       ; NAP profile dispatch — see comment
 
 ; Save regsiters so we can complete the profile accounting.
 
@@ -359,13 +363,8 @@ cPublicProc _NapProfileDispatch , ,near
 
 ; Now get the ending counter.
 
-        push    0                       ; don't need frequency: pass 0
         lea     eax, NapEnd             ; (eax) = pointer to counter
-        push    eax                     ; pass pointer to counter
-        mov     eax, NapCounterServiceNumber
-        lea     edx, [esp]              ; (edx) -> arguments
-        int     2Eh                     ; get the current counter value
-        add     esp, 08h                ; remove counter parameters
+        stdCall _NtQueryPerformanceCounter, <eax, 0> ; was inline INT 2Eh; now via stub
 
 ; Compute the time for this call and increment the number of calls.
 

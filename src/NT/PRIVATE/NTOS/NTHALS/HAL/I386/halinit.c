@@ -12,6 +12,12 @@ ULONG HalpBusType = 0;  /* ISA */
 
 /*
  * HalInitializeProcessor - called once per CPU before HalInitSystem
+ *
+ * SYSENTER MSR programming lives in the kernel proper (KiInitializeKernel
+ * via KiSetupSysenter) rather than here — the kernel needs to pass the
+ * address of its own KiFastSystemCall handler to the MSR, and we'd prefer
+ * not to expose an internal Ki* routine across the HAL/ntoskrnl import
+ * boundary just to do MSR writes.
  */
 VOID
 HalInitializeProcessor(

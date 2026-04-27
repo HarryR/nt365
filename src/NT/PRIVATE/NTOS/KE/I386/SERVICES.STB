@@ -99,7 +99,16 @@ IFIDN <Name>, <SetLowWaitHighThread>
 ELSE
         mov     eax, ServiceNumber      ; (eax) = service number
         lea     edx, [esp]+4            ; (edx) -> arguments
-        INT     2Eh                     ; invoke system service
+        mov     ecx, esp                ; (ecx) = user ESP; [ecx] = ret-to-caller
+                                        ; KiFastSystemCall reads [ecx] for user EIP,
+                                        ; emulates the stdRET below as part of stdcall
+                                        ; callee-pop, and resumes user at caller-of-Zw.
+        db      0Fh, 34h                ; SYSENTER — invoke system service via SEP
+                                        ; ML 6.11d predates PII; emit raw opcode.
+                                        ; Phase 1: kernel returns via IRET.
+                                        ; Phase 3: kernel returns via SYSEXIT.
+                                        ; Either way control resumes at caller-of-Zw,
+                                        ; not the stdRET below (kept as fallback).
 ENDIF
 ENDIF
         stdRET  _Zw&Name

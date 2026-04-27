@@ -359,7 +359,14 @@ IDTEntry        _KiGetTickCount,  D_INT332          ;2A: KiGetTickCount service
 IDTEntry        _KiSetHighWaitLowThread,  D_INT332  ;2B: KiSetHighWaitLowThread service
 IDTEntry        _KiSetLowWaitHighThread,  D_INT332  ;2C: KiSetLowWaitHighThread service
 IDTEntry        _KiDebugService,  D_INT332          ;2D: debugger calls
-IDTEntry        _KiSystemService, D_INT332          ;2E: system service calls
+IDTEntry        _KiSystemService, D_INT332          ;2E: legacy INT 2E entry — kept
+                                                    ;    for kernel-mode Zw* callers
+                                                    ;    in sysstubs.asm.  User-mode
+                                                    ;    callers go through SYSENTER →
+                                                    ;    KiFastSystemCall directly.
+                                                    ;    Phase 2 of the SYSENTER cutover
+                                                    ;    will replace sysstubs.asm with
+                                                    ;    direct dispatch and remove this.
 IDTEntry        _KiTrap0F, D_INT032                 ;2F: Reserved for APIC
 
 ;
@@ -1152,12 +1159,29 @@ endif
 ;
 ; Routine Description:
 ;
-;    This routine gains control when trap occurs via vector 2EH.
-;    INT 2EH is reserved for system service calls.
+;    This routine gains control via SYSENTER from CPL3.  It synthesises an
+;    INT-2E-style trap frame from the sysenter context, then chains into the
+;    same dispatch body NT historically used for INT 2E.
 ;
-;    The system service is executed by locating its routine address in
-;    system service dispatch table and calling the specified function.
-;    On return necessary state is restored.
+;    SYSENTER, unlike INT 2Eh, does not push CS/EIP/SS/ESP/EFLAGS — the CPU
+;    only loads CS/SS/EIP/ESP from MSRs.  KiFastSystemCall therefore must
+;    reconstruct the hardware-pushed portion of the trap frame manually
+;    before the existing ENTER_SYSCALL macro runs.  After that point the
+;    body is identical to the legacy INT 2E path.
+;
+;    Convention (set by the user-mode stub in usrstubs.asm):
+;
+;      eax = service number
+;      edx = pointer to caller's arguments  (lea edx, [esp+4] in the stub)
+;      ecx = user ESP at sysenter; [ecx] holds the return target — i.e. the
+;            address of "ret 4*NumArgs" inside Nt<Func>, which is also the
+;            address user code wants to resume at after the kernel emulates
+;            stdcall callee-pop.
+;
+;    The kernel emulates the user stub's `ret 4*NumArgs` by setting
+;    TsHardwareEsp to (user_ESP + 4 + ArgSize) — pop the return address,
+;    pop the args.  On IRET (Phase 1) or SYSEXIT (Phase 3), user code
+;    resumes at the caller of Nt<Func> with its stack already balanced.
 ;
 ; Arguments:
 ;
@@ -1208,13 +1232,81 @@ Kss_ErrorHandler:
         ENTER_DR_ASSIST kss_a, kss_t,NoAbiosAssist,NoV86Assist
 
 ;
-; General System service entrypoint
+; Legacy INT 2E entry — kernel-mode Zw* callers from sysstubs.asm.  The CPU
+; has already pushed SS/ESP/EFLAGS/CS/EIP onto the kernel stack as part of
+; the interrupt-gate transition (CPL0→CPL0 stays on same stack; SS/ESP
+; pushes are skipped since CPL doesn't change).  Falls into ENTER_SYSCALL
+; just like before.
+;
+; This entry will go away in Phase 2 of the SYSENTER cutover, when sysstubs.asm
+; is rewritten to call the dispatcher directly.
 ;
 
 align 16
         PUBLIC  _KiSystemService
 _KiSystemService        proc
+;
+; INT 2Eh entry.  Reached when a kernel-mode caller in sysstubs.asm issues
+; INT 2Eh (Phase 2 of the SYSENTER cutover will eliminate this path).  The
+; CPU's interrupt gate has already pushed SS/ESP/EFLAGS/CS/EIP onto the
+; kernel stack as part of the trap, so the trap frame's hardware-pushed
+; portion exists with the canonical layout.  Just chain into the shared
+; body which builds the rest of the frame via ENTER_SYSCALL.
+;
+        jmp     KiSystemServiceShared
 
+_KiSystemService endp
+
+;
+; SYSENTER fast-path entrypoint.  Reached via SYSENTER from CPL3.
+;
+
+align 16
+        PUBLIC  _KiFastSystemCall
+_KiFastSystemCall       proc
+
+;
+; Mask interrupts.  SYSENTER does NOT clear EFLAGS.IF on Intel — so a
+; hardware IRQ could fire between sysenter and our prologue.  Mask now
+; before we touch the trap frame.  The matching `sti` lives where the
+; legacy INT 2E path had it (after ENTER_SYSCALL builds the frame).
+;
+        cli
+
+;
+; Synthesise the five hardware-pushed dwords that an INT-gate would have
+; pushed: SS, ESP, EFLAGS, CS, EIP.  Layout matches the existing trap
+; frame so ENTER_SYSCALL and EXIT_ALL run unchanged.
+;
+;   TsHardwareSegSs (0x78) = KGDT_R3_DATA | RPL=3
+;   TsHardwareEsp   (0x74) = ECX (raw user ESP — bumped past ret-addr +
+;                            args later, once ArgSize is known from
+;                            KiArgumentTable[eax])
+;   TsEflags        (0x70) = synthetic: IF=1 only.  SYSENTER discards
+;                            user EFLAGS; the NT ABI treats EFLAGS as
+;                            caller-save across function calls so any
+;                            arithmetic flags / DF / TF user had are
+;                            already considered scratch.  TF specifically:
+;                            user-mode single-step is silently lost across
+;                            a fast syscall — debug under qemu+gdb is the
+;                            project's debug strategy, in-process trace
+;                            isn't supported.
+;   TsSegCs         (0x6C) = KGDT_R3_CODE | RPL=3 (so ENTER_SYSCALL's
+;                            "look at saved CS to set PreviousMode" sets
+;                            PreviousMode=UserMode)
+;   TsEip           (0x68) = [ECX] = user EIP target (ret-to-caller)
+;
+        push    KGDT_R3_DATA OR RPL_MASK            ; TsHardwareSegSs
+        push    ecx                                 ; TsHardwareEsp (raw; adjusted below)
+        push    EFLAGS_INTERRUPT_MASK               ; TsEflags
+        push    KGDT_R3_CODE OR RPL_MASK            ; TsSegCs
+        push    dword ptr [ecx]                     ; TsEip = [user_ESP]
+
+;
+; Frame now matches the INT-2E layout; fall through to the shared body.
+; Both INT 2E (kernel-mode `Zw*`) and SYSENTER (user-mode) converge here.
+;
+KiSystemServiceShared:
         ENTER_SYSCALL   kss_a, kss_t            ; Set up trap frame
         sti
 ;
@@ -1249,6 +1341,24 @@ endif
         mov     esi, edx                ; (esi)->User arguments
         mov     cl, byte ptr _KiArgumentTable[eax] ; (ecx) = argument size
         mov     ebx, _KiServiceTable[eax*4] ; (ebx)-> service routine
+
+;
+; Bump TsHardwareEsp past the user stub's "ret 4*NumArgs" — the kernel
+; emulates the stdcall callee-pop on behalf of the user-mode stub so that
+; on IRET (or SYSEXIT) user code resumes at caller-of-Nt<Func> with stack
+; balanced, never re-entering the per-stub `ret 4*NumArgs` instruction.
+; ecx = ArgSize (bytes); +4 for the return address itself.
+;
+; Only applies to user-mode entries (SYSENTER): TsSegCs has MODE_MASK set.
+; Kernel-mode INT 2E callers (sysstubs.asm — kernel-mode `Zw*` until Phase 2
+; lands) still rely on their own stdRET to pop args, so skip the bump there.
+;
+        test    word ptr [ebp]+TsSegCs, MODE_MASK
+        jz      short kss_skip_esp_bump
+        add     [ebp]+TsHardwareEsp, ecx
+        add     dword ptr [ebp]+TsHardwareEsp, 4
+kss_skip_esp_bump:
+
         sub     esp, ecx                ; allocate space for arguments
         shr     ecx, 2                  ; (ecx) = number of argument DWORDs
         mov     edi, esp                ; (es:edi)->location to receive 1st arg
@@ -1346,9 +1456,88 @@ _KiServiceExit:
         DISPATCH_USER_APC   ebp, ReturnCurrentEax
 
 ;
-; Exit from SystemService
+; Phase 3 SYSEXIT fast return — eligibility check.  All conditions must hold;
+; if any fails we fall through to the EXIT_ALL/IRET path that handles every
+; combination correctly.
+;
+;   1. Returning to user mode with the canonical user CS
+;      (KGDT_R3_CODE | RPL=3 = 0x1B).  Kernel-mode `Zw*` callers that came in
+;      via INT 2E always fail this — TsSegCs has KGDT_R0_CODE — so they take
+;      the IRET path.
+;   2. Saved SS is canonical user (KGDT_R3_DATA | RPL=3 = 0x23).  Custom LDT-
+;      based selectors fall through; SYSEXIT hardcodes the canonical pair.
+;   3. TF=0 in saved EFLAGS — single-step debugging is dropped silently
+;      otherwise.  VM=0 — V86 return is impossible after SYSENTER but check
+;      defensively (and IRET paths handle V86 properly).
+;   4. ThDebugActive == 0 — DR0–DR7 are not in use for this thread, so we
+;      can skip the EXIT_ALL Dr_ExitHelp restore step.
+;
+; If any of these fails the legacy EXIT_ALL path runs unchanged.
+;
+        cmp     word ptr [ebp]+TsSegCs, KGDT_R3_CODE OR RPL_MASK
+        jne     short kss_slow_exit
+        cmp     word ptr [ebp]+TsHardwareSegSs, KGDT_R3_DATA OR RPL_MASK
+        jne     short kss_slow_exit
+        test    dword ptr [ebp]+TsEflags, 0100h OR EFLAGS_V86_MASK
+        jnz     short kss_slow_exit
+        mov     esi, fs:[PcPrcbData+PbCurrentThread]
+        test    byte ptr [esi]+ThDebugActive, 0FFh
+        jnz     short kss_slow_exit
+        jmp     KiServiceFastExit
+
+kss_slow_exit:
+;
+; Exit from SystemService — legacy IRET path.
 ;
         EXIT_ALL    NoRestoreSegs, NoRestoreVolatile
+
+;
+; SYSEXIT fast return.  Mirrors what EXIT_ALL does, minus the bypass paths
+; the eligibility check above ruled out (V86, edited frame, DR restore,
+; abios), and ends with SYSEXIT instead of IRETD.
+;
+;   On entry:
+;     EAX  = NTSTATUS to return to user
+;     ESP  = EBP = base of trap frame (asserted by EXIT_ALL DBG check)
+;     IF   = 0 (cli was at top of _KiServiceExit)
+;
+;   SYSEXIT semantics on Intel (32-bit form):
+;     CS  ← (MSR_SYSENTER_CS + 16) | 3 = KGDT_R3_CODE | 3   (eligibility-checked)
+;     SS  ← (MSR_SYSENTER_CS + 24) | 3 = KGDT_R3_DATA | 3   (eligibility-checked)
+;     EIP ← EDX
+;     ESP ← ECX
+;     EFLAGS — unchanged.  We `sti` just before SYSEXIT so user resumes with IF=1.
+;
+;   ML 6.11d predates the Pentium-II SYSEXIT mnemonic; emit raw opcode (0F 35).
+;
+align 4
+KiServiceFastExit:
+
+        mov     edx, [esp]+TsExceptionList               ; restore PCR.ExceptionList
+        mov     fs:[PcExceptionList], edx
+
+        mov     ecx, [esp]+TsPreviousPreviousMode        ; restore Thread.PreviousMode
+        mov     [esi]+ThPreviousMode, cl                  ; (esi from eligibility check)
+
+        ; Pull final user EIP/ESP into the SYSEXIT registers BEFORE we
+        ; clobber EBP and ESP via the non-volatile pops.
+        mov     edx, [ebp]+TsEip                          ; sysexit EIP
+        mov     ecx, [ebp]+TsHardwareEsp                  ; sysexit ESP
+
+        ; Restore user FS (was saved into trap frame by ENTER_SYSCALL).
+        lea     esp, [ebp]+TsSegFs
+        pop     fs
+
+        ; Restore non-volatiles from trap frame.
+        pop     edi                                       ; TsEdi
+        pop     esi                                       ; TsEsi
+        pop     ebx                                       ; TsEbx
+        pop     ebp                                       ; TsEbp
+
+        ; EAX still holds NTSTATUS — sysexit doesn't touch EAX.
+
+        sti                                               ; user expects IF=1
+        db      0Fh, 35h                                  ; SYSEXIT
 
 ;++
 ;
@@ -1382,7 +1571,7 @@ kss120: stdCall   _KeBugCheck,<APC_INDEX_MISMATCH>
 endif
         ret
 
-_KiSystemService endp
+_KiFastSystemCall endp
 
 ;
 ; Fast path NtGetTickCount

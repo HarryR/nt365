@@ -2308,6 +2308,7 @@ extern BOOLEAN KeI386NpxPresent;
 #define KF_V86_VIS          0x00000001
 #define KF_RDTSC            0x00000002
 #define KF_MACHINE_CHECK    0x00000004
+#define KF_SYSENTER         0x00000008
 
 
 #endif // _i386_
