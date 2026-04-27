@@ -4,7 +4,7 @@
  *
  * Stdin is a real file handle set by ntshim_init; stdout/stderr route
  * through DbgPrint (FFLAG_CONSOLE) → COM1. fopen paths are NT-namespace
- * (e.g. \SystemRoot\lua\nt.lua) — no DOS translation.
+ * (e.g. \SystemRoot\lua\nt\dll\fs.lua) — no DOS translation.
  */
 
 #include "libc_internal.h"

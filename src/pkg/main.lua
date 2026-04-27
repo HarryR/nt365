@@ -8,6 +8,14 @@
 -- semantic decoding (Value:decode() for REG_*), main.lua just
 -- formats decoded values for print.
 
+-- Phase A reorg: every package lives under \SystemRoot\lua\.  Set
+-- package.path before the first require() so `require('nt.tree')` etc.
+-- resolves out of the on-disk tree.  Phase B will move this into the
+-- C side (run.exe / lua.exe sets LUA_PATH or pushes package.path
+-- before the entry script runs); for now the entry scripts do it.
+package.path = "\\SystemRoot\\lua\\?.lua;\\SystemRoot\\lua\\?\\init.lua"
+package.cpath = ""
+
 local ffi   = require('ffi')
 local ntdll = require('nt.dll')
 local tree  = require('nt.tree')

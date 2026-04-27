@@ -880,7 +880,7 @@ build_efi() {
 # cr — LuaJIT-on-NT runtime. The kernel spawns run.exe (native
 # subsystem, imports ntdll only) directly via Control\Init\Exe; runc
 # and runw still build for developer convenience but are no longer
-# wired into any boot path. The full Lua tree at \SystemRoot\lua\ is
+# wired into any boot path. The full package tree at \SystemRoot\lua\ is
 # staged by mkdisk's _lua_tree_files().
 build_cr() {
     echo ""

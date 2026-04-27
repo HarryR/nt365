@@ -2,6 +2,8 @@
 *.o
 *.fd
 *.a
+*.dll
+*.def
 *.pcap
 NOTES.md
 .exes-built

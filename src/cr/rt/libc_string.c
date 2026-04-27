@@ -1,15 +1,18 @@
 /*
- * libc_string.c — string/mem helpers, numeric parsing, and errno glue.
+ * libc_string.c — string/mem helpers and numeric parsing.
  *
  * ntdll exports memcpy / memset / memcmp / strcpy / strlen; we fill in
  * the gap (memmove, strcmp family, strchr/strrchr/strstr, strtoX,
- * strerror). _ntshim_errno and _errno() live here since they're touched
- * by multiple string/number helpers.
+ * strerror).
+ *
+ * _errno and _ntshim_errno used to live here, but a binary that doesn't
+ * reference any other symbol in this TU (e.g. the thin run.exe trampoline)
+ * wouldn't pull this object out of librt.a — and libntdllcrt's _errno
+ * stub (which dllimports a name NT 3.5's ntdll doesn't export) would win.
+ * They're now in libc_init.c, which is always pulled via ntshim_init().
  */
 
 #include "libc_internal.h"
-
-int _ntshim_errno = 0;
 
 void *memmove(void *dst, const void *src, size_t n)
 {
@@ -174,11 +177,7 @@ double strtod(const char *s, char **endp)
     return neg ? -result : result;
 }
 
-/* ---------- errno + strerror ----------------------------------------- */
-
-/* libntdllcrt's _errno is a dllimport that NT 3.5's ntdll doesn't
- * export. Shadow the import with our own definition. */
-int *_errno(void) { return &_ntshim_errno; }
+/* ---------- strerror ------------------------------------------------- */
 
 /* LuaJIT passes strerror's return straight to lua_pushstring, so the
  * contents don't need to match a standard table; just be non-NULL. */

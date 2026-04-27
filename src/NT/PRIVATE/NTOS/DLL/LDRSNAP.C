@@ -937,14 +937,10 @@ Return Value:
     // Get section handle of DLL being snapped
     //
 
-#if LDRDBG
-    if (ShowSnaps) {
-        DbgPrint("LDR: LdrpMapDll: Image Name %ws, Search Path %ws\n",
-                DllName,
-                ARGUMENT_PRESENT(DllPath) ? DllPath : L""
-                );
-    }
-#endif
+    DbgPrint("LDR: LdrpMapDll: Image Name %ws, Search Path %ws\n",
+            DllName,
+            ARGUMENT_PRESENT(DllPath) ? DllPath : L""
+            );
 
     Section = NULL;
     if ( StaticLink && LdrpKnownDllObjectDirectory ) {
@@ -974,20 +970,31 @@ Return Value:
                 }
 #endif
 
-                TranslationStatus = RtlDosPathNameToNtPathName_U(
-                                        FullDllName.Buffer,
-                                        &NtFileName,
-                                        NULL,
-                                        NULL
-                                        );
+                //
+                // MicroNT: when FullDllName is already an NT-namespace path
+                // (resolved by LdrpNtNamespaceSearchPath), hand it straight
+                // to LdrCreateDllSection — no DOS translation, which would
+                // mangle '\SystemRoot\...' through a non-existent drive
+                // prefix.  Otherwise fall through to the legacy DOS path.
+                //
+                if (FullDllName.Buffer && FullDllName.Buffer[0] == L'\\') {
+                    Section = LdrCreateDllSection(&FullDllName, DllFile, &BaseDllName);
+                } else {
+                    TranslationStatus = RtlDosPathNameToNtPathName_U(
+                                            FullDllName.Buffer,
+                                            &NtFileName,
+                                            NULL,
+                                            NULL
+                                            );
 
-                if ( !TranslationStatus ) {
-                    return STATUS_UNSUCCESSFUL;
-                    }
+                    if ( !TranslationStatus ) {
+                        return STATUS_UNSUCCESSFUL;
+                        }
 
-                Section = LdrCreateDllSection(&NtFileName, DllFile, &BaseDllName);
+                    Section = LdrCreateDllSection(&NtFileName, DllFile, &BaseDllName);
 
-                RtlFreeHeap(RtlProcessHeap(), 0, NtFileName.Buffer);
+                    RtlFreeHeap(RtlProcessHeap(), 0, NtFileName.Buffer);
+                }
 
 
                 if ( !Section ) {
@@ -1604,16 +1611,16 @@ Return Value:
 
     if ((ULONG)OrdinalNumber >= ExportDirectory->NumberOfFunctions) {
 baddllref:
-#if DBG
         if (StaticSnap) {
             if (Ordinal) {
-                DbgPrint("LDR: Can't locate ordinal 0x%lx\n", OriginalOrdinalNumber);
+                DbgPrint("LDR: Can't locate ordinal 0x%lx in %s\n",
+                         OriginalOrdinalNumber, DllName ? DllName : "?");
                 }
             else {
-                DbgPrint("LDR: Can't locate %s\n", ImportString);
+                DbgPrint("LDR: Can't locate %s in %s\n",
+                         ImportString, DllName ? DllName : "?");
                 }
         }
-#endif
         if ( StaticSnap ) {
             //
             // Hard Error Time
@@ -2020,6 +2027,95 @@ Return Value:
     InsertTailList(&Ldr->InMemoryOrderModuleList, &LdrDataTableEntry->InMemoryOrderLinks);
 }
 
+//
+// MicroNT helper: search an NT-namespace path for a DLL.  Path is a
+// ';'-separated list of object-namespace directory names (e.g.
+// "\SystemRoot\System32;\SystemRoot\lua").  For each entry we build
+// "<entry>\<DllName>" and ask the kernel directly via NtOpenFile —
+// no DOS-path translation, no \DosDevices prefix, no drive letter.
+//
+// Returns the byte length of the resolved path on success (matches the
+// RtlDosSearchPath_U contract used by the caller), 0 if nothing matched
+// or the candidate would overflow the supplied buffer.
+//
+ULONG
+LdrpNtNamespaceSearchPath (
+    IN PWSTR Path,
+    IN PWSTR DllName,
+    OUT PWSTR Buffer,
+    IN ULONG BufferLengthBytes
+    )
+{
+    PWSTR pathStart = Path;
+    UNICODE_STRING dllStr;
+    USHORT dllNameLen;
+
+    RtlInitUnicodeString(&dllStr, DllName);
+    dllNameLen = dllStr.Length;
+
+    while (*pathStart) {
+        PWSTR pathEnd = pathStart;
+        USHORT entryLen;
+
+        while (*pathEnd && *pathEnd != L';') {
+            pathEnd++;
+        }
+
+        entryLen = (USHORT)((PUCHAR)pathEnd - (PUCHAR)pathStart);
+
+        if (entryLen) {
+            BOOLEAN needSep = (BOOLEAN)(pathEnd[-1] != L'\\');
+            USHORT candLen = entryLen + dllNameLen
+                             + (needSep ? (USHORT)sizeof(WCHAR) : 0);
+
+            if (candLen + sizeof(UNICODE_NULL) <= BufferLengthBytes) {
+                PWSTR p = Buffer;
+                UNICODE_STRING NtName;
+                OBJECT_ATTRIBUTES Obja;
+                IO_STATUS_BLOCK IoStatus;
+                HANDLE handle;
+                NTSTATUS Status;
+
+                RtlMoveMemory(p, pathStart, entryLen);
+                p = (PWSTR)((PUCHAR)p + entryLen);
+                if (needSep) {
+                    *p++ = L'\\';
+                }
+                RtlMoveMemory(p, dllStr.Buffer, dllNameLen);
+                p = (PWSTR)((PUCHAR)p + dllNameLen);
+                *p = UNICODE_NULL;
+
+                NtName.Buffer        = Buffer;
+                NtName.Length        = candLen;
+                NtName.MaximumLength = candLen + (USHORT)sizeof(UNICODE_NULL);
+
+                InitializeObjectAttributes(&Obja, &NtName,
+                                           OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+                Status = NtOpenFile(&handle,
+                                    SYNCHRONIZE | FILE_READ_DATA,
+                                    &Obja,
+                                    &IoStatus,
+                                    FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                    FILE_SYNCHRONOUS_IO_NONALERT |
+                                        FILE_NON_DIRECTORY_FILE);
+                DbgPrint("LDR: NT-search %wZ -> %X\n", &NtName, Status);
+                if (NT_SUCCESS(Status)) {
+                    NtClose(handle);
+                    return candLen;
+                }
+            }
+        }
+
+        if (*pathEnd == L';') {
+            pathEnd++;
+        }
+        pathStart = pathEnd;
+    }
+
+    return 0;
+}
+
 BOOLEAN
 LdrpResolveDllName (
     IN PWSTR DllPath OPTIONAL,
@@ -2073,14 +2169,34 @@ Return Value:
     *DllFile = NULL;
     FullDllName->Buffer = RtlAllocateHeap(RtlProcessHeap(),0,530+sizeof(UNICODE_NULL));
 
-    Length = RtlDosSearchPath_U(
-                ARGUMENT_PRESENT(DllPath) ? DllPath : LdrpDefaultPath.Buffer,
-                DllName,
-                NULL,
-                530,
-                FullDllName->Buffer,
-                &BaseDllName->Buffer
-                );
+    {
+        PWSTR Path = ARGUMENT_PRESENT(DllPath) ? DllPath : LdrpDefaultPath.Buffer;
+
+        //
+        // MicroNT: when the search path is rooted in the object namespace
+        // (starts with '\'), each ';'-separated entry is an NT-namespace
+        // directory rather than a DOS-shaped path.  We probe by joining
+        // "<entry>\<DllName>" and calling NtOpenFile directly, bypassing
+        // RtlDosSearchPath_U / RtlDosPathNameToNtPathName_U / RtlGetFullPathName_Ustr —
+        // those are DOS-path APIs that prepend \DosDevices\ and demand a
+        // drive-letter prefix in CurDir.DosPath, neither of which exists
+        // on a system without DOS.  \SystemRoot is an OB symbolic link;
+        // the kernel resolves it directly.
+        //
+        if (Path && Path[0] == L'\\') {
+            Length = LdrpNtNamespaceSearchPath(Path, DllName,
+                                               FullDllName->Buffer, 530);
+        } else {
+            Length = RtlDosSearchPath_U(
+                        Path,
+                        DllName,
+                        NULL,
+                        530,
+                        FullDllName->Buffer,
+                        &BaseDllName->Buffer
+                        );
+        }
+    }
     if ( !Length || Length > 530 ) {
 
 #if DEVL

@@ -51,39 +51,9 @@
 --   Reactor code SHOULD NOT call `:wait` from inside a coroutine —
 --   use the reactor's own wait verb on `:handle()` instead.
 
-local ffi    = require('ffi')
 local ke     = require('nt.dll.ke')
 local handle = require('nt.dll.handle')
-
-ffi.cdef[[
-typedef struct CR_THREAD CR_THREAD;
-
-CR_THREAD * _cr_thread_spawn(const char *chunk,   unsigned long chunk_len,
-                             const char *payload, unsigned long payload_len);
-void *      _cr_thread_handle(CR_THREAD *t);
-int         _cr_thread_done  (CR_THREAD *t);
-int         _cr_thread_result(CR_THREAD *t,
-                              const char **out_buf, unsigned long *out_len);
-void        _cr_thread_close (CR_THREAD *t);
-
-/* Owner cdata: holds the CR_THREAD*, runs _cr_thread_close on __gc.
- * Kept separate from the Lua-table wrapper so the cleanup path is
- * deterministic regardless of how the wrapper is dropped. */
-typedef struct _CR_THREAD_OWNER {
-    CR_THREAD *t;
-} CR_THREAD_OWNER;
-]]
-
-local C = ffi.C
-
-ffi.metatype('CR_THREAD_OWNER', {
-    __gc = function(self)
-        if self.t ~= nil then
-            C._cr_thread_close(self.t)
-            self.t = nil
-        end
-    end,
-})
+local _t     = require('nt._thread')
 
 local Thread = {}
 Thread.__index = Thread
@@ -97,7 +67,7 @@ Thread.__index = Thread
 -- call this from inside a reactor coroutine — it'd block the entire
 -- reactor thread. Use the reactor's own wait verb on `:handle()`.
 function Thread:wait(seconds)
-    if self._owner.t == nil then
+    if self._t == nil then
         error("nt.thread:wait: thread already closed", 2)
     end
     local st = ke.NtWaitForSingleObject(self._h, false, ke.timeout(seconds))
@@ -108,8 +78,8 @@ end
 -- if still running. Reactor code uses this to short-circuit a wait
 -- when the thread already finished between scheduling decisions.
 function Thread:done()
-    if self._owner.t == nil then return true end   -- closed = done
-    local rc = C._cr_thread_done(self._owner.t)
+    if self._t == nil then return true end   -- closed = done
+    local rc = self._t:done()
     if rc < 0 then error("nt.thread:done: kernel error", 2) end
     return rc == 1
 end
@@ -131,22 +101,19 @@ function Thread:result()
     if self._cached_status then
         return self._cached_status, self._cached_value
     end
-    if self._owner.t == nil then
+    if self._t == nil then
         error("nt.thread:result: thread already closed", 2)
     end
     if not self:done() then
         error("nt.thread:result: thread not done; wait for it first", 2)
     end
-    local out_buf = ffi.new('const char *[1]')
-    local out_len = ffi.new('unsigned long[1]')
-    local rc = C._cr_thread_result(self._owner.t, out_buf, out_len)
+    local rc, v = self._t:result()
     local s
     if     rc == 0 then s = "ok"
     elseif rc == 1 then s = "error"
     elseif rc == 2 then s = "panic"
     else                s = "crash"
     end
-    local v = ffi.string(out_buf[0], out_len[0])
     self._cached_status = s
     self._cached_value  = v
     return s, v
@@ -162,17 +129,16 @@ end
 -- wrapper alive for at least as long, otherwise its __gc will
 -- NtClose the underlying handle out from under your wait set.
 function Thread:handle()
-    if self._owner.t == nil then return nil end
+    if self._t == nil then return nil end
     return self._h
 end
 
--- Explicit release. Force-terminates the thread first if still running.
--- Idempotent. The wrapper's __gc does the same path; call this for
--- deterministic cleanup.
+-- Explicit release. Idempotent: the cr_thread userdata's __gc does
+-- the same path, so dropping the wrapper without close() is also fine.
 function Thread:close()
-    if self._owner.t ~= nil then
-        C._cr_thread_close(self._owner.t)
-        self._owner.t = nil
+    if self._t ~= nil then
+        self._t:close()
+        self._t = nil
     end
 end
 
@@ -190,19 +156,17 @@ function M.run(chunk, payload)
         error("nt.thread.run: payload must be a string or nil, got "
               .. type(payload), 2)
     end
-    local t = C._cr_thread_spawn(chunk, #chunk, payload, #payload)
+    local t, err = _t.spawn(chunk, payload)
     if t == nil then
-        error("nt.thread.run: spawn failed (heap or thread create)", 2)
+        error("nt.thread.run: " .. (err or "spawn failed"), 2)
     end
-    local owner = ffi.new('CR_THREAD_OWNER')
-    owner.t = t
     -- Cache a non-owning NT_HANDLE around the thread handle so :wait
     -- (and any caller wanting an NT_HANDLE for nt.dll.* APIs) doesn't
     -- reallocate per call. The kernel handle's lifetime stays with
-    -- the CR_THREAD ctx; the borrowed wrapper has __owned=0 so its
-    -- own __gc is a no-op.
-    local h = handle.borrow(C._cr_thread_handle(t))
-    return setmetatable({ _owner = owner, _h = h }, Thread)
+    -- the nt._thread userdata; the borrowed wrapper has __owned=0 so
+    -- its own __gc is a no-op.
+    local h = handle.borrow(t:handle())
+    return setmetatable({ _t = t, _h = h }, Thread)
 end
 
 return M

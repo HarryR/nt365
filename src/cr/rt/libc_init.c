@@ -11,6 +11,16 @@
 
 extern NTSTATUS NTAPI NtTerminateProcess(HANDLE, NTSTATUS);
 
+/* Process-wide errno slot.  Lives here (not in libc_string.c) so that
+ * any binary linking librt.a inevitably pulls it: ntshim_init() below
+ * is always referenced, libc_init.o always gets archive-pulled, and the
+ * shadow defeats libntdllcrt's _errno dllimport stub before it can win
+ * archive resolution.  NT 3.5's ntdll doesn't export _errno; without
+ * this anchor a lean caller (e.g. run.exe) would end up with a
+ * STATUS_ENTRYPOINT_NOT_FOUND at process startup. */
+int _ntshim_errno = 0;
+int *_errno(void) { return &_ntshim_errno; }
+
 void ntshim_init(void)
 {
     PPEB peb = nt_peb();

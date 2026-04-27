@@ -1718,6 +1718,14 @@ Phase1Initialization(
     Dst = (PWSTR)(ProcessParameters + 1);
     ProcessParameters->CurrentDirectory.DosPath.Buffer = Dst;
     ProcessParameters->CurrentDirectory.DosPath.MaximumLength = DOS_MAX_PATH_LENGTH * sizeof( WCHAR );
+    //
+    // Real NT has SMSS seed the initial process's CurrentDirectory; we don't
+    // run SMSS, so seed it ourselves with \SystemRoot.  The DllPath built
+    // below copies CurDir then appends "\System32", giving \SystemRoot\System32
+    // which the loader can resolve via the kernel \SystemRoot symbolic link.
+    //
+    RtlAppendUnicodeToString( &ProcessParameters->CurrentDirectory.DosPath,
+                              L"\\SystemRoot" );
 
     Dst = (PWSTR)((PCHAR)ProcessParameters->CurrentDirectory.DosPath.Buffer +
                   ProcessParameters->CurrentDirectory.DosPath.MaximumLength

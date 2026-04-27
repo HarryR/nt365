@@ -58,17 +58,30 @@ jobs:
           chmod +x wibo-x86_64
           ./wibo-x86_64 --version
 
-      - name: build
-        # First invocation auto-provisions src/wibo-tools/ (symlinks into
-        # PUBLIC/OAK/BIN/I386 + CRTDLL.DLL) and builds the cmd-stub. Every
-        # subsequent target runs under wibo.
+      - name: bootstrap host LuaJIT
+        # Phase 1 of the self-hosting plan: build.lua replaces build.sh
+        # as the canonical orchestrator and needs a host LuaJIT to run.
+        # bootstrap.sh builds it from src/cr/luajit (the same submodule
+        # the cr/ testbed cross-compiles), drops it at
+        # build/host-tools/luajit, and wipes the LuaJIT tree afterwards
+        # so the cr/ build that follows starts clean.
         run: |
           cd src
-          ./build.sh
+          ./bootstrap.sh
+
+      - name: build (Lua-driven)
+        # Same env passthrough, same wibo invocation shape, same target
+        # surface as build.sh — just driven by build.lua running on the
+        # host-bootstrapped LuaJIT.  No-arg invocation builds `all`.
+        run: |
+          cd src
+          ../build/host-tools/luajit ./build.lua
 
       - name: build cr (native-NT testbed)
         # Independent from the wibo toolchain — pure mingw cross-compile.
-        # Produces src/cr/luajit.exe (subsystem=native 3.50, ntdll-only).
+        # Produces src/cr/lua.dll + run.exe (subsystem=native 3.50,
+        # ntdll-only).  Re-builds LuaJIT from the submodule for the i386
+        # mingw target (the host build above was wiped after bootstrap).
         run: make -C src/cr all
 
       - name: run cr selftest under QEMU

@@ -418,8 +418,13 @@ class Hive:
 # inheritable and wired into Standard{Input,Output,Error}.
 #
 # run.exe is the native-subsystem LuaJIT (imports ntdll only). main.lua
-# is its entry script. Serial0 gives the Lua process a raw-mode COM1 for
-# stdin/out/err — works alongside DbgPrint on the same port.
+# is its entry script.  Serial0 gives the Lua process a raw-mode COM1
+# for stdin/out/err — works alongside DbgPrint on the same port.
+#
+# Phase A layout: everything Lua lives under \SystemRoot\lua\ — the EXE
+# itself, the future shared lua.dll (Phase B), and the package tree.
+# Co-locating means NT's loader-search-order picks up lua.dll
+# automatically when run.exe (or a future lua.exe) imports it.
 DEFAULT_INIT_EXE   = "lua\\run.exe"
 DEFAULT_INIT_ARGS  = "\\SystemRoot\\lua\\main.lua"
 DEFAULT_INIT_STDIO = "\\Device\\Serial0"

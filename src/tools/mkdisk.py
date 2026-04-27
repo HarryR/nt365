@@ -457,18 +457,47 @@ def OBJ(comp:str):
 NLS_DATA = NT / "PRIVATE/NLS"
 
 
-def _lua_tree_files() -> list[tuple[str, Path]]:
-    """Stage the cr Lua runtime at `\\SystemRoot\\lua\\`: run.exe (native
-    subsystem LuaJIT, imports ntdll only — the kernel spawns this as the
-    initial user-mode process via Control\\Init\\Exe) plus every file
-    under `src/cr/lua/`. Built by `make -C src/cr`."""
+def _runtime_tree_files() -> list[tuple[str, Path]]:
+    """Stage the runtime + packages.
+
+    Layout:
+      \\SystemRoot\\lua\\run.exe       — the native-subsystem EXE.
+                                          Kernel spawns this via
+                                          Control\\Init\\Exe.
+      \\SystemRoot\\System32\\lua.dll  — shared VM + librt + cr_thread.
+                                          Lives in System32 because the
+                                          NT kernel-side image loader
+                                          searches *only* System32 for
+                                          the initial process's imports
+                                          (Win32-style "search EXE dir
+                                          first" applies to LoadLibrary,
+                                          not to PE-import resolution
+                                          on a native-subsystem boot).
+      \\SystemRoot\\lua\\<files>       — every file under `src/pkg/`,
+                                          mirroring its layout.
+                                          Entry scripts set
+                                          `package.path = '\\lua\\?.lua;...'`
+                                          so `require('nt.dll.fs')`
+                                          resolves correctly.
+
+    Source-tree note: `src/pkg/` because that name describes what the
+    files are (Lua packages); the on-disk `\\lua\\` is a deployment detail.
+    """
+    # lua.dll lands in System32, not alongside run.exe.  NT 3.5's
+    # kernel-side image loader searches \SystemRoot\System32\ for
+    # the initial process's imports — the EXE's own directory rule
+    # is a kernel32 LoadLibrary policy, not used here.  Subsequent
+    # native-subsystem EXEs that load lua.dll find it via the same
+    # System32 search path; CoW between processes works regardless
+    # of which directory the EXE itself sits in.
     out: list[tuple[str, Path]] = [
-        ("lua/run.exe", CR_DIR / "run.exe"),
+        ("lua/run.exe",          CR_DIR / "run.exe"),
+        ("System32/lua.dll",     CR_DIR / "lua.dll"),
     ]
-    lua_root = CR_DIR / "lua"
-    for f in sorted(lua_root.rglob("*")):
+    pkg_root = SRC_ROOT / "pkg"
+    for f in sorted(pkg_root.rglob("*")):
         if f.is_file():
-            rel = f.relative_to(lua_root).as_posix()
+            rel = f.relative_to(pkg_root).as_posix()
             out.append((f"lua/{rel}", f))
     return out
 
@@ -527,7 +556,7 @@ def get_disk_files(output_dir: Path) -> list[tuple[str, Path]]:
     *output_dir*. No SOFTWARE / DEFAULT hives — those are Win32-userland-
     only, and there is no Win32 userland."""
     files = list(_CORE_FILES)
-    files.extend(_lua_tree_files())
+    files.extend(_runtime_tree_files())
     files.append(("System32/config/SYSTEM", output_dir / "SYSTEM"))
     return files
 
@@ -564,7 +593,7 @@ def main() -> None:
                          "If HOST is a directory its contents are copied "
                          "recursively under DEST. Repeatable. "
                          "e.g. -x build/foo.exe:System32/foo.exe, "
-                         "-x src/cr/lua:lua")
+                         "-x src/pkg:lua")
     args = ap.parse_args()
 
     output_dir = args.output_dir or (SRC_ROOT.parent / "build" / "disk")

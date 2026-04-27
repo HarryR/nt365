@@ -367,3 +367,144 @@ EXPORT void _cr_thread_close(struct CR_THREAD *t)
 
     _release(t);           /* parent's own decrement */
 }
+
+/* ---- native Lua module ---------------------------------------------
+ *
+ * Registered as `nt._thread` via package.preload (see lua_main.c's
+ * luaL_openlibs wrapper) — internal plumbing under the public nt.thread
+ * surface, the leading underscore signals "don't reach for this
+ * directly".  Going through ffi.C would fall back to LuaJIT's
+ * default-lib chain (EXE / DLL / CRT), which does carry these symbols
+ * for our build but the native registration is more honest: cr_thread's
+ * shape is Lua-call-stack, not C-ABI.
+ *
+ * The C-side `_cr_thread_*` exports remain in lua.dll's PE export
+ * table for now — harmless, in case something else (a debugger
+ * extension, a future C consumer) wants the raw entries — but Lua
+ * code only ever reaches them via this module.
+ *
+ * Userdata layout: a single pointer to CR_THREAD; __gc closes the ctx.
+ */
+
+#define CR_THREAD_MT "nt._thread"
+
+struct cr_thread_ud {
+    struct CR_THREAD *t;
+};
+
+static struct cr_thread_ud *_check_ud(lua_State *L, int idx)
+{
+    return (struct cr_thread_ud *)luaL_checkudata(L, idx, CR_THREAD_MT);
+}
+
+static int l_spawn(lua_State *L)
+{
+    size_t      chunk_len, payload_len;
+    const char *chunk   = luaL_checklstring(L, 1, &chunk_len);
+    const char *payload = luaL_optlstring (L, 2, "", &payload_len);
+    struct CR_THREAD     *t;
+    struct cr_thread_ud  *ud;
+
+    t = _cr_thread_spawn(chunk,   (ULONG)chunk_len,
+                         payload, (ULONG)payload_len);
+    if (t == 0) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "cr_thread.spawn: heap or thread create failed");
+        return 2;
+    }
+
+    ud = (struct cr_thread_ud *)lua_newuserdata(L, sizeof(*ud));
+    ud->t = t;
+    luaL_getmetatable(L, CR_THREAD_MT);
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+/* :handle() — return the borrowed thread HANDLE as a lightuserdata.
+ * Lifetime of the underlying kernel handle is bound to the ctx; caller
+ * must not NtClose it.  Pair with nt.dll.handle.borrow(...) to wrap. */
+static int l_handle(lua_State *L)
+{
+    struct cr_thread_ud *ud = _check_ud(L, 1);
+    if (ud->t == 0) { lua_pushnil(L); return 1; }
+    lua_pushlightuserdata(L, _cr_thread_handle(ud->t));
+    return 1;
+}
+
+/* :done() — non-blocking poll. Returns 1 / 0 / -1 (matches the C
+ * shape; Lua side typically converts to a boolean). */
+static int l_done(lua_State *L)
+{
+    struct cr_thread_ud *ud = _check_ud(L, 1);
+    lua_pushinteger(L, _cr_thread_done(ud->t));
+    return 1;
+}
+
+/* :result() — returns (status, output_string).  status is one of
+ * STATUS_OK / STATUS_LUA_ERROR / STATUS_PANIC / STATUS_CRASH (0..3).
+ * Lua side maps these to "ok"/"error"/"panic"/"crash". */
+static int l_result(lua_State *L)
+{
+    struct cr_thread_ud *ud = _check_ud(L, 1);
+    const char *buf = "";
+    ULONG       len = 0;
+    int status;
+
+    if (ud->t == 0) {
+        lua_pushinteger(L, -1);
+        lua_pushliteral(L, "");
+        return 2;
+    }
+    status = _cr_thread_result(ud->t, &buf, &len);
+    lua_pushinteger(L, status);
+    lua_pushlstring(L, buf, (size_t)len);
+    return 2;
+}
+
+/* :close() / __gc — drop parent's reference. Idempotent: both paths
+ * may fire (manual close + GC) and only the first does work. */
+static int l_close(lua_State *L)
+{
+    struct cr_thread_ud *ud = _check_ud(L, 1);
+    if (ud->t != 0) {
+        _cr_thread_close(ud->t);
+        ud->t = 0;
+    }
+    return 0;
+}
+
+static const luaL_Reg cr_thread_methods[] = {
+    { "handle", l_handle },
+    { "done",   l_done   },
+    { "result", l_result },
+    { "close",  l_close  },
+    { 0, 0 }
+};
+
+static const luaL_Reg cr_thread_module[] = {
+    { "spawn", l_spawn },
+    { 0, 0 }
+};
+
+/* Lua's require-by-file convention encodes a `.` in the module name
+ * as `__` in the C symbol: nt._thread → luaopen_nt__thread.  We use
+ * preload (set up in lua_main.c) so the symbol name doesn't actually
+ * matter for resolution, but matching the convention keeps things
+ * unsurprising for anyone grepping. */
+EXPORT int luaopen_nt__thread(lua_State *L)
+{
+    /* Metatable for the userdata.  __index = self so methods resolve. */
+    luaL_newmetatable(L, CR_THREAD_MT);
+    lua_pushvalue(L, -1);
+    lua_setfield(L, -2, "__index");
+    lua_pushcfunction(L, l_close);
+    lua_setfield(L, -2, "__gc");
+    luaL_register(L, 0, cr_thread_methods);
+    lua_pop(L, 1);
+
+    /* Module table — exposes spawn(); methods are reached via :method
+     * on the userdata returned by spawn. */
+    lua_newtable(L);
+    luaL_register(L, 0, cr_thread_module);
+    return 1;
+}
