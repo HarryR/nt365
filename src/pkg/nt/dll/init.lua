@@ -52,6 +52,15 @@ typedef struct _CLIENT_ID {
     HANDLE UniqueProcess;
     HANDLE UniqueThread;
 } CLIENT_ID;
+
+/* Used by both LPC (NtConnectPort) and SE (NtDuplicateToken via OA's
+ * SecurityQualityOfService field). */
+typedef struct _SECURITY_QUALITY_OF_SERVICE {
+    ULONG         Length;
+    int           ImpersonationLevel;
+    unsigned char ContextTrackingMode;
+    unsigned char EffectiveOnly;
+} SECURITY_QUALITY_OF_SERVICE;
 ]]
 
 return ffi.load('ntdll')

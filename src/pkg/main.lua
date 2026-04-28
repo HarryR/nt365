@@ -16,19 +16,11 @@
 package.path = "\\SystemRoot\\lua\\?.lua;\\SystemRoot\\lua\\?\\init.lua"
 package.cpath = ""
 
-local ffi   = require('ffi')
-local ntdll = require('nt.dll')
 local tree  = require('nt.tree')
 
--- Shutdown primitives — raw ffi for now, one-off use. Move to nt.dll.ex
--- (Executive) if/when we grow more of that surface.
-ffi.cdef[[
-NTSTATUS __stdcall RtlAdjustPrivilege(ULONG Privilege,
-                                      unsigned char Enable,
-                                      unsigned char Client,
-                                      unsigned char *WasEnabled);
-NTSTATUS __stdcall NtShutdownSystem(int Action);
-]]
+-- Shutdown via nt.dll.sys.NtShutdownSystem; privilege management via
+-- nt.dll.se. Loaded lazily near the actual call site so the namespace-
+-- walk above doesn't pay for them.
 
 -- Registry data type codes — needed for render dispatch only; the
 -- Value handler owns decoding.
@@ -329,16 +321,25 @@ print("")
 print("vioinput test window: 30s — interact with QEMU VGA window now")
 ke.NtDelayExecution(false, ke.timeout(30))
 
--- Shut down cleanly. NT 3.5 requires SeShutdownPrivilege (value 19
--- per ntseapi.h); our init process runs under the kernel's token so
--- RtlAdjustPrivilege will enable it. ShutdownPowerOff routes through
--- HalReturnToFirmware; without ACPI, NT 3.5 falls back to halting.
+-- Shut down cleanly. NT 3.5 requires SeShutdownPrivilege; our init
+-- process runs under the kernel's token, which holds the privilege
+-- (just disabled by default per SE/TOKEN.C:721). ShutdownPowerOff
+-- routes through HalReturnToFirmware; without ACPI, NT 3.5 falls back
+-- to halting.
 print("")
 print("Shutting down...")
-local was = ffi.new('unsigned char[1]')
-ntdll.RtlAdjustPrivilege(19 --[[ SE_SHUTDOWN_PRIVILEGE ]], 1, 0, was)
-local st = ntdll.NtShutdownSystem(2 --[[ ShutdownPowerOff ]])
+local se  = require('nt.dll.se')
+local sys = require('nt.dll.sys')
 
--- Only reached if shutdown rejects us.
-print(string.format("NtShutdownSystem returned 0x%08x", st < 0 and st + 0x100000000 or st))
+local sd_ok, sd_err = pcall(function()
+    local tok = se.open_process_token{
+        access = se.TOKEN_QUERY + se.TOKEN_ADJUST_PRIVILEGES,
+    }
+    se.enable_privileges(tok, {"SeShutdownPrivilege"})
+    sys.NtShutdownSystem('power_off')
+    tok:close()
+end)
+if not sd_ok then
+    print("shutdown failed: " .. tostring(sd_err))
+end
 while true do end

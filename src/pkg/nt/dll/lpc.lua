@@ -98,12 +98,8 @@ typedef struct _PORT_DATA_INFORMATION {
     PORT_DATA_ENTRY DataEntries[1];
 } PORT_DATA_INFORMATION;
 
-typedef struct _SECURITY_QUALITY_OF_SERVICE {
-    ULONG         Length;
-    int           ImpersonationLevel;
-    unsigned char ContextTrackingMode;
-    unsigned char EffectiveOnly;
-} SECURITY_QUALITY_OF_SERVICE;
+/* SECURITY_QUALITY_OF_SERVICE — defined in nt.dll (init.lua), shared
+ * with nt.dll.se. */
 
 #pragma pack(pop)
 

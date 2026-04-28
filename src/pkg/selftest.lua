@@ -13,17 +13,9 @@
 package.path = "\\SystemRoot\\lua\\?.lua;\\SystemRoot\\lua\\?\\init.lua"
 package.cpath = ""
 
-local ffi   = require('ffi')
-local ntdll = require('nt.dll')
-local t     = require('test')
-
-ffi.cdef[[
-NTSTATUS __stdcall RtlAdjustPrivilege(ULONG Privilege,
-                                      unsigned char Enable,
-                                      unsigned char Client,
-                                      unsigned char *WasEnabled);
-NTSTATUS __stdcall NtShutdownSystem(int Action);
-]]
+local t   = require('test')
+local se  = require('nt.dll.se')
+local sys = require('nt.dll.sys')
 
 print("MicroNT selftest")
 print("================")
@@ -46,6 +38,7 @@ require('test.io')
 require('test.os')
 require('test.afd')
 require('test.sysenter')
+require('test.se')
 
 local ok = t.summary()
 print("")
@@ -57,7 +50,25 @@ end
 
 -- Clean shutdown. Exit status doesn't propagate out of QEMU in any
 -- useful way for this harness, so the summary line is the signal.
-local was = ffi.new('unsigned char[1]')
-ntdll.RtlAdjustPrivilege(19 --[[ SE_SHUTDOWN_PRIVILEGE ]], 1, 0, was)
-ntdll.NtShutdownSystem(2 --[[ ShutdownPowerOff ]])
+--
+-- Defensively un-impersonate first: if some test failed mid-impersonate
+-- without reverting, the privilege adjust + shutdown calls below would
+-- access-check against our impersonation token and get
+-- STATUS_BAD_IMPERSONATION_LEVEL — both calls would silently fail and
+-- we'd hang forever in the spin loop. revert_to_self is idempotent so
+-- the no-leak case is a no-op.
+pcall(se.revert_to_self)
+
+local sd_ok, sd_err = pcall(function()
+    local tok = se.open_process_token{
+        access = se.TOKEN_QUERY + se.TOKEN_ADJUST_PRIVILEGES,
+    }
+    se.enable_privileges(tok, {"SeShutdownPrivilege"})
+    sys.NtShutdownSystem('power_off')
+    tok:close()
+end)
+if not sd_ok then
+    print("shutdown failed: " .. tostring(sd_err))
+    print("(spinning — kill QEMU manually)")
+end
 while true do end

@@ -110,6 +110,8 @@ NTSTATUS __stdcall NtQuerySystemInformation(
     void *SystemInformation,
     ULONG SystemInformationLength,
     ULONG *ReturnLength);
+
+NTSTATUS __stdcall NtShutdownSystem(int Action);
 ]]
 
 local SystemProcessInformation    = 5
@@ -256,6 +258,34 @@ function M.each_module()
             coroutine.yield(copy_module(list.Modules[i]))
         end
     end)
+end
+
+-- ------------------------------------------------------------------
+-- Shutdown
+-- ------------------------------------------------------------------
+--
+-- NtShutdownSystem requires SeShutdownPrivilege to be ENABLED on the
+-- caller's effective token. Wrapper raises on failure so callers can't
+-- silently sail past STATUS_PRIVILEGE_NOT_HELD or
+-- STATUS_BAD_IMPERSONATION_LEVEL into a spin-loop. Callers must enable
+-- the privilege themselves (via se.enable_privileges) — this stays a
+-- low-level wrapper, not a one-shot do-everything helper.
+
+-- SHUTDOWN_ACTION enum (NT 3.5 NTPOAPI.H).
+local SHUTDOWN_ACTION = {
+    no_reboot       = 0,    -- ShutdownNoReboot — stop dispatching, halt
+    reboot          = 1,    -- ShutdownReboot
+    power_off       = 2,    -- ShutdownPowerOff
+}
+
+function M.NtShutdownSystem(action)
+    local code = SHUTDOWN_ACTION[action]
+    if code == nil then
+        error("sys.NtShutdownSystem: bad action '" .. tostring(action)
+              .. "' (want 'no_reboot' | 'reboot' | 'power_off')", 2)
+    end
+    local st = ntdll.NtShutdownSystem(code)
+    if err.is_error(st) then err.raise('NtShutdownSystem', st) end
 end
 
 return M
