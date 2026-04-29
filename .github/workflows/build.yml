@@ -64,7 +64,15 @@ jobs:
         # rewrites it from the current git HEAD so each CI build is
         # uniquely identified down to the commit; idempotent — re-running
         # with the same inputs produces no diff.
-        run: python3 src/tools/stamp-version.py
+        #
+        # safe.directory: actions/checkout marks the workspace safe in the
+        # host's git config, but child invocations from inside the
+        # container run as a different uid and trip git's dubious-
+        # ownership check.  Re-marking inside the container makes
+        # subprocess `git rev-parse` succeed.
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 src/tools/stamp-version.py
 
       - name: bootstrap host LuaJIT
         # Phase 1 of the self-hosting plan: build.lua replaces build.sh

@@ -213,10 +213,16 @@ IsFileUnicode (char * fName)
     BOOLEAN  result;
 
     if (OptionalIsTextUnicode == NULL) {
-        OptionalIsTextUnicode = (PISTEXTUNICODE_ROUTINE)GetProcAddress( LoadLibrary( "ADVAPI32.DLL" ), "IsTextUnicode" );
-        if (OptionalIsTextUnicode == NULL) {
-            OptionalIsTextUnicode = DefaultIsTextUnicode;
-            }
+        /* Was: GetProcAddress( LoadLibrary("ADVAPI32.DLL"), "IsTextUnicode" )
+         * Wibo's advapi32 shim doesn't implement IsTextUnicode, and its
+         * GetProcAddress returns a stub-pointer for missing exports
+         * rather than NULL — calling that stub aborts wibo with
+         * "call reached missing import IsTextUnicode from advapi32".
+         * Our .mc inputs (BUGCODES.MC, WIN31EVT.MC, WINERROR.MC, …) are
+         * all ANSI; DefaultIsTextUnicode (returns FALSE) is the correct
+         * branch.  Same pattern as the GetOEMCP patch above.
+         */
+        OptionalIsTextUnicode = DefaultIsTextUnicode;
         }
 
     if ( ( fp = fopen( fName, "rb" ) ) == NULL )

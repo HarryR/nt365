@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -105,17 +106,33 @@ def detect_from_git(root: Optional[Path] = None,
     root = root or _repo_root()
     today = today or _dt.datetime.utcnow().date()
 
-    def git(*args: str) -> str:
+    # Two flavors: required (e.g. rev-parse HEAD — always available in a
+    # checkout) surfaces stderr on failure so CI errors are debuggable
+    # without re-running with a patch; optional (describe) swallows
+    # stderr because "no exact tag" is the common dev-build path.
+    def git_required(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", *args], cwd=root, text=True, capture_output=True,
+        )
+        if proc.returncode != 0:
+            sys.stderr.write(
+                f"git {' '.join(args)} (cwd={root}) failed "
+                f"with exit {proc.returncode}:\n{proc.stderr}"
+            )
+            proc.check_returncode()
+        return proc.stdout.strip()
+
+    def git_optional(*args: str) -> str:
         return subprocess.check_output(
             ["git", *args], cwd=root, text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
 
-    sha = git("rev-parse", "--short=7", "HEAD")
+    sha = git_required("rev-parse", "--short=7", "HEAD")
 
     channel = "dev"
     try:
-        tag = git("describe", "--exact-match", "--tags", "HEAD")
+        tag = git_optional("describe", "--exact-match", "--tags", "HEAD")
     except subprocess.CalledProcessError:
         tag = ""
 

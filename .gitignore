@@ -42,16 +42,15 @@ src/NT/PUBLIC/SDK/LIB/I386/hal.exp
 src/NT/PUBLIC/SDK/LIB/I386/tmp.lib
 src/NT/PUBLIC/SDK/LIB/I386/tmp.exp
 # ntdll, kernel32, advapi32 DLLs + .exp are generated each build.
-# ADVAPI32.LIB / HAL.LIB / NTDLL.LIB are SEED .lib import stubs — tools
-# link against them before we build the DLL.  They're tracked, not
-# ignored.  Build overwrites them; clean.sh restores.  kernel32 has
-# graduated off SEED status — its .lib is built fully from source under
-# WINDOWS/BASE/CLIENT and lives at the lowercase path below.
+# The .LIB import stubs (kernel32.lib, ADVAPI32.LIB, HAL.LIB, NTDLL.LIB)
+# are SEED files — early-bootstrap tools (cmd-stub, wibo-tools setup)
+# link against them before windows_base_client has produced its own
+# kernel32.lib.  They're tracked, not ignored.  Build overwrites them;
+# clean.sh restores.
 src/NT/PUBLIC/SDK/LIB/I386/ntdll.dll
 src/NT/PUBLIC/SDK/LIB/I386/ntdll.exp
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.dll
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.exp
-src/NT/PUBLIC/SDK/LIB/I386/kernel32.lib
 src/NT/PUBLIC/SDK/LIB/I386/advapi32.dll
 src/NT/PUBLIC/SDK/LIB/I386/advapi32.exp
 # nt.lib (URTL) + smdll.lib (SM/CLIENT) — built from source
