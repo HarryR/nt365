@@ -29,6 +29,7 @@
 --                                       RootDirectory handle (raw or
 --                                       NT_HANDLE).
 
+local bit    = require('bit')
 local ffi    = require('ffi')
 require('nt.dll')                       -- OBJECT_ATTRIBUTES, UNICODE_STRING
 local str    = require('nt.dll.str')
@@ -44,9 +45,33 @@ typedef struct _NT_OA_PATH {
 #pragma pack(pop)
 ]]
 
-local OBJ_CASE_INSENSITIVE = 0x40
-
 local M = {}
+
+-- OBJECT_ATTRIBUTES.Attributes flag bits. Single source of truth for
+-- the codebase — callers use M.OBJ_PERMANENT etc. instead of inline hex.
+M.OBJ_INHERIT          = 0x00000002
+M.OBJ_PERMANENT        = 0x00000010
+M.OBJ_EXCLUSIVE        = 0x00000020
+M.OBJ_CASE_INSENSITIVE = 0x00000040
+M.OBJ_OPENIF           = 0x00000080
+M.OBJ_OPENLINK         = 0x00000100
+M.OBJ_KERNEL_HANDLE    = 0x00000200
+
+-- Coerce the `attributes` argument of M.path to a single ULONG mask.
+-- Accepts:
+--   nil        — defaults to OBJ_CASE_INSENSITIVE (the common case).
+--   number     — used as-is.
+--   table[int] — bit.bor of every entry. Empty table → 0 (no flags).
+-- A name-string table form is intentionally not supported: the OBJ_*
+-- values are ABI constants matching the C headers, and a second
+-- string-namespace would compete with the canonical names.
+local function attrs_mask(v)
+    if v == nil then return M.OBJ_CASE_INSENSITIVE end
+    if type(v) == 'number' then return v end
+    local m = 0
+    for _, f in ipairs(v) do m = bit.bor(m, f) end
+    return m
+end
 
 function M.path(utf8_path, attributes, root)
     local wchars = str.decode_utf8(utf8_path)
@@ -68,7 +93,7 @@ function M.path(utf8_path, attributes, root)
     noa.oa.Length                   = ffi.sizeof('OBJECT_ATTRIBUTES')
     noa.oa.RootDirectory            = root and handle.raw(root) or nil
     noa.oa.ObjectName               = ffi.cast('UNICODE_STRING *', noa.us)
-    noa.oa.Attributes               = attributes or OBJ_CASE_INSENSITIVE
+    noa.oa.Attributes               = attrs_mask(attributes)
     noa.oa.SecurityDescriptor       = nil
     noa.oa.SecurityQualityOfService = nil
 

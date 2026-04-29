@@ -58,6 +58,14 @@ jobs:
           chmod +x wibo-x86_64
           ./wibo-x86_64 --version
 
+      - name: stamp version
+        # NTVERP.H carries the build identity (date as YYMM/DD, channel,
+        # short sha) consumed by every PE we link.  stamp-version.py
+        # rewrites it from the current git HEAD so each CI build is
+        # uniquely identified down to the commit; idempotent — re-running
+        # with the same inputs produces no diff.
+        run: python3 src/tools/stamp-version.py
+
       - name: bootstrap host LuaJIT
         # Phase 1 of the self-hosting plan: build.lua replaces build.sh
         # as the canonical orchestrator and needs a host LuaJIT to run.

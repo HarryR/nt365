@@ -13,238 +13,57 @@
 -- drivers, userland, cr, efi, disk.  See the usage() text at the
 -- bottom of this file for the per-component target list.
 
-local ffi = require('ffi')
-local bit = require('bit')
-
 -- ------------------------------------------------------------------
--- POSIX bindings.  posix_spawn gives us the same control build.sh
--- gets through `env -i ... wibo --chdir ...`: full env replacement,
--- explicit cwd, no shell interpolation.
+-- Resolve pkg/ntosbe early so platform.* is available for the rest of
+-- this file.  Bootstrap step: arg[0] gives the script path; we walk
+-- to its directory via plain string ops and a single popen("pwd"),
+-- then use platform.realpath() for everything that follows.
 -- ------------------------------------------------------------------
 
-ffi.cdef[[
-typedef int pid_t;
-
-int posix_spawn(pid_t *pid, const char *path,
-                const void *file_actions, const void *attrp,
-                char *const argv[], char *const envp[]);
-int posix_spawnp(pid_t *pid, const char *file,
-                 const void *file_actions, const void *attrp,
-                 char *const argv[], char *const envp[]);
-pid_t waitpid(pid_t pid, int *wstatus, int options);
-
-int chdir(const char *path);
-char *getcwd(char *buf, size_t size);
-int mkdir(const char *path, unsigned int mode);
-int access(const char *path, int mode);
-int symlink(const char *target, const char *linkpath);
-int unlink(const char *path);
-
-extern char **environ;
-]]
-
-local C = ffi.C
-
-local function strvec(t)
-    -- Convert {s1, s2, ...} to a NULL-terminated char*[] suitable for
-    -- argv/envp.  The strings live in t for the duration; pin them by
-    -- returning t alongside.
-    local n = #t
-    local arr = ffi.new('const char *[?]', n + 1)
-    for i = 1, n do arr[i - 1] = t[i] end
-    arr[n] = nil
-    return arr
-end
-
-local function getcwd()
-    local buf = ffi.new('char[?]', 4096)
-    if C.getcwd(buf, 4096) == nil then error("getcwd failed") end
-    return ffi.string(buf)
-end
-
-local function exit_status_of(wstatus)
-    -- WIFEXITED + WEXITSTATUS; matches what bash $? returns for a
-    -- normally-exited child.  Signal-killed children get 128+sig.
-    if bit.band(wstatus, 0x7f) == 0 then
-        return bit.band(bit.rshift(wstatus, 8), 0xff)
-    end
-    return 128 + bit.band(wstatus, 0x7f)
-end
-
-local function spawn_wait(path, argv, envp, cwd)
-    -- Spawn a child with explicit env + cwd.  No shell, no quoting.
-    -- cwd applied via chdir/restore around the spawn — posix_spawn's
-    -- addchdir_np extension is glibc-only; this is portable.
-    local saved_cwd
-    if cwd then
-        saved_cwd = getcwd()
-        if C.chdir(cwd) ~= 0 then
-            error("chdir failed: " .. cwd)
+local function _self_dir_bootstrap()
+    local self = arg[0]
+    local d = self:match("(.*)/[^/]*$") or "."
+    if d:sub(1, 1) ~= "/" then
+        local p = io.popen("pwd")
+        if p then
+            local cwd = p:read("*l")
+            p:close()
+            if cwd then d = cwd .. "/" .. d end
         end
     end
-
-    local pid_box = ffi.new('pid_t[1]')
-    local rc = C.posix_spawn(pid_box, path, nil, nil,
-                             ffi.cast('char *const*', argv),
-                             ffi.cast('char *const*', envp))
-
-    if cwd then C.chdir(saved_cwd) end
-
-    if rc ~= 0 then
-        error(("posix_spawn(%s) failed: %d"):format(path, rc))
-    end
-
-    local status_box = ffi.new('int[1]')
-    if C.waitpid(pid_box[0], status_box, 0) < 0 then
-        error("waitpid failed")
-    end
-    return exit_status_of(status_box[0])
+    return d
 end
 
--- ------------------------------------------------------------------
--- Process env passthrough — for spawning non-wibo native helpers
--- (make, python3) where we want to inherit the parent's PATH/HOME.
--- ------------------------------------------------------------------
+local _SCRIPT_DIR0 = _self_dir_bootstrap()
+package.path = _SCRIPT_DIR0 .. "/pkg/?.lua;"
+            .. _SCRIPT_DIR0 .. "/pkg/?/init.lua;"
+            .. package.path
 
-local function current_env()
-    local out = {}
-    local i = 0
-    while C.environ[i] ~= nil do
-        out[#out + 1] = ffi.string(C.environ[i])
-        i = i + 1
-    end
-    return out
-end
+local platform = require('ntosbe.platform')
+local sources  = require('ntosbe.sources')
 
--- ------------------------------------------------------------------
--- Filesystem utilities.
--- ------------------------------------------------------------------
+-- Filesystem aliases — platform owns the surface, these are short
+-- handles for build.lua's call sites.
+local file_exists    = platform.file_exists
+local is_executable  = platform.is_executable
+local mkdir_p        = platform.mkdir_p
+local readdir        = platform.list_dir
 
-local function file_exists(path)
-    return C.access(path, 0) == 0   -- F_OK
-end
+-- SOURCES parser + obj staleness + path utilities — all in
+-- ntosbe.sources now, re-exported here for the call sites.
+local basename         = sources.basename
+local stem             = sources.stem
+local dirname          = sources.dirname
+local normpath         = sources.normpath
+local trim             = sources.trim
+local split_lines      = sources.split_lines
+local resolve_ci       = sources.resolve_ci
+local find_iname       = sources.find_iname
+local gen_objects      = sources.gen_objects
+local nuke_stale_objs  = sources.nuke_stale_objs
 
-local function is_executable(path)
-    return C.access(path, 1) == 0   -- X_OK
-end
-
-local function mkdir_p(path)
-    -- mkdir -p in pure Lua via repeated mkdir(0755).  Ignores EEXIST.
-    -- Path components separated by '/' (Linux only — host build).
-    local accum = ""
-    if path:sub(1, 1) == "/" then accum = "/"; path = path:sub(2) end
-    for component in path:gmatch("[^/]+") do
-        accum = accum .. component
-        C.mkdir(accum, 0x1ed)        -- 0o755
-        accum = accum .. "/"
-    end
-end
-
-local function readdir(path)
-    -- Cheap directory listing via ls (no native dirent in plain Lua,
-    -- and pulling in lfs is overkill).  Returns array of names.
-    local names = {}
-    local p = io.popen(string.format("ls -A %q 2>/dev/null", path))
-    if not p then return names end
-    for name in p:lines() do names[#names + 1] = name end
-    p:close()
-    return names
-end
-
-local function find_iname(dir, glob)
-    -- Case-insensitive single-level match — equivalent to
-    -- `find $dir -maxdepth 1 -iname $glob`.  Returns first match or nil.
-    local pat = "^" .. glob:gsub("[%-%.]", "%%%1"):gsub("%*", ".*") .. "$"
-    local lower_pat = pat:lower()
-    for _, name in ipairs(readdir(dir)) do
-        if name:lower():match(lower_pat) then
-            return dir .. "/" .. name
-        end
-    end
-    return nil
-end
-
-local function mtime(path)
-    -- Returns numeric mtime, or nil if missing.  Uses `stat` since
-    -- LuaJIT doesn't ship a portable stat binding.
-    local p = io.popen(string.format("stat -c %%Y %q 2>/dev/null", path))
-    if not p then return nil end
-    local s = p:read("*l")
-    p:close()
-    return s and tonumber(s) or nil
-end
-
-local function basename(path)
-    return path:match("([^/]+)$") or path
-end
-
-local function stem(path)
-    local b = basename(path)
-    return b:gsub("%.[^.]*$", "")
-end
-
-local function dirname(path)
-    local d = path:match("(.*)/[^/]*$")
-    return d or "."
-end
-
-local function normpath(p)
-    -- Collapse 'X/..' and '.' segments.  Doesn't follow symlinks — the
-    -- only paths gen_objects sees are NT-source-tree paths with no
-    -- symlinks in scope.
-    local parts = {}
-    for part in p:gmatch("[^/]+") do
-        if part == ".." and #parts > 0 and parts[#parts] ~= ".." then
-            parts[#parts] = nil
-        elseif part ~= "." then
-            parts[#parts + 1] = part
-        end
-    end
-    local r = table.concat(parts, "/")
-    if p:sub(1, 1) == "/" then r = "/" .. r end
-    return r
-end
-
-local function trim(s)
-    return (s:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
-local function read_file(path)
-    local f = io.open(path, "rb")
-    if not f then return nil end
-    local data = f:read("*all")
-    f:close()
-    return data
-end
-
-local function split_lines(s)
-    -- Split on \n / \r\n / \r.  Returns array of lines without trailing
-    -- newline.  Does not produce a final empty element if input ends
-    -- with a newline.
-    local lines = {}
-    for line in (s .. "\n"):gmatch("([^\r\n]*)\r?\n") do
-        lines[#lines + 1] = line
-    end
-    -- Drop the trailing empty produced when input ended in \n.
-    if lines[#lines] == "" then lines[#lines] = nil end
-    return lines
-end
-
-local function resolve_ci(path)
-    -- Case-insensitive single-component resolution: if `path` exists
-    -- exactly, return it; otherwise scan its parent directory for a
-    -- name matching the last component case-insensitively.
-    if file_exists(path) then return path end
-    local parent = dirname(path)
-    if not file_exists(parent) then return nil end
-    local target = basename(path):lower()
-    for _, name in ipairs(readdir(parent)) do
-        if name:lower() == target then
-            return parent .. "/" .. name
-        end
-    end
-    return nil
-end
+local mtime     = platform.mtime
+local read_file = platform.read_file
 
 -- ------------------------------------------------------------------
 -- Logging.
@@ -263,23 +82,12 @@ end
 
 -- ------------------------------------------------------------------
 -- Project layout — derived from this script's location, identical to
--- build.sh's SCRIPT_DIR/NT_ROOT/NTOS chain.
+-- build.sh's SCRIPT_DIR/NT_ROOT/NTOS chain.  We re-resolve via
+-- platform.realpath now that platform is loaded; the bootstrap-shell
+-- copy in _SCRIPT_DIR0 above is only used to find pkg/.
 -- ------------------------------------------------------------------
 
-local SCRIPT_DIR = (function()
-    -- arg[0] is the script path luajit was invoked with.  Resolve to
-    -- absolute via dirname + getcwd if relative.
-    local self = arg[0]
-    local d = dirname(self)
-    if d:sub(1, 1) ~= "/" then
-        d = getcwd() .. "/" .. d
-    end
-    -- realpath via the shell since we don't have a binding.
-    local p = io.popen(string.format("readlink -f %q", d))
-    local resolved = p:read("*l")
-    p:close()
-    return resolved or d
-end)()
+local SCRIPT_DIR = platform.realpath(_SCRIPT_DIR0) or _SCRIPT_DIR0
 
 local NT_ROOT      = SCRIPT_DIR .. "/NT"
 local NTOS         = NT_ROOT .. "/PRIVATE/NTOS"
@@ -295,473 +103,36 @@ if not is_executable(WIBO_BIN) then
 end
 
 -- ------------------------------------------------------------------
--- Path translation.  Wibo strips Z:/C: drive prefixes only; everything
--- else routes through Z:\<host-abs-path>\... — same as build.sh.
+-- Toolchain bridge.  ntosbe.toolchain owns the host/NT divergence:
+-- on host every CL/LINK/NMAKE call is wrapped by `wibo --chdir`, on
+-- NT the same tools run natively.  configure() builds NT_ENV + path
+-- mappings + populates the wibo-tools symlink farm on first run.
 -- ------------------------------------------------------------------
 
-local function path_to_win(p)
-    return "Z:" .. p:gsub("/", "\\")
-end
-
-local NT_ROOT_WIN    = path_to_win(NT_ROOT)
-local WIBO_TOOLS_WIN = path_to_win(WIBO_TOOLS)
-local _NTROOT_WIN    = NT_ROOT:gsub("/", "\\")
-
--- ------------------------------------------------------------------
--- wibo-tools symlink farm — first-run population mirrors build.sh:36.
--- Every tool in PUBLIC/OAK/BIN/I386 plus CRTDLL.DLL.
--- ------------------------------------------------------------------
-
-local function setup_wibo_tools()
-    if file_exists(WIBO_TOOLS) then return end
-    log(">>> setting up " .. WIBO_TOOLS .. " (first-time)")
-    mkdir_p(WIBO_TOOLS)
-    local oak_bin = NT_ROOT .. "/PUBLIC/OAK/BIN/I386"
-    for _, name in ipairs(readdir(oak_bin)) do
-        C.symlink(oak_bin .. "/" .. name, WIBO_TOOLS .. "/" .. name)
-    end
-    -- CRTDLL.DLL lives in SDK/LIB, not OAK/BIN; NMAKE etc. import from
-    -- it so wibo needs to find it alongside the host binaries.
-    C.symlink(NT_ROOT .. "/PUBLIC/SDK/LIB/I386/CRTDLL.DLL",
-              WIBO_TOOLS .. "/CRTDLL.DLL")
-end
-setup_wibo_tools()
-
--- ------------------------------------------------------------------
--- NT toolchain environment — mirrors the NT_ENV_ARR bash array.
--- Built once, fed to every wibo invocation via posix_spawn envp.
--- ------------------------------------------------------------------
-
-local NT_ENV = {
-    "_NTDRIVE=Z:",
-    "_NTROOT="     .. _NTROOT_WIN,
-    "BASEDIR="     .. NT_ROOT_WIN,
-    "NTMAKEENV="   .. NT_ROOT_WIN .. "\\PUBLIC\\OAK\\BIN",
-    "386=1",
-    "TARGETCPU=I386",
-    "NT_UP=1",
-    "NTDEBUG=",
-    "NTDEBUGTYPE=",
-    "PATH="        .. WIBO_TOOLS_WIN,
-    "WIBO_PATH="   .. WIBO_TOOLS,
-    "COMSPEC="     .. WIBO_TOOLS_WIN .. "\\cmd.exe",
-    "TEMP=Z:\\tmp",
-    "TMP=Z:\\tmp",
-    "INCLUDE="     .. NT_ROOT_WIN .. "\\PUBLIC\\SDK\\INC;"
-                  .. NT_ROOT_WIN .. "\\PUBLIC\\OAK\\INC;"
-                  .. NT_ROOT_WIN .. "\\PUBLIC\\SDK\\INC\\CRT",
-    "LIB="         .. NT_ROOT_WIN .. "\\PUBLIC\\SDK\\LIB\\I386",
+local toolchain = require('ntosbe.tchain')
+toolchain.configure{
+    nt_root    = NT_ROOT,
+    wibo_tools = WIBO_TOOLS,
+    wibo_bin   = WIBO_BIN,
+    drive_root = "Z:",
 }
 
-local function build_envp(extra)
-    -- Stripped-down env: HOME, TERM, optional WIBO_DEBUG, plus NT_ENV
-    -- and any per-call overrides.  Equivalent to bash's
-    --   env -i HOME=... TERM=... ${WIBO_DEBUG:+...} "${NT_ENV_ARR[@]}" ...
-    local env = {
-        "HOME=" .. (os.getenv("HOME") or ""),
-        "TERM=" .. (os.getenv("TERM") or "dumb"),
-    }
-    local wibo_dbg = os.getenv("WIBO_DEBUG")
-    if wibo_dbg then env[#env + 1] = "WIBO_DEBUG=" .. wibo_dbg end
-    for _, e in ipairs(NT_ENV) do env[#env + 1] = e end
-    if extra then
-        for _, e in ipairs(extra) do env[#env + 1] = e end
-    end
-    return env
-end
+local path_to_win        = toolchain.path_to_win
+local NT_ROOT_WIN        = path_to_win(NT_ROOT)
+local WIBO_TOOLS_WIN     = path_to_win(WIBO_TOOLS)
+local _NTROOT_WIN        = NT_ROOT:gsub("/", "\\")
+local build_envp         = toolchain.build_envp
+local wibo_tool_path     = toolchain.wibo_tool_path
+local run_nmake          = toolchain.run_nmake
+local run_wibo_tool      = toolchain.run_wibo_tool
+local wibo_spawn_args    = toolchain.wibo_spawn_args
+local install_host_tool  = toolchain.install_host_tool
 
--- ------------------------------------------------------------------
--- Tool resolution — case-insensitive glob inside wibo-tools, with
--- automatic .exe suffix.
--- ------------------------------------------------------------------
-
-local function wibo_tool_path(name)
-    local match = find_iname(WIBO_TOOLS, name)
-    if not match and not name:find("%.") then
-        match = find_iname(WIBO_TOOLS, name .. ".exe")
-    end
-    return match
-end
-
--- ------------------------------------------------------------------
--- gen_objects — port of tools/gen_objects.py.  Parses a SOURCES file
--- (handling !include directives and line continuations) and emits the
--- obj/_objects.mac fragment that NMAKE pulls in via $(386_OBJECTS).
---
--- BUILD.EXE normally produces this; we do it ourselves so the build
--- has zero Python dependency (phase-2 self-hosting requirement).
--- ------------------------------------------------------------------
-
-local function flatten_sources(path, seen)
-    -- Read `path`, inlining any `!include ..\\foo.inc` directives.
-    -- Returns the logically-flattened list of lines.
-    seen = seen or {}
-    path = normpath(path)
-    if seen[path] then return {} end
-    seen[path] = true
-
-    local raw = read_file(path)
-    if not raw then return {} end
-
-    local out = {}
-    for _, line in ipairs(split_lines(raw)) do
-        local inc = line:match("^!%s*[Ii][Nn][Cc][Ll][Uu][Dd][Ee]%s+(.+)")
-        if inc then
-            inc = trim(inc):gsub('^"', ""):gsub('"$', ""):gsub("\\", "/")
-            local inc_path = dirname(path) .. "/" .. inc
-            local resolved = resolve_ci(inc_path)
-            if resolved then
-                for _, l in ipairs(flatten_sources(resolved, seen)) do
-                    out[#out + 1] = l
-                end
-            end
-            -- missing include: silently skip (matches nmake's
-            -- `!include if exist` semantics).
-        else
-            out[#out + 1] = line
-        end
-    end
-    return out
-end
-
-local function extract_var(lines, varname)
-    -- Pull every `VAR= ...` definition out of `lines` (honoring
-    -- backslash continuations) and return the concatenated tokens.
-    -- Strips `$(VAR)` self-references.  Case-insensitive on varname
-    -- (real SOURCES files mix `i386_SOURCES=` and `I386_SOURCES=`).
-    local tokens = {}
-    local in_var = false
-    local var_lower = varname:lower()
-    -- Build a case-insensitive prefix matcher manually since Lua
-    -- patterns lack the case flag.
-    local function match_var_assign(line)
-        local key, body = line:match("^([%w_]+)%s*=%s*(.*)$")
-        if not key or key:lower() ~= var_lower then return nil end
-        return body
-    end
-    local self_ref_pat = "^%$%(" .. varname:gsub("(.)", function(c)
-        if c:match("[%a_]") then
-            return "[" .. c:lower() .. c:upper() .. "]"
-        else
-            return c:gsub("([%-%.%(%)%[%]%+%*%?%^%$%%])", "%%%1")
-        end
-    end) .. "%)%s*"
-
-    for _, line in ipairs(lines) do
-        local body
-        if not in_var then
-            body = match_var_assign(line)
-            if not body then goto continue end
-            body = body:gsub(self_ref_pat, "")
-            in_var = true
-        else
-            body = line
-        end
-
-        local rstripped = body:gsub("%s+$", "")
-        local cont = rstripped:sub(-1) == "\\"
-        if cont then rstripped = rstripped:sub(1, -2) end
-        for tok in rstripped:gmatch("%S+") do tokens[#tokens + 1] = tok end
-        if not cont then in_var = false end
-
-        ::continue::
-    end
-    return tokens
-end
-
-local function src_to_obj(src)
-    -- '..\\i386\\foo.c' → 'obj\\i386\\foo.obj'.
-    -- '.rc' → '.res' (RC inference rule produces .res).
-    -- '.res' / '.mc' → nil (pre-built / message-compiler input).
-    local base = basename(src:gsub("\\", "/"))
-    local stm, ext = base:match("^(.+)%.([^.]+)$")
-    if not stm then return nil end
-    ext = ext:lower()
-    if ext == "res" or ext == "mc" then return nil end
-    if ext == "rc" then return "obj\\i386\\" .. stm .. ".res" end
-    return "obj\\i386\\" .. stm .. ".obj"
-end
-
-local function find_i386_sources_file(comp_dir)
-    -- Look for arch-specific SOURCES at known spots, case-insensitively.
-    local candidates = {
-        comp_dir .. "/I386/SOURCES",
-        dirname(comp_dir) .. "/I386/SOURCES",
-        comp_dir .. "/i386/SOURCES",
-        dirname(comp_dir) .. "/i386/SOURCES",
-    }
-    for _, c in ipairs(candidates) do
-        local r = resolve_ci(c)
-        if r then return r end
-    end
-    return nil
-end
-
-local function gen_objects(comp_dir)
-    local sources = resolve_ci(comp_dir .. "/SOURCES")
-    if not sources then
-        io.stderr:write("ERROR: SOURCES not found: " .. comp_dir .. "/SOURCES\n")
-        return false
-    end
-
-    local lines = flatten_sources(sources)
-    local srcs  = extract_var(lines, "SOURCES")
-
-    -- i386_SOURCES: either in a sibling/arch SOURCES file, or inline.
-    local i386_file = find_i386_sources_file(comp_dir)
-    local i386_srcs
-    if i386_file then
-        local i386_lines = flatten_sources(i386_file)
-        i386_srcs = extract_var(i386_lines, "SOURCES")
-        for _, t in ipairs(extract_var(i386_lines, "i386_SOURCES")) do
-            i386_srcs[#i386_srcs + 1] = t
-        end
-    else
-        i386_srcs = extract_var(lines, "i386_SOURCES")
-    end
-
-    local all_srcs = {}
-    for _, t in ipairs(srcs)      do all_srcs[#all_srcs + 1] = t end
-    for _, t in ipairs(i386_srcs) do all_srcs[#all_srcs + 1] = t end
-
-    mkdir_p(comp_dir .. "/obj/i386")
-
-    local objs = {}
-    for _, s in ipairs(all_srcs) do
-        local o = src_to_obj(s)
-        if o then objs[#objs + 1] = o end
-    end
-
-    local out_path = comp_dir .. "/obj/_objects.mac"
-    local f = io.open(out_path, "w")
-    if not f then
-        io.stderr:write("ERROR: cannot write " .. out_path .. "\n")
-        return false
-    end
-    f:write("#\n# _objects.mac - generated by build.lua gen_objects\n#\n\n")
-    if #objs > 0 then
-        f:write("386_OBJECTS=" .. objs[1])
-        for i = 2, #objs do f:write(" \\\n    " .. objs[i]) end
-        f:write("\n")
-    else
-        f:write("386_OBJECTS=\n")
-    end
-    f:write("\n")
-    f:close()
-
-    log(("Generated %s with %d source files (%d objects)"):format(
-        out_path, #all_srcs, #objs))
-    return true
-end
-
--- ------------------------------------------------------------------
--- Stale-.obj detection — ports the bash two-pass scheme verbatim.
--- Pass 1: per-source mtime > matching .obj → rm the .obj.
--- Pass 2: any .h/.inc newer than oldest .obj → nuke all .obj.
--- ------------------------------------------------------------------
-
-local SRC_EXTS    = { "c", "cxx", "cpp", "asm" }
-local HEADER_EXTS = { "h", "hxx", "hpp", "inc" }
-
-local function ext_in(path, exts)
-    local e = path:match("%.([^.]+)$")
-    if not e then return false end
-    e = e:lower()
-    for _, x in ipairs(exts) do if e == x then return true end end
-    return false
-end
-
-local function nuke_stale_objs(linux_dir)
-    local obj_dir  = linux_dir .. "/obj/i386"
-    local src_dirs = { linux_dir, linux_dir .. "/..", linux_dir .. "/i386" }
-
-    -- Pass 1: stale .obj per source file.
-    for _, d in ipairs(src_dirs) do
-        if file_exists(d) then
-            for _, name in ipairs(readdir(d)) do
-                if ext_in(name, SRC_EXTS) then
-                    local src      = d .. "/" .. name
-                    local obj_stem = stem(name)
-                    local obj      = find_iname(obj_dir, obj_stem .. ".obj")
-                    if obj then
-                        local sm, om = mtime(src), mtime(obj)
-                        if sm and om and sm > om then
-                            log(("  stale: %s (newer than %s)"):format(name, basename(obj)))
-                            os.remove(obj)
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- Pass 2: header edits invalidate every .obj.
-    if file_exists(obj_dir) then
-        local objs, oldest_obj, oldest_m = {}, nil, math.huge
-        for _, name in ipairs(readdir(obj_dir)) do
-            if name:lower():match("%.obj$") then
-                local p = obj_dir .. "/" .. name
-                local m = mtime(p)
-                if m then
-                    objs[#objs + 1] = p
-                    if m < oldest_m then oldest_m, oldest_obj = m, p end
-                end
-            end
-        end
-        if oldest_obj then
-            for _, d in ipairs(src_dirs) do
-                if file_exists(d) then
-                    for _, name in ipairs(readdir(d)) do
-                        if ext_in(name, HEADER_EXTS) then
-                            local src = d .. "/" .. name
-                            local sm  = mtime(src)
-                            if sm and sm > oldest_m then
-                                log(("  header changed: %s (newer than %s) — nuking %s/*.obj"):format(
-                                    name, basename(oldest_obj), obj_dir))
-                                for _, o in ipairs(objs) do os.remove(o) end
-                                return
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
-
--- ------------------------------------------------------------------
--- run_nmake — the workhorse.  Mirrors build.sh:96 line-for-line.
--- ------------------------------------------------------------------
-
-local function run_nmake(linux_dir, desc, extra_args, opts)
-    opts = opts or {}
-    extra_args = extra_args or {}
-
-    banner(desc)
-
-    if not file_exists(linux_dir) then
-        log("ERROR: directory not found: " .. linux_dir)
-        return 1
-    end
-
-    mkdir_p(linux_dir .. "/obj/i386")
-    -- Shared NTOS output dir (TARGETPATH=..\..\obj).
-    mkdir_p(NTOS .. "/obj/i386")
-
-    -- Always regenerate _objects.mac to stay in sync with SOURCES.
-    if not gen_objects(linux_dir) then
-        return 1
-    end
-
-    nuke_stale_objs(linux_dir)
-
-    -- MAKEDIR = win-form of linux_dir.  We strip the NT_ROOT prefix
-    -- and back-slashify the rest, prepending NT_ROOT_WIN.
-    local rel_path     = linux_dir:sub(#NT_ROOT + 1)
-    local makedir_win  = NT_ROOT_WIN .. rel_path:gsub("/", "\\")
-
-    -- UMAPPL override.  KEEP_UMAPPL=1 in env preserves the SOURCES
-    -- file's UMAPPL= directive (cowtest etc. need this).
-    local umappl_override = "UMAPPL="
-    if opts.keep_umappl or os.getenv("KEEP_UMAPPL") == "1" then
-        umappl_override = nil
-    end
-
-    -- Build argv: wibo --chdir <linux_dir> NMAKE.EXE /NOLOGO NTTEST= UMTEST= [UMAPPL=] [extras]
-    local argv = {
-        "wibo",
-        "--chdir", linux_dir,
-        WIBO_TOOLS .. "/NMAKE.EXE",
-        "/NOLOGO",
-        "NTTEST=", "UMTEST=",
-    }
-    if umappl_override then argv[#argv + 1] = umappl_override end
-    for _, a in ipairs(extra_args) do argv[#argv + 1] = a end
-
-    local envp = build_envp({ "MAKEDIR=" .. makedir_win })
-    local rc = spawn_wait(WIBO_BIN, strvec(argv), strvec(envp))
-
-    if rc == 0 then
-        log(">>> " .. desc .. ": OK")
-    else
-        log((">>> %s: FAILED (rc=%d)"):format(desc, rc))
-    end
-    return rc
-end
-
--- ------------------------------------------------------------------
--- run_wibo_tool — single-tool invocation, no NMAKE wrapping.
--- ------------------------------------------------------------------
-
-local function run_wibo_tool(cwd, tool_name, ...)
-    local tool_path = wibo_tool_path(tool_name)
-    if not tool_path then
-        io.stderr:write("ERROR: tool not found in wibo-tools: " .. tool_name .. "\n")
-        return 1
-    end
-    local argv = { "wibo", "--chdir", cwd, tool_path }
-    for i = 1, select("#", ...) do argv[#argv + 1] = (select(i, ...)) end
-    return spawn_wait(WIBO_BIN, strvec(argv), strvec(build_envp()))
-end
-
--- ------------------------------------------------------------------
--- File-copy + mtime helpers used by both install_host_tool and the
--- _ensure_* routines below.
--- ------------------------------------------------------------------
-
-local function copy_file(src, dst)
-    local f_in  = io.open(src, "rb")
-    if not f_in then return false, "open " .. src end
-    local f_out = io.open(dst, "wb")
-    if not f_out then f_in:close(); return false, "open " .. dst end
-    f_out:write(f_in:read("*all"))
-    f_in:close()
-    f_out:close()
-    return true
-end
+local copy_file = platform.copy_file
 
 local function newer_than(a, b)
     local am, bm = mtime(a), mtime(b)
     return am and bm and am > bm
-end
-
--- ------------------------------------------------------------------
--- wibo_spawn_args — like run_wibo_tool but takes an absolute tool path
--- (used when invoking just-built host tools that aren't in wibo-tools
--- yet, e.g. geni386.exe before it's installed).
--- ------------------------------------------------------------------
-
-local function wibo_spawn_args(cwd, tool_path, args)
-    local argv = { "wibo", "--chdir", cwd, tool_path }
-    for _, a in ipairs(args) do argv[#argv + 1] = a end
-    return spawn_wait(WIBO_BIN, strvec(argv), strvec(build_envp()))
-end
-
--- ------------------------------------------------------------------
--- install_host_tool — copy a freshly-built wibo-runnable host tool to
--- PUBLIC/OAK/BIN/I386 and refresh its symlink in wibo-tools/.
--- ------------------------------------------------------------------
-
-local function install_host_tool(built, name)
-    if not file_exists(built) then
-        io.stderr:write(("!!! %s: expected output %s not found\n"):format(name, built))
-        return false
-    end
-    local dst = NT_ROOT .. "/PUBLIC/OAK/BIN/I386/" .. name
-    if not copy_file(built, dst) then
-        io.stderr:write("ERROR: copy failed: " .. built .. " -> " .. dst .. "\n")
-        return false
-    end
-    -- Refresh wibo-tools symlink so subsequent invocations resolve
-    -- to the new build.
-    local link = WIBO_TOOLS .. "/" .. name
-    C.unlink(link)
-    if C.symlink(dst, link) ~= 0 then
-        io.stderr:write("ERROR: symlink failed: " .. link .. "\n")
-        return false
-    end
-    log(">>> installed " .. name)
-    return true
 end
 
 -- ------------------------------------------------------------------
@@ -772,81 +143,24 @@ end
 local function run_make(cwd, target)
     local argv = { "make", "-C", cwd }
     if target then argv[#argv + 1] = target end
-    return spawn_wait("/usr/bin/make", strvec(argv), strvec(current_env()))
-end
-
-local function run_python(script, ...)
-    local argv = { "python3", script }
-    for i = 1, select("#", ...) do argv[#argv + 1] = (select(i, ...)) end
-    return spawn_wait("/usr/bin/python3", strvec(argv), strvec(current_env()))
+    return platform.spawn_wait{ argv = argv, search_path = true }
 end
 
 -- ------------------------------------------------------------------
--- ensure_error_h — generate NTOS/RTL/error.h via tools/generr.lua
--- (the in-tree port of tools/generr.py).  Loaded via dofile so the
--- module file mirrors the Python sibling and stays self-contained.
+-- Codegen helpers — small "regenerate this generated file" steps that
+-- gate specific nmake builds.  ntosbe.codegen owns the recipes; here
+-- we just bind handles for the target table to call.
 -- ------------------------------------------------------------------
 
-local generr_module
-local function ensure_error_h()
-    if not generr_module then
-        generr_module = dofile(SCRIPT_DIR .. "/tools/generr.lua")
-    end
-    local ok, err = pcall(generr_module.run, NT_ROOT, NTOS .. "/RTL/error.h")
-    if not ok then
-        io.stderr:write("GENERR: " .. tostring(err) .. "\n")
-        return false
-    end
-    return true
-end
+local codegen = require('ntosbe.codegen')
+codegen.configure{
+    nt_root  = NT_ROOT,
+    src_root = SCRIPT_DIR,
+}
 
--- ------------------------------------------------------------------
--- _ensure_bugcodes — bugcodes.rc / bugcodes.h are generated by mc.exe
--- from NLS/BUGCODES.MC.  ntoskrnl.rc #includes bugcodes.rc; many
--- public headers reference bugcodes.h.
--- ------------------------------------------------------------------
-
-local function ensure_bugcodes()
-    local nls = NTOS .. "/NLS"
-    if file_exists(nls .. "/bugcodes.rc")
-       and file_exists(NTOS .. "/INC/bugcodes.h")
-       and newer_than(nls .. "/bugcodes.rc", nls .. "/BUGCODES.MC") then
-        return true
-    end
-    log(">>> mc bugcodes.mc -> bugcodes.h/.rc")
-    if run_wibo_tool(nls, "mc", "BUGCODES.MC") ~= 0 then
-        log("!!! mc on BUGCODES.MC failed")
-        return false
-    end
-    -- mc.exe emits case-matching names on Windows; normalise for our
-    -- case-sensitive Linux FS.
-    copy_file(nls  .. "/BUGCODES.rc",  NTOS .. "/INIT/bugcodes.rc")
-    copy_file(nls  .. "/BUGCODES.h",   NTOS .. "/INC/bugcodes.h")
-    copy_file(nls  .. "/MSG00001.bin", NTOS .. "/INIT/msg00001.bin")
-    return true
-end
-
--- ------------------------------------------------------------------
--- _ensure_serlog — serial.sys's SERLOG.MC compiled to serlog.rc/.h
--- before the SERIAL build.
--- ------------------------------------------------------------------
-
-local function ensure_serlog()
-    local dir = NTOS .. "/DD/SERIAL"
-    if file_exists(dir .. "/serlog.rc")
-       and file_exists(dir .. "/serlog.h")
-       and newer_than(dir .. "/serlog.rc", dir .. "/SERLOG.MC") then
-        return true
-    end
-    log(">>> mc SERLOG.MC -> serlog.h/.rc")
-    if run_wibo_tool(dir, "mc", "SERLOG.MC") ~= 0 then
-        log("!!! mc on SERLOG.MC failed")
-        return false
-    end
-    if file_exists(dir .. "/SERLOG.rc") then copy_file(dir .. "/SERLOG.rc", dir .. "/serlog.rc") end
-    if file_exists(dir .. "/SERLOG.h")  then copy_file(dir .. "/SERLOG.h",  dir .. "/serlog.h")  end
-    return true
-end
+local ensure_error_h  = codegen.ensure_error_h
+local ensure_bugcodes = codegen.ensure_bugcodes
+local ensure_serlog   = codegen.ensure_serlog
 
 -- ------------------------------------------------------------------
 -- Targets — faithful translations of build.sh's per-component
@@ -916,6 +230,49 @@ nmake_target("vioinput",   NTOS .. "/DD/VIOINPUT",   "VIOINPUT - virtio-input ke
 nmake_target("cowtest", NT_ROOT .. "/PRIVATE/TESTS/cowtest",
              "COWTEST - COW test program",
              { keep_umappl = true })
+
+-- ----- WINDOWS / BASE / CLIENT — kernel32.dll (the only Win32 lib) -----
+-- Lifted from NT 3.5 source under src/NT/PRIVATE/WINDOWS/.  Two
+-- static-lib dependencies (windows_base_rtl, windows_winnls) are
+-- exposed for granular debug rebuilds; the operator-facing entry is
+-- windows_base_client which chains them in order.  No new group;
+-- windows_base_client joins USERLAND_TARGETS so `build.lua all`
+-- includes it.
+--
+-- Output paths:
+--   windows_base_rtl    → BASE/obj/i386/baselib.lib
+--   windows_winnls      → WINDOWS/obj/i386/nlslib.lib
+--   windows_base_client → PUBLIC/SDK/LIB/i386/{kernel32.lib, kernel32.dll}
+--
+-- run_nmake auto-mkdirs only <linux_dir>/obj/i386, so the parent
+-- TARGETPATH dirs (..\obj relative to each leaf) need pre-creation.
+local WIN = NT_ROOT .. "/PRIVATE/WINDOWS"
+
+targets.windows_base_rtl = function()
+    mkdir_p(WIN .. "/BASE/obj/i386")
+    return run_nmake(WIN .. "/BASE/RTL",
+                     "WINDOWS/BASE/RTL - baselib (atoms + handles)")
+end
+clean_dirs.windows_base_rtl = { WIN .. "/BASE/RTL", WIN .. "/BASE/obj" }
+
+targets.windows_winnls = function()
+    mkdir_p(WIN .. "/obj/i386")
+    return run_nmake(WIN .. "/WINNLS",
+                     "WINDOWS/WINNLS - nlslib (codepage / locale)")
+end
+clean_dirs.windows_winnls = { WIN .. "/WINNLS", WIN .. "/obj" }
+
+targets.windows_base_client = function()
+    if targets.windows_base_rtl() ~= 0 then return 1 end
+    if targets.windows_winnls()   ~= 0 then return 1 end
+    return run_nmake(WIN .. "/BASE/CLIENT",
+                     "WINDOWS/BASE/CLIENT - kernel32.dll",
+                     { "makedll=1" })
+end
+clean_dirs.windows_base_client = {
+    WIN .. "/BASE/CLIENT", WIN .. "/BASE/RTL", WIN .. "/WINNLS",
+    WIN .. "/BASE/obj", WIN .. "/obj",
+}
 
 -- ----- SCSI subsystem -----
 -- class.lib → scsiport.sys → scsidisk.sys (linkage is in MAKEFILE.DEFs).
@@ -1077,7 +434,7 @@ targets.init = function()
         "UMTEST=", "UMAPPL=",
     }
     local envp = build_envp({ "MAKEDIR=" .. makedir_win })
-    local rc = spawn_wait(WIBO_BIN, strvec(argv), strvec(envp))
+    local rc = platform.spawn_wait{ argv = argv, env = envp, path = WIBO_BIN }
 
     if rc == 0 then
         log(">>> " .. desc .. ": OK")
@@ -1088,53 +445,7 @@ targets.init = function()
 end
 
 -- ----- GENI386 (struct offset generator → KS386.INC + HAL386.INC) -----
-targets.geni386 = function()
-    banner("GENI386 (struct offset generator)")
-
-    local geni_src     = NT_ROOT .. "/PRIVATE/NTOS/KE/I386/GENI386.C"
-    local geni_dir     = NTOS .. "/INIT/UP/obj/i386"
-    mkdir_p(geni_dir)
-    local geni_dir_win = path_to_win(geni_dir)
-
-    if not file_exists(geni_src) then
-        log("ERROR: GENI386.C not found")
-        return 1
-    end
-
-    local cl_args = {
-        "-nologo", "-c", "-Zp8", "-Gz", "-Di386=1", "-D_X86_=1", "-DNT_UP=1",
-        "-DSTD_CALL", "-DCONDITION_HANDLING=1", "-DWIN32_LEAN_AND_MEAN=1",
-        "-D_NTSYSTEM_", "-DDBG=0", "-DDEVL=1",
-        "-I" .. NT_ROOT_WIN .. "\\PRIVATE\\NTOS\\INC",
-        "-I" .. NT_ROOT_WIN .. "\\PRIVATE\\NTOS\\KE",
-        "-I" .. NT_ROOT_WIN .. "\\PRIVATE\\INC",
-        "-I" .. NT_ROOT_WIN .. "\\PUBLIC\\OAK\\INC",
-        "-I" .. NT_ROOT_WIN .. "\\PUBLIC\\SDK\\INC",
-        "-I" .. NT_ROOT_WIN .. "\\PUBLIC\\SDK\\INC\\CRT",
-        NT_ROOT_WIN .. "\\PRIVATE\\NTOS\\KE\\I386\\GENI386.C",
-        "-Fo" .. geni_dir_win .. "\\geni386.obj",
-    }
-    if run_wibo_tool(SCRIPT_DIR, "cl386", unpack(cl_args)) ~= 0 then return 1 end
-
-    local link_args = {
-        "-nologo", "-subsystem:console",
-        "-out:" .. geni_dir_win .. "\\geni386.exe",
-        geni_dir_win .. "\\geni386.obj",
-        NT_ROOT_WIN .. "\\PUBLIC\\SDK\\LIB\\I386\\LIBC.LIB",
-        NT_ROOT_WIN .. "\\PUBLIC\\SDK\\LIB\\I386\\KERNEL32.LIB",
-    }
-    if run_wibo_tool(SCRIPT_DIR, "link", unpack(link_args)) ~= 0 then return 1 end
-
-    -- The just-built geni386.exe lives outside wibo-tools; invoke by
-    -- absolute host path through wibo.
-    if wibo_spawn_args(SCRIPT_DIR, geni_dir .. "/geni386.exe", {
-        NT_ROOT_WIN .. "\\PUBLIC\\SDK\\INC\\KS386.INC",
-        NT_ROOT_WIN .. "\\PRIVATE\\NTOS\\INC\\HAL386.INC",
-    }) ~= 0 then return 1 end
-
-    log(">>> GENI386: KS386.INC and HAL386.INC regenerated")
-    return 0
-end
+targets.geni386 = codegen.geni386
 
 -- ----- LINK.EXE rebuild from source ---------------------------------
 targets.link = function()
@@ -1191,7 +502,7 @@ targets.cmdstub = function()
         NT_ROOT_WIN .. "\\PUBLIC\\SDK\\LIB\\I386\\libc.lib",
         NT_ROOT_WIN .. "\\PUBLIC\\SDK\\LIB\\I386\\kernel32.lib",
     }
-    local rc = spawn_wait(WIBO_BIN, strvec(argv), strvec(env))
+    local rc = platform.spawn_wait{ argv = argv, env = env, path = WIBO_BIN }
     if rc ~= 0 then
         log(">>> cmd-stub: FAILED")
         return rc
@@ -1214,12 +525,20 @@ targets.mc = function()
     banner("MC - message compiler (patched for wibo)")
     mkdir_p(obj_dir)
 
+    -- MC's source is NOT TCHAR-clean: MCUTIL.C:216 calls
+    --     LoadLibrary( "ADVAPI32.DLL" )
+    -- with an ANSI string literal.  With -DUNICODE the LoadLibrary
+    -- macro expands to LoadLibraryW, which then receives 12 ANSI
+    -- bytes cast as LPCWSTR — wcslen reads it as 6 garbage wchars
+    -- and the loader fails with the well-known ?????? trace.
+    -- Original NT 3.5 SOURCES file has no UNICODE define; we follow
+    -- suit so the macro expands to LoadLibraryA (which our kernel32
+    -- then widens through Basep8BitStringToUnicodeString → ACP).
     local cflags = {
         "-nologo", "-c",
         "-I", ".",
         "-D_X86_=1", "-Di386=1", "-DWIN32_LEAN_AND_MEAN=1", "-DWIN32=100",
         "-DCOMMAND=1", "-DENABLE_NLS=0",
-        "-DUNICODE", "-D_UNICODE",
         "-DSTD_CALL", "-DCONDITION_HANDLING=1",
         "-DDBG=0", "-DDEVL=1",
     }
@@ -1333,7 +652,7 @@ local DRIVER_TARGETS = {
 }
 
 local USERLAND_TARGETS = {
-    "rtl_user", "ntdll", "urtl",
+    "rtl_user", "ntdll", "urtl", "windows_base_client",
 }
 
 local function build_group(name, list)
@@ -1404,14 +723,61 @@ local CLEAN_GROUPS = {
 
 local function rmrf(path)
     if not file_exists(path) then return end
-    local rc = spawn_wait("/bin/rm",
-                          strvec({ "rm", "-rf", path }),
-                          strvec(current_env()))
-    if rc ~= 0 then
-        io.stderr:write("rm -rf " .. path .. " failed (rc=" .. rc .. ")\n")
-    else
+    if platform.rmrf(path) then
         log("  cleaned " .. path:gsub(SCRIPT_DIR .. "/", ""))
+    else
+        io.stderr:write("rmrf " .. path .. " failed\n")
     end
+end
+
+-- Glob → Lua pattern.  Supports `*`, `?`, character classes `[...]`
+-- (incl. ranges).  Used by the clean machinery to scan for nmake / rc
+-- temp files and MIDL-generated stubs without shelling out to find.
+local function glob_to_pattern(glob)
+    local out = "^"
+    local i = 1
+    while i <= #glob do
+        local c = glob:sub(i, i)
+        if c == "*" then
+            out = out .. ".*"
+        elseif c == "?" then
+            out = out .. "."
+        elseif c == "[" then
+            local j = glob:find("%]", i + 1)
+            if not j then
+                error("glob_to_pattern: unterminated [ in " .. glob)
+            end
+            out = out .. glob:sub(i, j)
+            i = j
+        elseif c:match("[%-%.%%%+%(%)%^%$]") then
+            out = out .. "%" .. c
+        else
+            out = out .. c
+        end
+        i = i + 1
+    end
+    return out .. "$"
+end
+
+-- Recursive name-matched walk.  `find -maxdepth N -name <pattern>`
+-- without shelling out: walks the tree to depth `max_depth`, calls
+-- `on_match(abs_path, is_dir)` for every entry whose basename matches
+-- the Lua `pattern`.  Used by clean for both directory removals
+-- (obj/) and file deletions (RC/MIDL temp files).
+local function find_named(root, max_depth, pattern, on_match)
+    local function visit(path, depth)
+        for _, name in ipairs(platform.list_dir(path)) do
+            local sub = path .. "/" .. name
+            local is_dir = platform.is_dir(sub)
+            if name:match(pattern) then
+                on_match(sub, is_dir)
+            end
+            if is_dir and depth < max_depth then
+                visit(sub, depth + 1)
+            end
+        end
+    end
+    if platform.is_dir(root) then visit(root, 1) end
 end
 
 -- Per-component clean: blow away obj/ under each registered source dir.
@@ -1422,15 +788,17 @@ local function clean_one(name)
     -- Special cases that delegate to peer Makefiles.
     if name == "cr" then
         log("Cleaning cr/ ...")
-        return spawn_wait("/usr/bin/make",
-                          strvec({ "make", "-C", SCRIPT_DIR .. "/cr", "clean" }),
-                          strvec(current_env()))
+        return platform.spawn_wait{
+            argv = { "make", "-C", SCRIPT_DIR .. "/cr", "clean" },
+            search_path = true,
+        }
     end
     if name == "efi" then
         log("Cleaning boot-efi/ ...")
-        return spawn_wait("/usr/bin/make",
-                          strvec({ "make", "-C", SCRIPT_DIR .. "/boot-efi", "clean" }),
-                          strvec(current_env()))
+        return platform.spawn_wait{
+            argv = { "make", "-C", SCRIPT_DIR .. "/boot-efi", "clean" },
+            search_path = true,
+        }
     end
     if name == "disk" then
         log("Cleaning build/disk/ ...")
@@ -1466,16 +834,16 @@ targets.clean = function()
     log("# Full clean")
     log("########################################")
 
-    -- Every per-component obj/ tree under NT/PRIVATE.  Use find since
+    -- Every per-component obj/ tree under NT/PRIVATE.  Walk natively;
     -- the set of source dirs grew faster than any hand-maintained list
-    -- (the original clean.sh's note).
+    -- (the original clean.sh's note).  Collect first, delete after, so
+    -- removals don't perturb readdir.
     local nt_priv = NT_ROOT .. "/PRIVATE"
-    local p = io.popen(string.format(
-        "find %q -maxdepth 10 -type d -name obj 2>/dev/null", nt_priv))
-    if p then
-        for d in p:lines() do rmrf(d) end
-        p:close()
-    end
+    local obj_dirs = {}
+    find_named(nt_priv, 10, "^obj$", function(p, is_dir)
+        if is_dir then obj_dirs[#obj_dirs + 1] = p end
+    end)
+    for _, d in ipairs(obj_dirs) do rmrf(d) end
 
     -- Aggregated TARGETPATH dirs (component .lib files land here).
     rmrf(NTOS .. "/obj")
@@ -1486,14 +854,17 @@ targets.clean = function()
 
     -- nmake / rc temp files.  rc.exe leaves R[CD]<letter><5digits>; nmake
     -- leaves nm<pid>.  Both have no other meaning so blanket-remove.
-    spawn_wait("/usr/bin/find", strvec({
-        "find", nt_priv, "-maxdepth", "10",
-        "-name", "R[CD][a-z][0-9][0-9][0-9][0-9][0-9]", "-delete",
-    }), strvec(current_env()))
-    spawn_wait("/usr/bin/find", strvec({
-        "find", nt_priv, "-maxdepth", "10",
-        "-name", "nm[0-9]*", "-delete",
-    }), strvec(current_env()))
+    local temp_files = {}
+    find_named(nt_priv, 10,
+               glob_to_pattern("R[CD][a-z][0-9][0-9][0-9][0-9][0-9]"),
+               function(p, is_dir)
+                   if not is_dir then temp_files[#temp_files + 1] = p end
+               end)
+    find_named(nt_priv, 10, glob_to_pattern("nm[0-9]*"),
+               function(p, is_dir)
+                   if not is_dir then temp_files[#temp_files + 1] = p end
+               end)
+    for _, p in ipairs(temp_files) do platform.unlink(p) end
 
     -- Generated headers / message resources (rebuilt on demand).
     os.remove(NT_ROOT .. "/PRIVATE/WINDOWS/GDI/INC/GDII386.INC")
@@ -1516,10 +887,12 @@ targets.clean = function()
         "PRIVATE/NEWSAM",
     }) do
         for _, pat in ipairs({ "*_c.c", "*_s.c", "*rpc.h", "*rpc_c.h" }) do
-            spawn_wait("/usr/bin/find", strvec({
-                "find", NT_ROOT .. "/" .. d, "-maxdepth", "2",
-                "-name", pat, "-delete",
-            }), strvec(current_env()))
+            local matches = {}
+            find_named(NT_ROOT .. "/" .. d, 2, glob_to_pattern(pat),
+                       function(p, is_dir)
+                           if not is_dir then matches[#matches + 1] = p end
+                       end)
+            for _, p in ipairs(matches) do platform.unlink(p) end
         end
     end
 
@@ -1591,10 +964,6 @@ targets.clean = function()
     return 0
 end
 
--- No targets are deferred any more; the table-based "not yet ported"
--- block was retired once this file reached parity with build.sh.
-local NOT_YET_PORTED = {}
-
 -- ------------------------------------------------------------------
 -- Self-bootstrap of cmd-stub before any wibo invocation that touches
 -- COMSPEC.  Same idempotent guard as build.sh.
@@ -1641,10 +1010,7 @@ end
 local positional = {}
 for _, a in ipairs(arg) do
     if a == "--debug" then
-        -- LuaJIT 2.1 doesn't expose setenv on every libc; use os.execute-
-        -- free FFI binding.  We declare it on demand here.
-        ffi.cdef[[ int setenv(const char *, const char *, int); ]]
-        ffi.C.setenv("WIBO_DEBUG", "1", 1)
+        platform.setenv("WIBO_DEBUG", "1")
     elseif a:sub(1, 2) == "--" then
         io.stderr:write("Unknown flag: " .. a .. "\n")
         os.exit(1)

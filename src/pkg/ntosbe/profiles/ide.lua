@@ -259,23 +259,36 @@ end
 -- The SYSTEM hive bytes are added separately by the orchestrator (it
 -- holds the bytes in memory rather than a file).
 --
--- Only the three NLS tables RtlInitNlsTables consumes (ANSI codepage,
--- OEM codepage, Unicode upcase) — kernel + ntdll case-fold via these.
--- UNICODE/LOCALE/CTYPE/SORTKEY/SORTTBLS were Win32-only (kernel32 NLS
--- APIs) and are dropped with the rest of the subsystem.
+-- Eight tables ship from WINDOWS/WINNLS/DATA/ (canonical NT 3.5
+-- location).  C_1252 / C_437 / L_INTL feed RtlInitNlsTables for the
+-- kernel + ntdll case-fold path.  UNICODE / LOCALE / CTYPE / SORTKEY /
+-- SORTTBLS back the \NLS\NlsSection<X> named-section namespace
+-- published at boot by nt.nls (replacing basesrv's role from stock
+-- NT) so unmodified nlslib (kernel32's NLS half) opens them by name
+-- from any process.  Sortkey/Sorttbls are static read-only weight
+-- tables, same shape as the others — locale-with-exceptions builds a
+-- separate RW per-locale section via basesrv (unhandled in MicroNT,
+-- only matters for non-default locales like cs-CZ that need bespoke
+-- collation rules).
 -- ----------------------------------------------------------------
 
 function M.disk_files(paths, list_tree)
-    local nls = paths.nt .. "/PRIVATE/NLS"
+    local nls = paths.nt .. "/PRIVATE/WINDOWS/WINNLS/DATA"
     local files = {
         { dest = "System32/ntoskrnl.exe",
           src  = paths.obj("NTOS/INIT/UP") .. "/ntoskrnl.exe" },
         { dest = "System32/hal.dll",
           src  = paths.obj("NTOS/NTHALS/HAL") .. "/hal.dll" },
-        { dest = "System32/c_1252.nls", src = nls .. "/C_1252.NLS" },
-        { dest = "System32/c_437.nls",  src = nls .. "/C_437.NLS" },
-        { dest = "System32/l_intl.nls", src = nls .. "/L_INTL.NLS" },
-        { dest = "System32/ntdll.dll",  src = paths.sdk_lib .. "/ntdll.dll" },
+        { dest = "System32/c_1252.nls",   src = nls .. "/C_1252.NLS"   },
+        { dest = "System32/c_437.nls",    src = nls .. "/C_437.NLS"    },
+        { dest = "System32/l_intl.nls",   src = nls .. "/L_INTL.NLS"   },
+        { dest = "System32/unicode.nls",  src = nls .. "/UNICODE.NLS"  },
+        { dest = "System32/locale.nls",   src = nls .. "/LOCALE.NLS"   },
+        { dest = "System32/ctype.nls",    src = nls .. "/CTYPE.NLS"    },
+        { dest = "System32/sortkey.nls",  src = nls .. "/SORTKEY.NLS"  },
+        { dest = "System32/sorttbls.nls", src = nls .. "/SORTTBLS.NLS" },
+        { dest = "System32/ntdll.dll",   src = paths.sdk_lib .. "/ntdll.dll"    },
+        { dest = "System32/kernel32.dll", src = paths.sdk_lib .. "/kernel32.dll" },
 
         -- Storage / FS / COM.
         { dest = "System32/Drivers/atdisk.sys",   src = paths.sdk_lib .. "/atdisk.sys" },
@@ -319,6 +332,50 @@ function M.disk_files(paths, list_tree)
         { dest = "lua/run.exe",      src = paths.cr_dir .. "/run.exe" },
         { dest = "System32/lua.dll", src = paths.cr_dir .. "/lua.dll" },
     }
+
+    -- ----------------------------------------------------------------
+    -- MSVC NT 3.5 toolchain — staged under \SystemRoot\pkg\msvc20\.
+    -- pkg/ is the convention for optional bundles; toolchain isn't
+    -- part of the OS surface.  Loader still finds kernel32.dll /
+    -- ntdll.dll via System32 (standard NT search order), so toolchain
+    -- EXEs don't need to be on the loader path.
+    --
+    -- Initial set targets the test ladder:
+    --   ML.EXE, MC.EXE                — kernel32-only, no CRT
+    --   CVTRES.EXE                    — CRTDLL only (transitive test)
+    --   RC.EXE + RCDLL + RCPP         — kernel32 + RCDLL chain
+    --   LINK.EXE                      — kernel32 + CRTDLL + IMAGEHLP
+    --   CL chain (CL/CL386/C1/C1XX/C2)— full driver, MSVCRT20 + DBI
+    --
+    -- LIB.EXE / NMAKE.EXE / midl* deferred until they're on the
+    -- ladder.  CRTDLL.DLL / IMAGEHLP.DLL not in OAK/BIN — staged
+    -- below from PUBLIC/SDK/LIB if needed by LINK rung.
+    -- ----------------------------------------------------------------
+    local msvc = paths.nt .. "/PUBLIC/OAK/BIN/I386"
+    local msvc_files = {
+        { dest = "pkg/msvc20/ML.EXE",       src = msvc .. "/ML.EXE"       },
+        { dest = "pkg/msvc20/ML.ERR",       src = msvc .. "/ML.ERR"       },
+        { dest = "pkg/msvc20/MC.EXE",       src = msvc .. "/MC.EXE"       },
+        { dest = "pkg/msvc20/CVTRES.EXE",   src = msvc .. "/CVTRES.EXE"   },
+        { dest = "pkg/msvc20/cvtres.err",   src = msvc .. "/cvtres.err"   },
+        { dest = "pkg/msvc20/RC.EXE",       src = msvc .. "/RC.EXE"       },
+        { dest = "pkg/msvc20/RCDLL.DLL",    src = msvc .. "/RCDLL.DLL"    },
+        { dest = "pkg/msvc20/RCPP.EXE",     src = msvc .. "/RCPP.EXE"     },
+        { dest = "pkg/msvc20/RCPP.ERR",     src = msvc .. "/RCPP.ERR"     },
+        { dest = "pkg/msvc20/LINK.EXE",     src = msvc .. "/LINK.EXE"     },
+        { dest = "pkg/msvc20/LINK.ERR",     src = msvc .. "/LINK.ERR"     },
+        { dest = "pkg/msvc20/CL.EXE",       src = msvc .. "/CL.EXE"       },
+        { dest = "pkg/msvc20/CL386.EXE",    src = msvc .. "/CL386.EXE"    },
+        { dest = "pkg/msvc20/CL.ERR",       src = msvc .. "/CL.ERR"       },
+        { dest = "pkg/msvc20/C1.EXE",       src = msvc .. "/C1.EXE"       },
+        { dest = "pkg/msvc20/C1.ERR",       src = msvc .. "/C1.ERR"       },
+        { dest = "pkg/msvc20/C1XX.EXE",     src = msvc .. "/C1XX.EXE"     },
+        { dest = "pkg/msvc20/C2.EXE",       src = msvc .. "/C2.EXE"       },
+        { dest = "pkg/msvc20/CL32.MSG",     src = msvc .. "/CL32.MSG"     },
+        { dest = "pkg/msvc20/MSVCRT20.DLL", src = msvc .. "/MSVCRT20.DLL" },
+        { dest = "pkg/msvc20/DBI.DLL",      src = msvc .. "/DBI.DLL"      },
+    }
+    for _, e in ipairs(msvc_files) do files[#files + 1] = e end
 
     -- pkg/ tree: stage every file under src/pkg/ at \SystemRoot\lua\<rel>.
     -- The Lua application sets package.path = "\SystemRoot\lua\?.lua;..."

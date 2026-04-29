@@ -1124,6 +1124,50 @@ function M.disable_all_privileges(tok)
     if err.is_error(st) then err.raise('NtAdjustPrivilegesToken', st) end
 end
 
+-- Run `fn` with `names` enabled on a fresh process-token handle, then
+-- restore the exact prior privilege state and close the token. Errors
+-- from fn propagate unchanged — wrapped NTSTATUS messages from err.raise
+-- arrive at the caller verbatim. Cleanup runs in a finally guard so a
+-- mid-fn kernel error doesn't leak the token or leave the privilege
+-- enabled.
+--
+-- `prev` from adjust_privileges{save_previous=true} is a list of decoded
+-- records (name + luid + attributes). To restore, hand each back to
+-- adjust_privileges with the raw `attributes` int — that's the textbook
+-- save/restore round-trip and beats a blanket disable, which would
+-- clobber privileges that were already enabled by someone else.
+function M.with_privileges(names, fn)
+    local tok = M.open_process_token{
+        access = M.TOKEN_QUERY + M.TOKEN_ADJUST_PRIVILEGES,
+    }
+    local enable_list = {}
+    for i, n in ipairs(names) do
+        enable_list[i] = { name = n, state = 'enable' }
+    end
+    local prev = M.adjust_privileges(tok, enable_list,
+                                     { save_previous = true })
+
+    local ok, ret = pcall(fn)
+
+    -- Restore. Each prev entry already carries luid_low/luid_high and
+    -- the original attributes; build_token_privileges accepts that
+    -- shape via the numeric `attributes` branch.
+    if prev and #prev > 0 then
+        local restore = {}
+        for i, r in ipairs(prev) do
+            restore[i] = {
+                luid       = { low = r.luid_low, high = r.luid_high },
+                attributes = r.attributes,
+            }
+        end
+        pcall(M.adjust_privileges, tok, restore)
+    end
+    tok:close()
+
+    if not ok then error(ret, 0) end
+    return ret
+end
+
 -- ------------------------------------------------------------------
 -- Group ops (NtAdjustGroupsToken).
 --

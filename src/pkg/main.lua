@@ -18,6 +18,19 @@ package.cpath = ""
 
 local tree  = require('nt.tree')
 
+-- Publish the \NLS\ named-section namespace before anything else runs.
+-- A future kernel32.dll port runs unmodified MS nlslib, which does
+-- NtOpenSection on \NLS\NlsSection<X> at DllMain time — those names
+-- have to exist already. nt.nls replicates basesrv's publishing role
+-- (we have no csrss); SeCreatePermanentPrivilege is required so the
+-- created sections persist past this process's exit via OBJ_PERMANENT.
+do
+    local nls = require('nt.nls')
+    local se  = require('nt.dll.se')
+    se.with_privileges({"SeCreatePermanentPrivilege"}, nls.publish)
+    print("\\NLS\\ populated, nlslib-based kernel32 ready")
+end
+
 -- Shutdown via nt.dll.sys.NtShutdownSystem; privilege management via
 -- nt.dll.se. Loaded lazily near the actual call site so the namespace-
 -- walk above doesn't pay for them.

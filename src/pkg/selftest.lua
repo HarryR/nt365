@@ -20,6 +20,15 @@ local sys = require('nt.dll.sys')
 print("MicroNT selftest")
 print("================")
 
+-- Boot prelude: publish \NLS\ named-section namespace so the nls suite
+-- (and any future kernel32-using test) sees it the same way main.lua
+-- consumers would. Idempotent — re-publishing under OBJ_OPENIF is a
+-- kernel-side no-op.
+do
+    local nls = require('nt.nls')
+    se.with_privileges({"SeCreatePermanentPrivilege"}, nls.publish)
+end
+
 -- Suite order doesn't matter — each suite is self-contained — but
 -- grouping shallow modules first makes debug easier when things
 -- explode early.
@@ -39,6 +48,8 @@ require('test.os')
 require('test.afd')
 require('test.sysenter')
 require('test.se')
+require('test.nls')
+require('test.msvc')
 
 local ok = t.summary()
 print("")

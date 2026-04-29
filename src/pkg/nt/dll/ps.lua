@@ -31,6 +31,9 @@ local ffi    = require('ffi')
 local ntdll  = require('nt.dll')
 local err    = require('nt.dll.errors')
 local handle = require('nt.dll.handle')
+local layout = require('nt.dll.layout')
+local oa     = require('nt.dll.oa')
+local str    = require('nt.dll.str')
 
 ffi.cdef[[
 #pragma pack(push, 4)
@@ -112,7 +115,156 @@ NTSTATUS __stdcall RtlCreateUserThread(
     void *Parameter,
     HANDLE *Thread,
     CLIENT_ID *ClientId);
+
+/* Process spawn — RtlCreateUserProcess wraps the section + NtCreateProcess
+ * + initial-thread setup ladder.  Caller passes an already-built
+ * RTL_USER_PROCESS_PARAMETERS block (built by RtlCreateProcessParameters).
+ * The block layout has CURDIR / RTL_DRIVE_LETTER_CURDIR / STRING fields we
+ * don't need to expose, but we DO need to poke std-handle fields after
+ * the create-params call (RtlCreateProcessParameters copies them from the
+ * caller's PEB; we then mark them inheritable so the kernel-side process
+ * create dups them into the child's handle table).  Layout up through
+ * StandardError is enough — anything past that we treat as opaque. */
+typedef struct _RTL_USER_PROCESS_PARAMETERS_HEADER {
+    ULONG  MaximumLength;
+    ULONG  Length;
+    ULONG  Flags;
+    ULONG  DebugFlags;
+    HANDLE ConsoleHandle;
+    ULONG  ConsoleFlags;
+    HANDLE StandardInput;
+    HANDLE StandardOutput;
+    HANDLE StandardError;
+    /* CURDIR / DllPath / ImagePathName / ... follow but we don't expose. */
+} RTL_USER_PROCESS_PARAMETERS_HEADER;
+
+/* Opaque full-struct alias for the ntdll API surface — callers pass
+ * pointers, never deref directly (use the _HEADER cast above). */
+typedef struct _RTL_USER_PROCESS_PARAMETERS RTL_USER_PROCESS_PARAMETERS;
+
+typedef struct _OBJECT_HANDLE_FLAG_INFORMATION {
+    unsigned char Inherit;
+    unsigned char ProtectFromClose;
+} OBJECT_HANDLE_FLAG_INFORMATION;
+
+NTSTATUS __stdcall NtSetInformationObject(
+    HANDLE Handle,
+    int    ObjectInformationClass,
+    void  *ObjectInformation,
+    ULONG  ObjectInformationLength);
+
+typedef struct _SECTION_IMAGE_INFORMATION {
+    PVOID  TransferAddress;
+    ULONG  ZeroBits;
+    ULONG  MaximumStackSize;
+    ULONG  CommittedStackSize;
+    ULONG  SubSystemType;
+    USHORT SubSystemMinorVersion;
+    USHORT SubSystemMajorVersion;
+    ULONG  GpValue;
+    USHORT ImageCharacteristics;
+    USHORT DllCharacteristics;
+    USHORT Machine;
+    unsigned char ImageContainsCode;
+    unsigned char Spare1;
+    ULONG  LoaderFlags;
+    ULONG  Reserved[2];
+} SECTION_IMAGE_INFORMATION;
+
+typedef struct _RTL_USER_PROCESS_INFORMATION {
+    ULONG     Length;
+    HANDLE    Process;
+    HANDLE    Thread;
+    CLIENT_ID ClientId;
+    SECTION_IMAGE_INFORMATION ImageInformation;
+} RTL_USER_PROCESS_INFORMATION;
+
+NTSTATUS __stdcall RtlCreateProcessParameters(
+    RTL_USER_PROCESS_PARAMETERS **ProcessParameters,
+    UNICODE_STRING *ImagePathName,
+    UNICODE_STRING *DllPath,
+    UNICODE_STRING *CurrentDirectory,
+    UNICODE_STRING *CommandLine,
+    PVOID Environment,
+    UNICODE_STRING *WindowTitle,
+    UNICODE_STRING *DesktopInfo,
+    UNICODE_STRING *ShellInfo,
+    UNICODE_STRING *RuntimeData);
+
+NTSTATUS __stdcall RtlDestroyProcessParameters(
+    RTL_USER_PROCESS_PARAMETERS *ProcessParameters);
+
+NTSTATUS __stdcall RtlCreateUserProcess(
+    UNICODE_STRING *NtImagePathName,
+    ULONG Attributes,
+    RTL_USER_PROCESS_PARAMETERS *ProcessParameters,
+    PVOID ProcessSecurityDescriptor,
+    PVOID ThreadSecurityDescriptor,
+    HANDLE ParentProcess,
+    unsigned char InheritHandles,
+    HANDLE DebugPort,
+    HANDLE ExceptionPort,
+    RTL_USER_PROCESS_INFORMATION *ProcessInformation);
+
+/* NtQueryInformationProcess(ProcessBasicInformation = 0). The PROCESS_BASIC_INFORMATION
+ * fields are: ExitStatus, PebBaseAddress, AffinityMask, BasePriority,
+ * UniqueProcessId, InheritedFromUniqueProcessId. */
+typedef struct _PROCESS_BASIC_INFORMATION {
+    NTSTATUS ExitStatus;
+    PVOID    PebBaseAddress;
+    ULONG    AffinityMask;
+    long     BasePriority;
+    ULONG    UniqueProcessId;
+    ULONG    InheritedFromUniqueProcessId;
+} PROCESS_BASIC_INFORMATION;
+
+NTSTATUS __stdcall NtQueryInformationProcess(
+    HANDLE ProcessHandle,
+    int    ProcessInformationClass,
+    void  *ProcessInformation,
+    ULONG  ProcessInformationLength,
+    ULONG *ReturnLength);
 ]]
+
+-- NT 3.5 OS structs use #pragma pack(2): the leading BOOLEAN
+-- (UCHAR-sized) is followed by a HANDLE that lands at offset 2, not
+-- 4.  Without pack(2), reading PEB.ProcessParameters at the natural
+-- offset (0x10) gets the upper half of the pointer plus the low half
+-- of SubSystemData — silent garbage.  Layout self-check below catches
+-- any future drift.
+ffi.cdef[[
+#pragma pack(push, 2)
+typedef struct _PEB_HEAD {
+    UCHAR  InheritedAddressSpace;
+    HANDLE Mutant;
+    PVOID  ImageBaseAddress;
+    PVOID  Ldr;
+    void  *ProcessParameters;
+} PEB_HEAD;
+#pragma pack(pop)
+]]
+
+layout.check_offsets {
+    PEB_HEAD = {
+        InheritedAddressSpace = 0x00,
+        Mutant                = 0x02,
+        ImageBaseAddress      = 0x06,
+        Ldr                   = 0x0A,
+        ProcessParameters     = 0x0E,
+    },
+    -- All-4-byte fields, natural alignment matches pack(2), but we
+    -- still assert in case a future cdef tweak shifts something.
+    RTL_USER_PROCESS_PARAMETERS_HEADER = {
+        StandardInput  = 0x18,
+        StandardOutput = 0x1C,
+        StandardError  = 0x20,
+    },
+    PROCESS_BASIC_INFORMATION = {
+        ExitStatus     = 0x00,
+        PebBaseAddress = 0x04,
+        _size          = 24,
+    },
+}
 
 local M = {}
 
@@ -250,6 +402,223 @@ function M.NtResumeThread(h)
     local st = ntdll.NtResumeThread(handle.raw(h), prev)
     if err.is_error(st) then err.raise('NtResumeThread', st) end
     return prev[0]
+end
+
+-- ------------------------------------------------------------------
+-- Process spawn (RtlCreateUserProcess)
+-- ------------------------------------------------------------------
+--
+-- Higher-level spawn: image_path + command_line in UTF-8 → handles
+-- to a new process whose initial thread is created suspended.  Caller
+-- must NtResumeThread to start it running, then NtWaitForSingleObject
+-- on the process handle to wait for exit.
+--
+-- Std handles + environment + DllPath inherit from the calling process
+-- by default.  Explicit overrides via opts will land here when we need
+-- pipe-based stdio capture; for the smoke-test pass we just inherit.
+--
+-- The RTL_USER_PROCESS_PARAMETERS block built by RtlCreateProcessParameters
+-- is callee-allocated; we have to pair every successful create with a
+-- matching RtlDestroyProcessParameters or leak heap.  pcall the
+-- second call so a mid-flight error in CreateUser doesn't strand it.
+
+local str = require('nt.dll.str')
+
+-- ------------------------------------------------------------------
+-- OBJECT_INFORMATION_CLASS values used here.  Promote to module-level
+-- exports if a second consumer arrives.
+-- ------------------------------------------------------------------
+local ObjectHandleFlagInformation = 4
+
+-- Mark a raw HANDLE inheritable so InheritHandles=TRUE on the
+-- subsequent RtlCreateUserProcess actually duplicates it into the
+-- child's handle table.  Tolerates failure (some pseudo-handles
+-- like INVALID_HANDLE_VALUE / -1 reject the call) — best-effort.
+local function mark_inheritable(raw_handle)
+    if raw_handle == nil then return end
+    local hi = ffi.new('OBJECT_HANDLE_FLAG_INFORMATION')
+    hi.Inherit          = 1
+    hi.ProtectFromClose = 0
+    ntdll.NtSetInformationObject(
+        raw_handle, ObjectHandleFlagInformation,
+        hi, ffi.sizeof('OBJECT_HANDLE_FLAG_INFORMATION'))
+end
+
+-- Read NtCurrentPeb()->ProcessParameters->Standard{Input,Output,Error}
+-- as raw HANDLEs.  Internal use — defaulted into spawn's params block.
+-- NT 3.5's RtlCreateProcessParameters does NOT auto-copy stdio (it
+-- copies DllPath / CurrentDirectory / Environment / CommandLine, but
+-- leaves stdio fields zero), and RtlCreateUserProcess's dup loop
+-- (RTLEXEC.C:949-995) only dups when those fields are non-zero — so
+-- if we want stdio inheritance we must fill them ourselves.
+local function read_parent_stdio_raw()
+    local pbi = ffi.new('PROCESS_BASIC_INFORMATION')
+    local ret = ffi.new('ULONG[1]')
+    local st = ntdll.NtQueryInformationProcess(
+        CURRENT_PROCESS, M.ProcessBasicInformation, pbi,
+        ffi.sizeof('PROCESS_BASIC_INFORMATION'), ret)
+    if err.is_error(st) then
+        err.raise('NtQueryInformationProcess(self)', st)
+    end
+    local peb = ffi.cast('PEB_HEAD *', pbi.PebBaseAddress)
+    local pp  = ffi.cast('RTL_USER_PROCESS_PARAMETERS_HEADER *',
+                         peb.ProcessParameters)
+    if pp == nil then return nil, nil, nil end
+    return pp.StandardInput, pp.StandardOutput, pp.StandardError
+end
+
+-- Public: parent's stdio as borrowed NT_HANDLEs.  :close() and __gc
+-- are no-ops on borrowed handles — we don't own these, the parent
+-- (boot-efi loader → init process) does.  Useful for diagnostics
+-- and any caller wanting symmetric NT_HANDLE handling.
+function M.parent_stdio()
+    local raw_in, raw_out, raw_err = read_parent_stdio_raw()
+    return handle.borrow(raw_in),
+           handle.borrow(raw_out),
+           handle.borrow(raw_err)
+end
+
+-- ------------------------------------------------------------------
+-- RtlCreateUserProcess — low-level wrapper.  Mirrors the NT API
+-- one-to-one but with Lua-friendly defaults: parent's stdio is
+-- copied into the params block (overridable), CommandLine is never
+-- inherited from parent (always derived from explicit arg or
+-- image_path), DllPath / CurrentDirectory / Environment fall back
+-- to ntdll's "copy from parent's PEB" defaults.
+--
+-- For most callers, use the higher-level `spawn` instead.  This
+-- function exists so tests can exercise the raw shape of the
+-- ntdll API without ps.spawn's defaulting in the way.
+-- ------------------------------------------------------------------
+function M.RtlCreateUserProcess(image_path, command_line, opts)
+    opts = opts or {}
+    local ipath = str.to_utf16(image_path)
+    -- CommandLine is *never* defaulted from parent's PEB — would leak
+    -- our parent's argv into the child.  Always explicit-or-image_path.
+    local cline = str.to_utf16(command_line or image_path)
+
+    local pp_out = ffi.new('RTL_USER_PROCESS_PARAMETERS *[1]')
+    local st = ntdll.RtlCreateProcessParameters(
+        pp_out,
+        ipath.us,           -- ImagePathName
+        nil,                -- DllPath          (nil → ntdll default)
+        nil,                -- CurrentDirectory (nil → parent's PEB)
+        cline.us,           -- CommandLine
+        nil,                -- Environment      (nil → parent's PEB)
+        nil, nil, nil, nil) -- WindowTitle / Desktop / Shell / Runtime
+    if err.is_error(st) then err.raise('RtlCreateProcessParameters', st) end
+
+    -- finally-guard: whatever happens between here and the destroy
+    -- call, RtlDestroyProcessParameters runs.  Mirrors the
+    -- se.with_privileges pattern.
+    local ok, ret = pcall(function()
+        local p_in, p_out, p_err = read_parent_stdio_raw()
+        local hdr = ffi.cast('RTL_USER_PROCESS_PARAMETERS_HEADER *', pp_out[0])
+        hdr.StandardInput  = opts.stdin  and handle.raw(opts.stdin)  or p_in
+        hdr.StandardOutput = opts.stdout and handle.raw(opts.stdout) or p_out
+        hdr.StandardError  = opts.stderr and handle.raw(opts.stderr) or p_err
+        mark_inheritable(hdr.StandardInput)
+        mark_inheritable(hdr.StandardOutput)
+        mark_inheritable(hdr.StandardError)
+
+        local info = ffi.new('RTL_USER_PROCESS_INFORMATION')
+        info.Length = ffi.sizeof('RTL_USER_PROCESS_INFORMATION')
+
+        local inherit = opts.inherit_handles ~= false   -- default true
+        local create_st = ntdll.RtlCreateUserProcess(
+            ipath.us,
+            oa.OBJ_CASE_INSENSITIVE,
+            pp_out[0],
+            nil,                          -- ProcessSecurityDescriptor
+            nil,                          -- ThreadSecurityDescriptor
+            CURRENT_PROCESS,              -- ParentProcess (self pseudo-handle)
+            inherit and 1 or 0,
+            nil,                          -- DebugPort
+            nil,                          -- ExceptionPort
+            info)
+        if err.is_error(create_st) then
+            err.raise('RtlCreateUserProcess', create_st)
+        end
+
+        return {
+            process = handle.wrap(info.Process),
+            thread  = handle.wrap(info.Thread),
+            pid     = tonumber(ffi.cast('intptr_t', info.ClientId.UniqueProcess)),
+            tid     = tonumber(ffi.cast('intptr_t', info.ClientId.UniqueThread)),
+            image   = {
+                entry            = info.ImageInformation.TransferAddress,
+                stack_max        = info.ImageInformation.MaximumStackSize,
+                stack_committed  = info.ImageInformation.CommittedStackSize,
+                subsystem        = info.ImageInformation.SubSystemType,
+                machine          = info.ImageInformation.Machine,
+            },
+        }
+    end)
+
+    -- Always destroy.  pcall it so a destroy-side error doesn't
+    -- mask the body's error (defensive — RtlDestroy shouldn't raise
+    -- under normal circumstances).
+    pcall(ntdll.RtlDestroyProcessParameters, pp_out[0])
+
+    if not ok then error(ret, 0) end
+    return ret
+end
+
+-- ------------------------------------------------------------------
+-- spawn — Lua-idiomatic wrapper over RtlCreateUserProcess.
+-- ------------------------------------------------------------------
+--
+-- Two call shapes:
+--
+--   ps.spawn("\\SystemRoot\\pkg\\msvc20\\ML.EXE")          -- shorthand
+--   ps.spawn{ exe = "...", cmdline = "ML.EXE /?" }         -- full opts
+--
+-- Required:
+--   exe       NT path to the image (UTF-8 Lua string).
+--
+-- Optional:
+--   cmdline   Command line as a single string.  Defaults to `exe`
+--             so argv[0] is the EXE name (NEVER inherits parent's
+--             cmdline — that would leak our argv into the child).
+--   stdin/    Borrowed or owned NT_HANDLE.  Defaults to parent's
+--   stdout/     PEB std handle (read via parent_stdio).  Pass an
+--   stderr      explicit handle (e.g. a pipe write-end) to redirect.
+--   inherit_handles  Bool, default true.  Whether the kernel
+--                    duplicates parent's inheritable handles into
+--                    the child during NtCreateProcess.
+--
+-- Returns the same table RtlCreateUserProcess returns:
+--   { process, thread, pid, tid, image = { entry, ... } }
+-- The thread starts SUSPENDED — caller must NtResumeThread to run it.
+function M.spawn(opts)
+    if type(opts) == 'string' then opts = { exe = opts } end
+    if type(opts) ~= 'table' or not opts.exe then
+        error("ps.spawn: opts.exe (NT path to image) is required", 2)
+    end
+    return M.RtlCreateUserProcess(opts.exe, opts.cmdline, opts)
+end
+
+-- Read PROCESS_BASIC_INFORMATION (info class 0).  Returns a Lua table
+-- with the fields decoded.  Most-used field is `exit_status`, which
+-- after NtWaitForSingleObject(process) holds the process's exit code
+-- (or STATUS_PENDING if the process is still running).
+M.ProcessBasicInformation = 0
+
+function M.NtQueryInformationProcess_Basic(h)
+    local pbi = ffi.new('PROCESS_BASIC_INFORMATION')
+    local ret = ffi.new('ULONG[1]')
+    local st = ntdll.NtQueryInformationProcess(
+        handle.raw(h), M.ProcessBasicInformation,
+        pbi, ffi.sizeof('PROCESS_BASIC_INFORMATION'), ret)
+    if err.is_error(st) then err.raise('NtQueryInformationProcess', st) end
+    return {
+        exit_status      = pbi.ExitStatus,
+        peb              = pbi.PebBaseAddress,
+        affinity_mask    = pbi.AffinityMask,
+        base_priority    = pbi.BasePriority,
+        pid              = pbi.UniqueProcessId,
+        ppid             = pbi.InheritedFromUniqueProcessId,
+    }
 end
 
 return M

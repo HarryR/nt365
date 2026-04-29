@@ -279,6 +279,50 @@ t.test("adjust_privileges save_previous returns prior state", function()
     tok:close()
 end)
 
+t.test("with_privileges enables for body, restores after", function()
+    -- Probe via a fresh token because with_privileges owns its own.
+    local function shutdown_enabled()
+        local tok = se.open_process_token()
+        local v
+        for _, p in ipairs(se.query(tok, 'privileges')) do
+            if p.name == "SeShutdownPrivilege" then v = p.enabled end
+        end
+        tok:close()
+        return v
+    end
+    t.eq(shutdown_enabled(), false, "baseline: disabled")
+
+    local body_saw_enabled
+    local ret = se.with_privileges({"SeShutdownPrivilege"}, function()
+        body_saw_enabled = shutdown_enabled()
+        return "sentinel"
+    end)
+    t.eq(body_saw_enabled, true,  "body sees privilege enabled")
+    t.eq(ret,              "sentinel", "fn return value passes through")
+    t.eq(shutdown_enabled(), false, "post-call: restored to disabled")
+end)
+
+t.test("with_privileges propagates body errors verbatim", function()
+    -- Body throws after privilege is enabled. The wrapped error must
+    -- bubble out of with_privileges unchanged (no swallow, no rewrap).
+    local probe
+    t.raises(function()
+        se.with_privileges({"SeShutdownPrivilege"}, function()
+            probe = "ran"
+            error("synthetic failure", 0)
+        end)
+    end, "synthetic failure")
+    t.eq(probe, "ran", "body did execute before the error")
+    -- Cleanup ran despite the error: privilege is back off.
+    local tok = se.open_process_token()
+    for _, p in ipairs(se.query(tok, 'privileges')) do
+        if p.name == "SeShutdownPrivilege" then
+            t.eq(p.enabled, false, "privilege restored after body error")
+        end
+    end
+    tok:close()
+end)
+
 -- ---------------------------------------------------------------------
 -- Token creation (needs SeCreateTokenPrivilege enabled first)
 -- ---------------------------------------------------------------------

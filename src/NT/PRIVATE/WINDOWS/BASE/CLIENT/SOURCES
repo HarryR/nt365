@@ -1,0 +1,6 @@
+!IF 0
+MicroNT leaf SOURCES — pulls the shared list from sources.inc.  Original
+NT 3.5 had per-flavor leaves (DAYTONA/SOURCES) that did the same; we keep
+the indirection so future per-flavor splits stay easy.
+!ENDIF
+!include sources.inc
