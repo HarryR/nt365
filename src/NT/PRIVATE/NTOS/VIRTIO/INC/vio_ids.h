@@ -1,6 +1,6 @@
 /*++
 
-    virtio_ids.h — Device-class IDs from the virtio specification.
+    vio_ids.h — Device-class IDs from the virtio specification.
     Adapted from Unikraft (BSD-3-Clause) which adapted from Linux's
     include/uapi/linux/virtio_ids.h.
 

@@ -11,7 +11,7 @@
 #include <devioctl.h>
 #include <ntddscsi.h>
 #include <ntdddisk.h>
-#include "nvme2k_compat.h"   /* SCSI-3 opcodes missing from NT 3.5 <scsi.h> */
+#include "compat.h"          /* SCSI-3 opcodes missing from NT 3.5 <scsi.h> */
 #include "nvme.h"
 #include "scsiext.h"
 

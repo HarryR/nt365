@@ -24,7 +24,7 @@
 --*/
 
 #include "virtio.h"
-#include "virtio_pci.h"
+#include "vio_pci.h"
 
 /*
  * Per-cap / per-BAR walk traces are noisy once more than one virtio

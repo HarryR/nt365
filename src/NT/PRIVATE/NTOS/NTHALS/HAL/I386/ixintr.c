@@ -1,5 +1,5 @@
 /*
- * interrupt.c - MicroNT HAL interrupt management
+ * ixintr.c - MicroNT HAL interrupt management (i386)
  */
 
 #include "halp.h"

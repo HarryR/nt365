@@ -35,8 +35,8 @@
    pack(8)). Force pack back to default before pulling in virtio. */
 #pragma pack()
 #include "virtio.h"
-#include "virtio_pci.h"
-#include "virtio_ids.h"
+#include "vio_pci.h"
+#include "vio_ids.h"
 
 /* ------------------------------------------------------------------ *
  * virtio-net wire format + feature bits.

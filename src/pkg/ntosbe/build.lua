@@ -628,7 +628,7 @@ function M.main(opts)
     }
 
     local USERLAND_TARGETS = {
-        "rtl_user", "ntdll", "urtl", "windows_base_client",
+        "rtl_user", "ntdll", "urtl", "windows_base_client", "cmd",
     }
 
     local function build_group(name, list)

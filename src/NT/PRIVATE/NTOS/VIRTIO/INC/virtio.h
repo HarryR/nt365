@@ -8,8 +8,8 @@
 
     Layering:
       virtio.h     — types, virtio_dev struct, public API (this file)
-      virtio_ids.h — device-class IDs (NET=1, BLOCK=2, CONSOLE=3, RNG=4, ...)
-      virtio_pci.h — PCI legacy I/O register offsets, BAR layout
+      vio_ids.h    — device-class IDs (NET=1, BLOCK=2, CONSOLE=3, RNG=4, ...)
+      vio_pci.h    — PCI legacy I/O register offsets, BAR layout
       vring.h      — descriptor/avail/used ring layout (for impl + device
                      drivers that touch the ring directly)
 

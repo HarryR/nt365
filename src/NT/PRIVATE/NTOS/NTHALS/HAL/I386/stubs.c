@@ -215,7 +215,7 @@ HalReportResourceUsage(VOID)
     HalpReportPs2Devices();
 }
 
-/* HalGetInterruptVector is in interrupt.c */
+/* HalGetInterruptVector is in ixintr.c */
 
 /* DMA primitives moved to dma.c (HalGetAdapter / HalAllocateCommonBuffer
  * / HalAllocateAdapterChannel / IoMapTransfer / IoFlushAdapterBuffers /
@@ -585,7 +585,7 @@ HalRequestIpi(
 {
 }
 
-/* HalHandleNMI is in interrupt.c */
+/* HalHandleNMI is in ixintr.c */
 
 /* ===== KD port (kernel debugger serial) ===== */
 

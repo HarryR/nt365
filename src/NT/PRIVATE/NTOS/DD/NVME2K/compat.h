@@ -1,5 +1,5 @@
 /*
- * nvme2k_compat.h — fills gaps between NT 3.5's scsi.h and what
+ * compat.h — fills gaps between NT 3.5's scsi.h and what
  * nvme2k expects (NT4 / W2K era).
  *
  * NT 3.5's <scsi.h> ships only the SCSI-2-era opcodes nvme2k's

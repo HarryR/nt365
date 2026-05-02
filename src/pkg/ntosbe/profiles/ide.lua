@@ -483,8 +483,16 @@ function M.disk_files(paths, list_tree)
         end
     end
     if #skipped_8_3 > 0 then
-        print(string.format(
-            "  ide.lua: skipped %d 8.3-violating NT source files (rename or NTFS to include)",
+        io.stderr:write(string.format(
+            "ide.lua: %d 8.3-violating NT source file(s) cannot be staged on FAT16:\n",
+            #skipped_8_3))
+        for _, rel in ipairs(skipped_8_3) do
+            io.stderr:write("  " .. rel .. "\n")
+        end
+        io.stderr:write(
+            "Rename them to fit 8.3 (max 8-char stem + 3-char ext) or move to an FS that allows long names.\n")
+        error(string.format(
+            "ide.lua: %d source file(s) cannot be staged on FAT16 disk image (see stderr)",
             #skipped_8_3))
     end
 

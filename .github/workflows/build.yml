@@ -74,24 +74,13 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python3 src/tools/stamp-version.py
 
-      - name: bootstrap host LuaJIT
-        # Phase 1 of the self-hosting plan: build.lua replaces build.sh
-        # as the canonical orchestrator and needs a host LuaJIT to run.
-        # bootstrap.sh builds it from src/cr/luajit (the same submodule
-        # the cr/ testbed cross-compiles), drops it at
-        # build/host-tools/luajit, and wipes the LuaJIT tree afterwards
-        # so the cr/ build that follows starts clean.
-        run: |
-          cd src
-          ./bootstrap.sh
-
       - name: build (Lua-driven)
-        # Same env passthrough, same wibo invocation shape, same target
-        # surface as build.sh — just driven by build.lua running on the
-        # host-bootstrapped LuaJIT.  No-arg invocation builds `all`.
-        run: |
-          cd src
-          ../build/host-tools/luajit ./build.lua
+        # build.sh dispatches into pkg/ntosbe/build.lua as a regular
+        # package module — the same body that will run inside MicroNT
+        # once platform.spawn_wait's NT backend lands.  Bootstraps the
+        # host LuaJIT on first run via bootstrap.sh.  No-arg invocation
+        # builds 'all'.
+        run: src/build.sh
 
       - name: build cr (native-NT testbed)
         # Independent from the wibo toolchain — pure mingw cross-compile.

@@ -21,8 +21,8 @@
 
 #include <ntddk.h>
 #include "virtio.h"
-#include "virtio_pci.h"
-#include "virtio_ids.h"
+#include "vio_pci.h"
+#include "vio_ids.h"
 
 /* ------------------------------------------------------------------ *
  * Per-device extension. Pointed to by DEVICE_OBJECT->DeviceExtension.

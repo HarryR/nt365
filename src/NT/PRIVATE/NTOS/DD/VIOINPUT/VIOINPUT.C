@@ -31,8 +31,8 @@
 #include "kbdmou.h"      /* CONNECT_DATA, IOCTL_INTERNAL_*_CONNECT,
                             PSERVICE_CALLBACK_ROUTINE shared by kbd+mou ports */
 #include "virtio.h"
-#include "virtio_pci.h"
-#include "virtio_ids.h"
+#include "vio_pci.h"
+#include "vio_ids.h"
 
 /* ------------------------------------------------------------------ *
  * virtio-input wire format (spec sec 5.8).

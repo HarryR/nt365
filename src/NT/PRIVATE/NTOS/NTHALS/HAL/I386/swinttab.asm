@@ -13,7 +13,7 @@
 ;
 ;    Unlike the original HAL, we don't expose hardware-interrupt entries
 ;    through this table; our HAL wires hardware IRQs directly via
-;    interrupt.c/HalBeginSystemInterrupt. Only the software IRQLs (APC=1,
+;    ixintr.c/HalBeginSystemInterrupt. Only the software IRQLs (APC=1,
 ;    DISPATCH=2) dispatch through SWInterruptHandlerTable.
 ;
 ;--

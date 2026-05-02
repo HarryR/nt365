@@ -28,8 +28,8 @@ INCLUDES=..\..\inc
 TARGETLIBS=$(BASEDIR)\public\sdk\lib\*\scsiport.lib
 
 SOURCES=nvme2k.c       \
-        nvme2k_cpl.c   \
-        nvme2k_scsi.c  \
-        nvme2k_nvme.c  \
+        cpl.c          \
+        scsi.c         \
+        nvme.c         \
         utils.c        \
         nvme2k.rc

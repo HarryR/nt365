@@ -24,8 +24,8 @@
 
 #include <ntddk.h>
 #include "virtio.h"
-#include "virtio_pci.h"
-#include "virtio_ids.h"
+#include "vio_pci.h"
+#include "vio_ids.h"
 
 /* virtio-console feature bits we *don't* want — keep us in single-port
    mode where queue 0 = rx, queue 1 = tx. */

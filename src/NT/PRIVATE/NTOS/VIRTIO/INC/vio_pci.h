@@ -1,6 +1,6 @@
 /*++
 
-    virtio_pci.h — Modern (virtio 1.0+) PCI transport definitions.
+    vio_pci.h — Modern (virtio 1.0+) PCI transport definitions.
 
     Modern transport replaces the legacy single-I/O-BAR fixed-offset
     register layout with PCI capabilities pointing at MMIO regions for
