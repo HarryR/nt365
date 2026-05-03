@@ -125,10 +125,10 @@ Output lands in `build/disk/` (`esp.img`, `nvme.img`, `SYSTEM` hive).
 ## Run
 
 ```sh
-make -C src/cr boot              # canonical: q35 + NVMe (modern PCIe)
-make -C src/cr boot MACHINE=pc DISK=ide   # legacy fallback shape
-make -C src/cr selftest          # boot, run selftest.lua, shut down (CI signal)
-make -C src/cr smoketest         # ~10 s "did it boot?" smoke
+make -C src boot                 # canonical: q35 + NVMe (modern PCIe)
+make -C src boot MACHINE=pc DISK=ide   # legacy fallback shape
+make -C src selftest             # boot, run selftest.lua, shut down (CI signal)
+make -C src smoketest            # ~10 s "did it boot?" smoke
 ```
 
 `src/boot.sh` (next to `build.sh`) wraps QEMU directly — never invoke

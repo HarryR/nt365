@@ -20,20 +20,23 @@ jobs:
 
     steps:
       - name: install build deps
-        # Three toolchains coexist in this job:
-        #   boot-efi  : gcc + gcc-multilib + gnu-efi (ia32 UEFI PE via
-        #               crt0 + linker script)
+        # Three toolchains coexist in this job, all driven by
+        # `src/build.sh`:
         #   NT build  : wibo (downloaded below) running the MS toolchain
-        #   cr testbed: mingw-w64 i686 cross-compiler producing native-
-        #               subsystem PE; libc6-dev-i386 is needed because
-        #               LuaJIT's buildvm insists on host/target pointer
-        #               size match (host x86_64, target i386) so minilua
-        #               + buildvm must compile under `gcc -m32`.
-        # Plus qemu-system-x86 + ovmf for `make -C src/cr selftest` at
-        # the end of the job. --no-install-recommends keeps the VM
-        # binary without pulling qemu-system-gui (GTK / SDL / VNC /
-        # spice) — none of which boot.sh needs when running -display
-        # none for the selftest profile.
+        #               for kernel + drivers + userland.
+        #   boot-efi  : gcc + gcc-multilib + gnu-efi for BOOTX64.EFI
+        #               (ia32 UEFI PE via crt0 + linker script).
+        #   cr        : mingw-w64 i686 cross-compiler producing native-
+        #               subsystem PE for run.exe + lua.dll; libc6-dev-i386
+        #               is needed because LuaJIT's buildvm insists on
+        #               host/target pointer size match (host x86_64,
+        #               target i386) so minilua + buildvm must compile
+        #               under `gcc -m32`.
+        # Plus qemu-system-x86 + ovmf for the smoke matrix and
+        # `make -C src selftest` later in the job. --no-install-recommends
+        # keeps the VM binary without pulling qemu-system-gui (GTK / SDL
+        # / VNC / spice) — none of which boot.sh needs when running
+        # -display none.
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -80,15 +83,14 @@ jobs:
         # package module — the same body that will run inside MicroNT
         # once platform.spawn_wait's NT backend lands.  Bootstraps the
         # host LuaJIT on first run via bootstrap.sh.  No-arg invocation
-        # builds 'all'.
+        # builds 'all', which includes:
+        #   - tools/ntoskrnl/drivers/userland (wibo + MS toolchain)
+        #   - cr (mingw cross-compile of run.exe + lua.dll)
+        #   - boot-efi (gcc + gnu-efi for BOOTX64.EFI)
+        #   - default disk image (main.lua flavour)
+        # Smoke-disk and selftest below re-bake the disk with their
+        # own INIT_ARGS but reuse every other artifact.
         run: src/build.sh
-
-      - name: build cr (native-NT testbed)
-        # Independent from the wibo toolchain — pure mingw cross-compile.
-        # Produces src/cr/lua.dll + run.exe (subsystem=native 3.50,
-        # ntdll-only).  Re-builds LuaJIT from the submodule for the i386
-        # mingw target (the host build above was wiped after bootstrap).
-        run: make -C src/cr all
 
       - name: smoke matrix across (machine, disk)
         # Far cheaper than the full selftest (~10 s/combo vs ~4 min
@@ -110,7 +112,7 @@ jobs:
         # init + driver init + Lua "print + shutdown" runs in <15 s
         # on a runner.
         run: |
-          make -C src/cr smoke-disk
+          make -C src smoke-disk
           fail=0
           machines="q35 pc"
           disks="nvme ide"
@@ -130,7 +132,7 @@ jobs:
           done
           exit $fail
 
-      - name: run cr selftest under QEMU
+      - name: run selftest under QEMU
         # Boot micront under OVMF/QEMU with INIT_ARGS pointed at
         # selftest.lua; the Lua harness prints a summary and shuts
         # down cleanly. TCG-only (no /dev/kvm in containers); selftest
@@ -152,5 +154,5 @@ jobs:
         # /dev/null makes the input stream close immediately so the
         # mux doesn't stall.
         run: |
-          timeout 300 make -C src/cr selftest < /dev/null 2>&1 | tee selftest.log
+          timeout 300 make -C src selftest < /dev/null 2>&1 | tee selftest.log
           grep -q '^ALL PASSED' selftest.log

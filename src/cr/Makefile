@@ -28,11 +28,14 @@
 #
 # Top-level targets:
 #   make             — build lua.dll + run.exe (default)
-#   make boot        — build + stage on disk + boot under QEMU/OVMF
-#   make selftest    — same as boot but pointed at selftest.lua
 #   make info        — dump PE headers (subsystem/version/imports)
 #   make clean       — wipe local .o / .a / .exe / .dll
 #   make luajit-clean — also wipe LuaJIT's build tree
+#
+# To compose a disk image and boot under QEMU, use the top-level
+# orchestration Makefile: `make -C src boot` / `make -C src selftest`
+# / `make -C src smoketest`.  This Makefile only builds the cr
+# binaries (lua.dll + run.exe).
 
 CROSS    := i686-w64-mingw32-
 CC       := $(CROSS)gcc
@@ -76,22 +79,9 @@ endif
 
 # Anchor paths to this Makefile's location.
 MKFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-REPO       := $(abspath $(MKFILE_DIR)/../..)
-SRC        := $(REPO)/src
-TOOLS      := $(SRC)/tools
-BOOT_EFI   := $(SRC)/boot-efi
-BUILD      := $(REPO)/build/disk
 
 LUAJIT_SRC := $(MKFILE_DIR)luajit/src
 LUAJIT_OUT := $(LUAJIT_SRC)/luajit.exe
-
-# Init args override.  ntosbe's profiles/ide.lua defaults point at
-# lua\run.exe and \SystemRoot\lua\main.lua with stdio on \Device\Serial0;
-# the only thing we override here is the script the kernel hands to
-# run.exe, so `make selftest` can swap main.lua for selftest.lua without
-# re-running the rest of the toolchain.  Empty by default → profile
-# defaults stick.
-INIT_ARGS_FLAG ?=
 
 # Default target: build lua.dll + run.exe.  Must come before any other
 # rule so `make` with no args picks it up.
@@ -286,46 +276,4 @@ info: all
 clean:
 	rm -f *.o *.exe *.dll *.a rt/*.o
 
-# Iteration loop: build run.exe, bake a hive (Control\Init pointing at
-# our run.exe + args overrides from this Makefile), boot under QEMU/OVMF.
-# ntosbe's profiles/ide.lua disk_files stages run.exe + the whole
-# src/pkg/ tree under \SystemRoot\lua\.
-HOST_LUAJIT := $(REPO)/build/host-tools/luajit
-
-disk: all
-	mkdir -p $(BUILD)
-	$(SRC)/bootstrap.sh
-	$(HOST_LUAJIT) -e 'package.path="$(SRC)/pkg/?.lua;$(SRC)/pkg/?/init.lua;"..package.path; os.exit(require("ntosbe").main(arg))' -- ntosbe --src-root=$(SRC) --output-dir=$(BUILD) --efi-binary=$(BOOT_EFI)/BOOTX64.EFI $(INIT_ARGS_FLAG)
-
-# MACHINE / DISK pass through to boot.sh as --machine / --disk so
-# `make boot MACHINE=q35 DISK=nvme` exercises the modern shape.  Unset
-# defaults fall through to boot.sh's own defaults (pc + ide).
-BOOT_FLAGS :=
-ifdef MACHINE
-BOOT_FLAGS += --machine $(MACHINE)
-endif
-ifdef DISK
-BOOT_FLAGS += --disk $(DISK)
-endif
-
-boot: disk
-	$(SRC)/boot.sh $(BOOT_FLAGS)
-
-selftest: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\selftest.lua'
-selftest: boot
-
-# Smoke test — minimal "did the system boot on this hardware shape?"
-# check.  Disk has Init\Args pointed at smoke.lua, which prints
-# 'SMOKE OK' and powers off.  Use across the (MACHINE, DISK) matrix
-# in CI for ~10 s coverage per combo, vs ~4 min for the full selftest.
-#
-# `smoke-disk` builds just the smoke-flavour disk image so CI can
-# build once and reboot it 4× across the matrix without rebuilding
-# the disk per combo.
-smoke-disk: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\smoke.lua'
-smoke-disk: disk
-
-smoketest: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\smoke.lua'
-smoketest: boot
-
-.PHONY: all rebuild clean info disk boot selftest smoketest smoke-disk luajit-clean
+.PHONY: all rebuild clean info luajit-clean

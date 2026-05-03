@@ -16,11 +16,11 @@
 #define VER_PRODUCTBUILD            2605
 #define VER_PRODUCTMAJORVERSION 3
 #define VER_PRODUCTMINORVERSION 65
-#define VER_PRODUCTBUILD_QFE 2
+#define VER_PRODUCTBUILD_QFE 3
 #define VER_LEGALCOPYRIGHT_YEARS "1981-2026"
 #define VER_PRODUCTVERSION_STR      "3.65"
-#define VER_PRODUCTVERSION          3,65,2605,2
-#define VER_PRODUCTBETA_STR         "dev-dd1b812"
+#define VER_PRODUCTVERSION          3,65,2605,3
+#define VER_PRODUCTBETA_STR         "dev-fdd9d36"
 
 /*--------------------------------------------------------------*/
 /* the following section defines values used in the version     */

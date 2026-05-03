@@ -72,8 +72,10 @@ while [ $# -gt 0 ]; do
             ;;
         --gdb)
             GDB_FLAGS="-s -S"
-            echo "[boot.sh] gdb-stub on :1234, CPU frozen — attach with:"
-            echo "          gdb -x $SCRIPT_DIR/boot-efi/gdb.init"
+            echo "[boot.sh] gdb-stub on :1234, CPU frozen — in another shell:"
+            echo "          make -C $SCRIPT_DIR gdb"
+            echo "          (loads ntoskrnl + hal symbols, sources gdb.init,"
+            echo "           and attaches to :1234 in one step)"
             shift
             ;;
         --trace)

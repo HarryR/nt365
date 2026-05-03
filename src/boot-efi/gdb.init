@@ -1,30 +1,24 @@
-# MicroNT UEFI loader — gdb stub helpers.
+# MicroNT — gdb helper definitions for kernel + loader debugging.
 #
-# Use:
-#   shell 1: ../boot.sh --gdb
-#   shell 2: gdb -x gdb.init
+# Architecture / disassembly mode + helper commands.  No symbol-file
+# loading or `target remote` here — that's owned by `make gdb` (which
+# composes the gdb command line with the right symbol files for the
+# current build).  Keeping this file pure helpers means it works
+# whether you reach gdb via `make gdb` or by hand.
 #
-# QEMU on i386 advertises x86_64 register layout; tell gdb we're 32-bit.
-set architecture i386
+# Source manually with `(gdb) source src/boot-efi/gdb.init` if you've
+# launched gdb yourself.
+#
+# Don't `set architecture i386` here — qemu-system-x86_64 (we always
+# use the x86_64 binary regardless of guest mode) reports its target
+# description as i386:x86-64, and a forced i386 setting makes gdb
+# reject the description and drop the connection with "Remote 'g'
+# packet reply is too long (expected 312 bytes, got 608 bytes)".
+# Letting auto-detection take QEMU's tdesc gives us 64-bit register
+# layout but the i386 symbols still resolve and disassembly switches
+# to 32-bit when CS points at a 32-bit segment (which it always does
+# in NT kernel mode).
 set disassembly-flavor intel
-
-target remote :1234
-
-# Useful breakpoints to find what jumps into the LoaderBlock arena.
-# The arena lives somewhere around 0x856370xx; the kernel triple-faults
-# after reaching some byte inside it. Hardware breakpoints (hbreak) work
-# on emulated guests where the page might not yet be writable.
-#
-# Adjust these addresses to whatever boot.sh prints for the LPB arena.
-# Example (from a recent run):
-#   [main] LPB kseg0=0x85637000  kernel_entry=0x80112ff6
-#
-# Set a watchpoint on the arena's first 0x200 bytes — fires when kernel
-# writes there. Or break at the suspected fault EIP:
-#   hbreak *0x856370f1
-#
-# To inspect kernel image memory by file offset:
-#   add-symbol-file ../NT/PRIVATE/NTOS/INIT/UP/obj/i386/ntoskrnl.exe 0x80100000
 
 define jb
   # "jump back" — show the call stack guess by walking saved EBPs.
@@ -50,6 +44,153 @@ define regs
   printf "ESI=%08x  EDI=%08x  CS=%04x SS=%04x DS=%04x FS=%04x\n", $esi, $edi, $cs, $ss, $ds, $fs
 end
 
-# Continue boot until the kernel handoff prints 'K' (or arrange a useful
-# break with `hbreak <addr>` before continuing).
-echo \nGdb attached. Useful: regs / stk / jb / continue\n
+# ---------------- SEH / KPCR / KTRAP_FRAME --------------------------
+#
+# Field offsets are taken from PUBLIC/SDK/INC/KS386.INC, the canonical
+# struct-offset header geni386 maintains in lock-step with NTOS/KE.
+# Every ASM trap stub already uses these constants, so they're
+# guaranteed correct for the running kernel.
+
+# KPCR is at a fixed VA in NT 3.5 kernel mode. PcExceptionList = 0
+# (NT_TIB.ExceptionList — head of SEH chain), PcSelfPcr = 0x1C,
+# PcPrcb = 0x20.
+set $kpcr = 0xFFDFF000
+
+define pcr
+  # "processor control region" — verify KPCR is mapped + dump key fields.
+  set $self = *(unsigned int*)($kpcr + 0x1C)
+  if $self != $kpcr
+    printf "KPCR.Self=%08x doesn't match expected KPCR base %08x\n", $self, $kpcr
+    printf "  KPCR may be at a different VA — adjust $kpcr in gdb.init\n"
+  else
+    printf "KPCR @ %08x:\n", $kpcr
+    printf "  ExceptionList (SEH head)  %08x\n", *(unsigned int*)($kpcr + 0x00)
+    printf "  StackLimit                %08x\n", *(unsigned int*)($kpcr + 0x08)
+    printf "  Self                      %08x\n", $self
+    printf "  Prcb                      %08x\n", *(unsigned int*)($kpcr + 0x20)
+  end
+end
+
+define seh
+  # Walk the SEH chain from KPCR.NtTib.ExceptionList. Each
+  # EXCEPTION_REGISTRATION_RECORD is { Next, Handler } (8 bytes).
+  # Sentinel value at chain end is 0xFFFFFFFF.
+  set $rec = *(unsigned int*)($kpcr + 0x00)
+  printf "SEH chain (KPCR @ %08x):\n", $kpcr
+  if $rec == 0 || $rec == 0xFFFFFFFF
+    printf "  (empty)\n"
+  end
+  set $i = 0
+  while $rec != 0xFFFFFFFF && $rec != 0 && $i < 32
+    set $next = *(unsigned int*)$rec
+    set $handler = *(unsigned int*)($rec + 4)
+    printf "  [%d] rec=%08x  handler=%08x  ", $i, $rec, $handler
+    info symbol $handler
+    set $rec = $next
+    set $i = $i + 1
+  end
+end
+
+define trapframe
+  # Decode KTRAP_FRAME at $arg0. Offsets from KS386.INC; total
+  # length 0x8C (140 bytes).
+  set $tf = (unsigned int)$arg0
+  printf "KTRAP_FRAME @ %08x\n", $tf
+  printf "  EIP=%08x  CS=%04x  EFlags=%08x\n", \
+    *(unsigned int*)($tf + 0x68), \
+    *(unsigned int*)($tf + 0x6C) & 0xFFFF, \
+    *(unsigned int*)($tf + 0x70)
+  printf "  ESP=%08x  SS=%04x  EBP=%08x\n", \
+    *(unsigned int*)($tf + 0x74), \
+    *(unsigned int*)($tf + 0x78) & 0xFFFF, \
+    *(unsigned int*)($tf + 0x60)
+  printf "  EAX=%08x  EBX=%08x  ECX=%08x  EDX=%08x\n", \
+    *(unsigned int*)($tf + 0x44), \
+    *(unsigned int*)($tf + 0x5C), \
+    *(unsigned int*)($tf + 0x40), \
+    *(unsigned int*)($tf + 0x3C)
+  printf "  ESI=%08x  EDI=%08x  ErrCode=%08x\n", \
+    *(unsigned int*)($tf + 0x58), \
+    *(unsigned int*)($tf + 0x54), \
+    *(unsigned int*)($tf + 0x64)
+  printf "  GS=%04x  FS=%04x  ES=%04x  DS=%04x\n", \
+    *(unsigned int*)($tf + 0x30) & 0xFFFF, \
+    *(unsigned int*)($tf + 0x50) & 0xFFFF, \
+    *(unsigned int*)($tf + 0x34) & 0xFFFF, \
+    *(unsigned int*)($tf + 0x38) & 0xFFFF
+  printf "  ExceptionList=%08x  PrevPrevMode=%08x\n", \
+    *(unsigned int*)($tf + 0x4C), \
+    *(unsigned int*)($tf + 0x48)
+  printf "  resolved EIP: "
+  info symbol *(unsigned int*)($tf + 0x68)
+end
+
+define bugcheck
+  # Decode the KeBugCheckEx call at the current frame.  Use this when
+  # stopped at the entry of KeBugCheckEx (e.g. via `b _KeBugCheckEx@20`):
+  # stdcall pushes args right-to-left, so [esp+4..20] are Code +
+  # 4 params.  Names are from PRIVATE/NTOS/NLS/BUGCODES.h — most
+  # commonly seen ones are inline; for the long tail run
+  # `shell grep 0x000000XX src/NT/PRIVATE/NTOS/NLS/BUGCODES.h`.
+  set $code = *(unsigned int*)($esp + 4)
+  set $p1   = *(unsigned int*)($esp + 8)
+  set $p2   = *(unsigned int*)($esp + 12)
+  set $p3   = *(unsigned int*)($esp + 16)
+  set $p4   = *(unsigned int*)($esp + 20)
+  printf "KeBugCheckEx call:\n"
+  printf "  Code:    0x%08x  ", $code
+  if $code == 0x0000000A
+    printf "IRQL_NOT_LESS_OR_EQUAL"
+  end
+  if $code == 0x0000001E
+    printf "KMODE_EXCEPTION_NOT_HANDLED"
+  end
+  if $code == 0x0000003B
+    printf "SYSTEM_SERVICE_EXCEPTION"
+  end
+  if $code == 0x00000050
+    printf "PAGE_FAULT_IN_NONPAGED_AREA"
+  end
+  if $code == 0x0000007B
+    printf "INACCESSIBLE_BOOT_DEVICE"
+  end
+  if $code == 0x0000007F
+    printf "UNEXPECTED_KERNEL_MODE_TRAP"
+  end
+  if $code == 0x000000C2
+    printf "BAD_POOL_CALLER"
+  end
+  if $code == 0x000000C5
+    printf "DRIVER_CORRUPTED_EXPOOL"
+  end
+  if $code == 0x000000D1
+    printf "DRIVER_IRQL_NOT_LESS_OR_EQUAL"
+  end
+  printf "\n"
+  printf "  Param 1: 0x%08x\n", $p1
+  printf "  Param 2: 0x%08x\n", $p2
+  printf "  Param 3: 0x%08x\n", $p3
+  printf "  Param 4: 0x%08x\n", $p4
+  printf "  Return:  0x%08x  ", *(unsigned int*)$esp
+  info symbol *(unsigned int*)$esp
+end
+
+define iret
+  # Decode the iret return frame at top of stack (CS:EIP, EFlags,
+  # SS:ESP if cross-priv).  Useful when stepping past an interrupt
+  # handler — shows where execution will jump back to.
+  printf "iret frame @ %08x:\n", $esp
+  printf "  EIP    = %08x  ", *(unsigned int*)($esp + 0)
+  info symbol *(unsigned int*)($esp + 0)
+  printf "  CS     = %04x\n", *(unsigned int*)($esp + 4) & 0xFFFF
+  printf "  EFlags = %08x\n", *(unsigned int*)($esp + 8)
+  printf "  ESP    = %08x  (if priv-change)\n", *(unsigned int*)($esp + 12)
+  printf "  SS     = %04x  (if priv-change)\n", *(unsigned int*)($esp + 16) & 0xFFFF
+end
+
+echo \nGdb helpers loaded.\n
+echo Inspect:    regs / stk / jb / pcr / seh\n
+echo Decode:     trapframe <addr> / iret / bugcheck\n
+echo Breakpoint: hbreak KeBugCheckEx / hbreak KiTrap0E / hbreak Phase1Initialization\n
+echo (Use hbreak for kernel-init symbols — software bps set before the kernel\n
+echo  is mapped won't arm.  Names are stripped of leading _ and trailing @N.)\n
