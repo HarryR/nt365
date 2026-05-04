@@ -26,6 +26,7 @@ local ok_count   = 0
 local fail_count = 0
 local skip_count = 0
 local failures   = {}
+local skips      = {}
 
 -- Distinct sentinel so t.skip() is distinguishable from a real error.
 -- Using error level 0 keeps line-info noise out of the message.
@@ -42,8 +43,10 @@ function M.test(name, fn)
         ok_count = ok_count + 1
         print(string.format("  PASS  %s", name))
     elseif type(err) == "string" and err:sub(1, #SKIP_PREFIX) == SKIP_PREFIX then
+        local reason = err:sub(#SKIP_PREFIX + 1)
         skip_count = skip_count + 1
-        print(string.format("  SKIP  %s  (%s)", name, err:sub(#SKIP_PREFIX + 1)))
+        skips[#skips+1] = { name = name, reason = reason }
+        print(string.format("  SKIP  %s  (%s)", name, reason))
     else
         fail_count = fail_count + 1
         failures[#failures+1] = { name = name, err = tostring(err) }
@@ -114,6 +117,14 @@ function M.summary()
         for _, f in ipairs(failures) do
             print(string.format("  %s", f.name))
             print(string.format("    %s", f.err))
+        end
+    end
+    if skip_count > 0 then
+        print("")
+        print("skipped:")
+        for _, s in ipairs(skips) do
+            local reason = s.reason ~= "" and s.reason or "(no reason given)"
+            print(string.format("  %s — %s", s.name, reason))
         end
     end
     return fail_count == 0

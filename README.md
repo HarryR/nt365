@@ -6,20 +6,13 @@ NT 3.50 "Daytona", built from source on Linux, booting under UEFI on QEMU, with 
 
 Implemented:
 
-- [x] **Self-hosting** — booted MicroNT image rebuilds its own
-  kernel, drivers, and userland from source via NMAKE driving the
-  in-OS NT 3.5 toolchain (CL/C1/C2/RC/CVTRES/LINK on top of our
-  kernel32 + cmd.exe).  See *Self-host* below.
-- [x] **Multi-shape boot** — same disk image boots on `q35 + NVMe`
-  (canonical modern shape, true PCIe), `q35 + IDE` (piix3-ide
-  bridge), `pc + NVMe`, and `pc + IDE` (classic legacy shape).
-  All four combos exercised in CI as a smoke matrix.  Driver
-  discovery decides which controller binds at runtime; no per-
-  profile loader, hive, or disk image.
+- [x] Self-hosting — booted MicroNT image rebuilds its own
+  kernel, drivers, and userland from source
 - [x] 64-bit UEFI bootloader (`BOOTX64.EFI`, OVMF on qemu)
 - [x] PCI-native HAL (BAR relocation above 4 GiB, no PC/AT assumptions)
 - [x] Fast `SYSENTER`/`SYSEXIT` & Zw* kernel service dispatch
 - [x] VirtIO transport (modern PCI, shared `virtio.lib`)
+  - [x] virtio-blk
   - [x] virtio-net (NDIS 3 miniport)
   - [x] virtio-input (keyboard, mouse → kbdclass + mouclass)
   - [x] virtio-console, virtio-rng
@@ -28,12 +21,7 @@ Implemented:
 - [x] Native-NT Lua userland (LuaJIT 2.1, FFI to `ntdll`)
 - [x] kernel32 + lifted NT 3.5 cmd.exe (no csrss, no user32) — runs
   unmodified Microsoft NT 3.5 toolchain binaries
-- [x] **NTFS** boot volume — NT 3.5 NTFS / LFS lifted with NT 4.0's
-  FRS&lt;cluster shifts back-ported, so we mount the canonical 4 KB
-  cluster + 1 KB MFT-record layout.  Disk image built host-side by
-  a pure-Lua composer (`pkg/nt/fs/{mbr,fat16,ntfs}/`) — no
-  Microsoft FORMAT.EXE involvement.  Both `LAYOUT=split-fat` and
-  `LAYOUT=split-ntfs` boot to `SMOKE OK`.
+- [x] NTFS boot volume
 
 Coming next:
 
@@ -112,7 +100,7 @@ sudo apt install gcc gcc-multilib libc6-dev-i386 make gnu-efi \
                  gcc-mingw-w64-i686 binutils-mingw-w64-i686 \
                  mingw-w64-i686-dev qemu-system-x86 ovmf
 
-git clone --recursive 
+git clone --recursive https://github.com/HarryR/nt365
 cd nt365
 curl -fL https://github.com/HarryR/wibo/releases/download/v1.1.0-micront.2/wibo-x86_64 -o wibo-x86_64 && chmod +x wibo-x86_64
 ./src/build.sh                                # builds everything (auto-runs bootstrap.sh)
@@ -126,7 +114,7 @@ Three toolchains coexist:
 - **mingw-w64 i686** for the cr testbed (LuaJIT cross-compiled for
   native-NT subsystem).
 
-Output lands in `build/disk/` (`esp.img`, `nvme.img`, `SYSTEM` hive).
+Output lands in `build/disk/` (`esp.img`, `SYSTEM` hive).
 
 ## Run
 
@@ -146,6 +134,7 @@ every supported combo:
 boot.sh                              # default: q35 + nvme
 boot.sh --machine pc  --disk ide     # legacy classic shape
 boot.sh --machine pc  --disk nvme    # NVMe on i440fx
+boot.sh --machine pc  --disk virtio-blk
 boot.sh --machine q35 --disk ide     # piix3-ide bridge on q35
 boot.sh --gdb                        # freeze CPU, listen on :1234 for gdb
 boot.sh --trace                      # -d int,cpu_reset,in_asm → ./qemu.log

@@ -45,8 +45,11 @@ t.test("io.open on bad mode returns nil + errmsg", function()
     t.ok(err and err:match("mode"), "errmsg mentions mode: " .. tostring(err))
 end)
 
-t.test("io.open ntoskrnl readable, io.type=='file'", function()
-    local f = io.open("\\SystemRoot\\SYSTEM32\\NTOSKRNL.EXE", "rb")
+-- kernel32.dll is the canonical large PE on \SystemRoot — ntoskrnl.exe
+-- and hal.dll are routed where='esp' (read by boot-efi pre-handoff)
+-- and so don't appear under \SystemRoot in split layouts.
+t.test("io.open kernel32 readable, io.type=='file'", function()
+    local f = io.open("\\SystemRoot\\SYSTEM32\\KERNEL32.DLL", "rb")
     t.ne(f, nil)
     t.eq(io.type(f), "file")
     f:close()
@@ -61,7 +64,7 @@ t.test("io.type returns nil for non-file values", function()
 end)
 
 t.test("close is idempotent", function()
-    local f = io.open("\\SystemRoot\\SYSTEM32\\NTOSKRNL.EXE", "rb")
+    local f = io.open("\\SystemRoot\\SYSTEM32\\KERNEL32.DLL", "rb")
     t.eq(f:close(), true)
     t.eq(f:close(), true, "second close is a no-op, no raise")
 end)
@@ -70,16 +73,16 @@ end)
 -- Read formats
 -- ------------------------------------------------------------------
 
-t.test("read 'n' bytes — MZ magic from ntoskrnl", function()
-    local f = io.open("\\SystemRoot\\SYSTEM32\\NTOSKRNL.EXE", "rb")
+t.test("read 'n' bytes — MZ magic from kernel32", function()
+    local f = io.open("\\SystemRoot\\SYSTEM32\\KERNEL32.DLL", "rb")
     local two = f:read(2)
     t.eq(two, "MZ")
     f:close()
 end)
 
 t.test("read past EOF returns nil", function()
-    -- Open ntoskrnl, seek to end, read should give nil.
-    local f = io.open("\\SystemRoot\\SYSTEM32\\NTOSKRNL.EXE", "rb")
+    -- Open kernel32, seek to end, read should give nil.
+    local f = io.open("\\SystemRoot\\SYSTEM32\\KERNEL32.DLL", "rb")
     f:seek("end")
     t.eq(f:read(16), nil, "at EOF, read returns nil")
     f:close()
@@ -248,7 +251,7 @@ end)
 -- ------------------------------------------------------------------
 
 t.test("read on closed file raises", function()
-    local f = io.open("\\SystemRoot\\SYSTEM32\\NTOSKRNL.EXE", "rb")
+    local f = io.open("\\SystemRoot\\SYSTEM32\\KERNEL32.DLL", "rb")
     f:close()
     t.raises(function() f:read(2) end, "closed")
 end)
