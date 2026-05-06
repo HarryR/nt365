@@ -17,7 +17,7 @@
 --       wibo_bin   = "/abs/path/to/wibo",       -- host only; nil on guest
 --       wibo_tools = "<script_dir>/wibo-tools", -- defaults: $script_dir/wibo-tools
 --       drive_root = "Z:",                      -- "Z:" host, "C:" on NT
---       args       = arg or {},                 -- positional + --debug etc.
+--       args       = arg or {},                 -- positional + --wibo-trace etc.
 --   }
 --
 -- script_dir + repo_root come from the caller (the host shim knows them
@@ -85,16 +85,54 @@ function M.main(opts)
     end
 
     -- ----------------------------------------------------------------
+    -- argv parsing — must happen before toolchain.configure so the
+    -- debug-symbols flag reaches every nmake invocation.  Positional
+    -- args (target names) are deferred for dispatch at the bottom.
+    -- ----------------------------------------------------------------
+
+    -- Build-mode default: ON.  /Z7 + -debugtype:cv adds CV records to
+    -- .obj's and consolidates them into the PE's .debug section, which
+    -- splitsym then extracts to <name>.DBG.  Final .sys/.dll/.exe is
+    -- identical to a retail build except for a 28-byte
+    -- IMAGE_DEBUG_DIRECTORY entry pointing at the sidecar.  The cost
+    -- is purely build-time / build-tree disk; ship binaries are
+    -- unaffected.  --no-syms opts out for retail-only iteration.
+    local debug_symbols = true
+    local positional = {}
+    for _, a in ipairs(args) do
+        if a == "--wibo-trace" then
+            if not platform.on_host then
+                platform.log("--wibo-trace is host-only (wibo runs on Linux);"
+                          .. " self-hosted NT builds have no wibo to trace.")
+                return 1
+            end
+            -- wibo-specific: emit one trace line per intercepted syscall.
+            platform.setenv("WIBO_DEBUG", "1")
+        elseif a == "--syms" or a == "--debug-symbols" then
+            debug_symbols = true   -- explicit no-op (default is on)
+        elseif a == "--no-syms" then
+            debug_symbols = false
+        elseif a:sub(1, 2) == "--" then
+            platform.log("Unknown flag: " .. a)
+            -- usage() not yet defined this early; fall through.
+            return 1
+        else
+            positional[#positional + 1] = a
+        end
+    end
+
+    -- ----------------------------------------------------------------
     -- Toolchain bridge.  configure() picks host vs NT, prepares NT_ENV
     -- and (host only) populates the wibo-tools symlink farm.
     -- ----------------------------------------------------------------
 
     toolchain.configure{
-        nt_root    = NT_ROOT,
-        wibo_tools = WIBO_TOOLS,
-        wibo_bin   = platform.on_host and WIBO_BIN or nil,
-        drive_root = DRIVE_ROOT,
-        path_strip = opts.path_strip,
+        nt_root        = NT_ROOT,
+        wibo_tools     = WIBO_TOOLS,
+        wibo_bin       = platform.on_host and WIBO_BIN or nil,
+        drive_root     = DRIVE_ROOT,
+        path_strip     = opts.path_strip,
+        debug_symbols  = debug_symbols,
     }
 
     local path_to_win        = toolchain.path_to_win
@@ -149,11 +187,94 @@ function M.main(opts)
     -- targets register manually below.
     local clean_dirs = {}
 
+    -- run_splitsym — invoke wibo-tools/SPLITSYM.EXE with cwd=wibo-tools
+    -- so wibo's dll loader resolves the imagehlp.dll sibling.  -a forces
+    -- extraction of every CV section into the sidecar .DBG.  The image
+    -- arg is converted to Z:\... because cwd is no longer the build dir.
+    local function run_splitsym(image_path)
+        if not platform.file_exists(image_path) then
+            log("!!! splitsym: image not found: " .. image_path)
+            return 1
+        end
+        local img_win = path_to_win(image_path)
+        log(">>> SPLITSYM -a " .. img_win)
+        return run_wibo_tool(WIBO_TOOLS, "SPLITSYM.EXE", "-a", img_win)
+    end
+
+    -- run_dbg2dwf — convert the sidecar .DBG (produced by splitsym)
+    -- into a gdb-loadable DWARF ELF placed next to it as .dwf.
+    -- Same wibo-tools cwd discipline as run_splitsym (DBG2DWF.EXE
+    -- doesn't actually need imagehlp.dll at runtime today, but keeping
+    -- the same call style avoids surprises if it grows that dep).
+    local function run_dbg2dwf(image_path)
+        local dbg_path = image_path:gsub("%.[^.]+$", ".DBG")
+        if not platform.file_exists(dbg_path) then
+            log("!!! dbg2dwf: missing sidecar: " .. dbg_path)
+            return 1
+        end
+        local elf_path  = image_path:gsub("%.[^.]+$", ".dwf")
+        local dbg_win   = path_to_win(dbg_path)
+        local elf_win   = path_to_win(elf_path)
+        log(">>> DBG2DWF " .. elf_win)
+        return run_wibo_tool(WIBO_TOOLS, "DBG2DWF.EXE", dbg_win, elf_win)
+    end
+
+    -- splitsym_dir — splitsym every PE image in `dir` modified at or
+    -- after `since`.  Skips files that already have a fresher .DBG
+    -- next to them, so re-running on an up-to-date tree is a no-op.
+    -- Used after each nmake build to scan PUBLIC/SDK/LIB/I386 and any
+    -- per-component obj/i386 dir that holds a final .sys/.dll/.exe.
+    -- No-op when --syms wasn't passed.
+    local PUB_LIB = NT_ROOT .. "/PUBLIC/SDK/LIB/I386"
+
+    local function splitsym_dir(dir, since)
+        if not debug_symbols then return 0 end
+        if not platform.is_dir(dir) then return 0 end
+        for _, name in ipairs(platform.list_dir(dir)) do
+            local lower = name:lower()
+            if lower:match("%.sys$") or lower:match("%.dll$")
+                                     or lower:match("%.exe$") then
+                local full = dir .. "/" .. name
+                local m = platform.mtime(full)
+                if m and (not since or m >= since) then
+                    local dbg = full:gsub("%.[^.]+$", ".DBG")
+                    local dm = platform.mtime(dbg)
+                    if not dm or dm < m then
+                        local rc = run_splitsym(full)
+                        if rc ~= 0 then return rc end
+                    end
+                    -- After (or alongside) splitsym, run dbg2dwf so
+                    -- gdb gets a matching .dwf without a separate
+                    -- step.  Skipped if the .dwf is already up
+                    -- to date relative to the .DBG.
+                    local elf      = full:gsub("%.[^.]+$", ".dwf")
+                    local dbg_m    = platform.mtime(dbg)
+                    local elf_m    = platform.mtime(elf)
+                    if dbg_m and (not elf_m or elf_m < dbg_m) then
+                        local rc2 = run_dbg2dwf(full)
+                        if rc2 ~= 0 then return rc2 end
+                    end
+                end
+            end
+        end
+        return 0
+    end
+
     local function nmake_target(name, dir, desc, t_opts, ...)
         local extras = {...}
         targets[name] = function()
             if t_opts and t_opts.pre and not t_opts.pre() then return 1 end
-            return run_nmake(dir, desc, extras, t_opts)
+            local since = os.time()
+            local rc = run_nmake(dir, desc, extras, t_opts)
+            if rc ~= 0 then return rc end
+            -- Auto-scan: most components produce final binaries here.
+            local srcr = splitsym_dir(PUB_LIB, since)
+            if srcr ~= 0 then return srcr end
+            if t_opts and t_opts.post then
+                local prc = t_opts.post()
+                if prc and prc ~= 0 then return prc end
+            end
+            return 0
         end
         clean_dirs[name] = { dir }
     end
@@ -243,9 +364,12 @@ function M.main(opts)
     targets.windows_base_client = function()
         if targets.windows_base_rtl() ~= 0 then return 1 end
         if targets.windows_winnls()   ~= 0 then return 1 end
-        return run_nmake(WIN .. "/BASE/CLIENT",
+        local since = os.time()
+        local rc = run_nmake(WIN .. "/BASE/CLIENT",
                          "WINDOWS/BASE/CLIENT - kernel32.dll",
                          { "makedll=1" })
+        if rc ~= 0 then return rc end
+        return splitsym_dir(PUB_LIB, since)
     end
     clean_dirs.windows_base_client = {
         WIN .. "/BASE/CLIENT", WIN .. "/BASE/RTL", WIN .. "/WINNLS",
@@ -360,9 +484,12 @@ function M.main(opts)
     targets.ntdll = function()
         -- DAYTONA needs an i386 subdir for the generated usrstubs.asm.
         mkdir_p(NTOS .. "/DLL/DAYTONA/i386")
-        return run_nmake(NTOS .. "/DLL/DAYTONA",
+        local since = os.time()
+        local rc = run_nmake(NTOS .. "/DLL/DAYTONA",
                          "NTDLL - user-mode runtime library",
                          { "makedll=1" })
+        if rc ~= 0 then return rc end
+        return splitsym_dir(PUB_LIB, since)
     end
 
     nmake_target("urtl", NT_ROOT .. "/PRIVATE/URTL",
@@ -379,16 +506,24 @@ function M.main(opts)
     -- ----- HAL (DLL link step on top of hal.lib) --------------------------
     targets.hal = function()
         local hal_dir = NTOS .. "/NTHALS/HAL"
+        local since = os.time()
         local rc = run_nmake(hal_dir, "HAL - MicroNT HAL (lib)")
         if rc ~= 0 then return rc end
 
         banner("HAL - MicroNT HAL (DLL link)")
         mkdir_p(hal_dir .. "/obj/i386")
 
+        -- Debug-symbols build flips the link to consolidate CV records
+        -- into hal.dll's .debug section so splitsym below can extract
+        -- them; otherwise stay with the lean retail flags.
+        local dbg_link_flags = debug_symbols
+            and { "-DEBUG:FULL", "-DEBUGTYPE:CV" }
+            or  { "-DEBUG:MINIMAL", "-DEBUGTYPE:COFF" }
         rc = run_wibo_tool(hal_dir, "link",
             "-OUT:obj\\i386\\hal.dll", "-DLL", "-MACHINE:i386",
             "-BASE:0x80400000", "-SUBSYSTEM:NATIVE", "-ENTRY:HalInitSystem@8",
-            "-NODEFAULTLIB", "-RELEASE", "-DEBUG:MINIMAL", "-DEBUGTYPE:COFF",
+            "-NODEFAULTLIB", "-RELEASE",
+            dbg_link_flags[1], dbg_link_flags[2],
             "-OPT:REF",
             "obj\\i386\\*.obj",
             NT_ROOT_WIN .. "\\PUBLIC\\SDK\\LIB\\I386\\ntoskrnl.lib",
@@ -400,6 +535,8 @@ function M.main(opts)
             return 1
         end
         log(">>> HAL - MicroNT HAL (DLL): OK")
+        local srcr = splitsym_dir(hal_dir .. "/obj/i386", since)
+        if srcr ~= 0 then return srcr end
         return 0
     end
 
@@ -410,15 +547,31 @@ function M.main(opts)
     targets.init = function()
         if targets.hal_stubs() ~= 0 then return 1 end
         if not ensure_bugcodes() then return 1 end
+        local since = os.time()
         -- INIT's SOURCES depends on NTTEST=ntoskrnl reaching NMAKE so
         -- MAKEFILE.DEF selects the ntoskrnl.exe link rule.  Use the
         -- standard run_nmake with keep_nttest=true; this dispatches
         -- through tchain.spawn_tool which handles host (wibo) and
         -- guest (native NT) uniformly.
-        return run_nmake(NTOS .. "/INIT/UP",
+        local rc = run_nmake(NTOS .. "/INIT/UP",
                          "INIT - NTOSKRNL.EXE",
                          nil,
                          { keep_nttest = true })
+        if rc ~= 0 then return rc end
+        -- ntoskrnl.exe lives at INIT/UP/obj/i386/ — TARGETPATH=..\..\obj
+        -- in INIT/UP/SOURCES governs the .lib output, not the .exe.
+        -- Scan that dir plus the shared NTOS/obj and the public lib
+        -- staging dir (some component .lib files can land in any of
+        -- these depending on the target's TARGETPATH).
+        for _, d in ipairs({
+            NTOS .. "/INIT/UP/obj/i386",
+            NTOS .. "/obj/i386",
+            PUB_LIB,
+        }) do
+            local srcr = splitsym_dir(d, since)
+            if srcr ~= 0 then return srcr end
+        end
+        return 0
     end
 
     -- ----- GENI386 (struct offset generator → KS386.INC + HAL386.INC) -----
@@ -442,6 +595,132 @@ function M.main(opts)
         log(">>> LINK.EXE rebuilt with error message resources")
         return 0
     end
+
+    -- ----- MKMSG — message-resource compiler (host EXE).
+    -- Tiny single-source tool; cvpack needs it to turn its msg.us /
+    -- msg.eng files into .err + .h.  Built into wibo-tools so cvpack's
+    -- nmake rule can spawn it via $(MKMSG_DIR)\mkmsg.
+    targets.mkmsg = function()
+        local dir = NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/MSG"
+        banner("MKMSG - message-resource compiler")
+        if run_nmake(dir, "MKMSG - message-resource compiler") ~= 0 then return 1 end
+        if not install_host_tool(dir .. "/obj/i386/mkmsg.exe", "MKMSG.EXE") then
+            return 1
+        end
+        return 0
+    end
+    clean_dirs.mkmsg = { NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/MSG" }
+
+    -- ----- CVPACK — post-LINK CodeView packer.  LINK 2.50 invokes
+    -- cvpack.exe automatically when -debugtype:cv is on; without it
+    -- we get LNK4027 (warning) → 0xff exit (fatal).  Pulls dbi.lib
+    -- (already built by targets.link / targets.pdbdump) and mkmsg
+    -- (built immediately above).
+    targets.cvpack = function()
+        if targets.mkmsg() ~= 0 then return 1 end
+        local pdb_dir = NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/PDB"
+        if run_nmake(pdb_dir .. "/DBI", "pdb/dbi.lib") ~= 0 then return 1 end
+        local dir = NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/CVPACK"
+        banner("CVPACK - CodeView packer")
+        if run_nmake(dir, "CVPACK - CodeView packer") ~= 0 then return 1 end
+        if not install_host_tool(dir .. "/obj/i386/cvpack.exe", "CVPACK.EXE") then
+            return 1
+        end
+        -- cvpack looks up its localized error strings in cvpack.err next
+        -- to the binary; without it we get the runtime "missing cvpack.err"
+        -- warning and only numeric codes on errors.  Same install pattern
+        -- as LINK.ERR / CL.ERR / RCPP.ERR already in wibo-tools.
+        if not install_host_tool(dir .. "/obj/i386/cvpack.err", "cvpack.err") then
+            return 1
+        end
+        return 0
+    end
+    clean_dirs.cvpack = { NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/CVPACK" }
+
+    -- ----- IMAGEHLP — imagehlp.dll + the bind/binplace/splitsym/...
+    -- post-link utilities.  splitsym is the era-native CV→.DBG
+    -- extractor MAKEFILE.DEF's BINPLACE_CMD hook invokes when a
+    -- component sets NTDEBUGTYPE=windbg.  binplace tags along (also
+    -- handy for future _NTTREE-style staging).  Other tools (bind,
+    -- rebase, editsym, ...) are produced as a side effect but not
+    -- installed — the SOURCES is single-shot and rebuilds them all
+    -- in one nmake invocation.
+    targets.imagehlp = function()
+        local dir = NT_ROOT .. "/PRIVATE/SDKTOOLS/IMAGEHLP"
+        banner("IMAGEHLP - imagehlp.dll + splitsym + binplace")
+        -- IMAGEHLP/MAKEFILE.INC adds rtl_user's imagedir.obj to its
+        -- OBJECTS list (BASEDIR\private\ntos\rtl\user\obj\i386\imagedir.obj).
+        -- Build rtl_user first so that .obj exists.
+        if targets.rtl_user() ~= 0 then return 1 end
+        if run_nmake(dir, "IMAGEHLP - imagehlp.dll + utilities",
+                     { "makedll=1" }, { keep_umappl = true }) ~= 0 then
+            return 1
+        end
+        if not install_host_tool(
+                NT_ROOT .. "/PUBLIC/SDK/LIB/I386/imagehlp.dll",
+                "IMAGEHLP.DLL") then return 1 end
+        if not install_host_tool(dir .. "/obj/i386/splitsym.exe",
+                                 "SPLITSYM.EXE") then return 1 end
+        if not install_host_tool(dir .. "/obj/i386/binplace.exe",
+                                 "BINPLACE.EXE") then return 1 end
+        return 0
+    end
+    clean_dirs.imagehlp = { NT_ROOT .. "/PRIVATE/SDKTOOLS/IMAGEHLP" }
+
+    -- ----- CVDUMP — CodeView records inspector (reads .obj/.exe/.dbg).
+    -- Counterpart of pdbdump for the .DBG sidecar workflow: pdbdump
+    -- knows PDB 2.0 streams; cvdump walks the raw CV4 records that
+    -- splitsym extracted out of the PE.  Links against imagehlp.lib
+    -- (the import lib next to imagehlp.dll, both built by
+    -- targets.imagehlp).
+    targets.cvdump = function()
+        if targets.imagehlp() ~= 0 then return 1 end
+        local dir = NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/CVDUMP"
+        banner("CVDUMP - CodeView inspector")
+        if run_nmake(dir, "CVDUMP - CodeView inspector") ~= 0 then return 1 end
+        if not install_host_tool(dir .. "/obj/i386/cvdump.exe", "CVDUMP.EXE") then
+            return 1
+        end
+        return 0
+    end
+    clean_dirs.cvdump = { NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/CVDUMP" }
+
+    -- ----- DBG2DWF — CV4 sidecar .DBG → DWARF-2 ELF for gdb.
+    -- Same shape as cvdump's target: links against imagehlp.lib (which
+    -- exposes MapDebugInformation for the CV blob), emits an ELF with
+    -- .symtab + .debug_line + .debug_info + .debug_abbrev + .debug_str.
+    -- The output is consumed by gdb via `add-symbol-file <elf>`, no
+    -- offset (symbol VAs are absolute = imagebase + RVA).
+    targets.dbg2dwf = function()
+        if targets.imagehlp() ~= 0 then return 1 end
+        local dir = NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/DBG2DWF"
+        banner("DBG2DWF - .DBG → DWARF ELF")
+        if run_nmake(dir, "DBG2DWF - .DBG to DWARF ELF") ~= 0 then return 1 end
+        if not install_host_tool(dir .. "/obj/i386/dbg2dwf.exe", "DBG2DWF.EXE") then
+            return 1
+        end
+        return 0
+    end
+    clean_dirs.dbg2dwf = { NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/DBG2DWF" }
+
+    -- ----- PDBDUMP — PDB 2.0 inspector (lines/syms/types/secmap).
+    -- Pulls dbi.lib via the same PDB/DBI nmake targets.link uses; running
+    -- it twice is a no-op when the .lib is up to date, so pdbdump stays
+    -- self-sufficient when invoked standalone (`build.sh pdbdump`).
+    targets.pdbdump = function()
+        local pdb_dir  = NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/PDB"
+        local dump_dir = pdb_dir .. "/SRC/TOOLS/PDBDUMP"
+        banner("PDBDUMP - PDB 2.0 inspector")
+
+        if run_nmake(pdb_dir .. "/DBI", "pdb/dbi.lib") ~= 0 then return 1 end
+        if run_nmake(dump_dir, "PDBDUMP - PDB inspector") ~= 0 then return 1 end
+
+        if not install_host_tool(dump_dir .. "/obj/i386/pdbdump.exe", "PDBDUMP.EXE") then
+            return 1
+        end
+        return 0
+    end
+    clean_dirs.pdbdump = { NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/PDB/SRC/TOOLS/PDBDUMP" }
 
     -- ----- cmd-stub (minimal cmd.exe replacement for NMAKE COMSPEC) ------
     -- Self-bootstrap dependency: must run before any wibo-tools invocation
@@ -603,7 +882,8 @@ function M.main(opts)
     -- ------------------------------------------------------------------
 
     local TOOL_TARGETS = {
-        "link", "mc", "rc", "gensrv",
+        "link", "mkmsg", "cvpack", "imagehlp", "cvdump", "dbg2dwf",
+        "pdbdump", "mc", "rc", "gensrv",
     }
 
     local NTOSKRNL_TARGETS = {
@@ -947,12 +1227,24 @@ function M.main(opts)
     -- ------------------------------------------------------------------
 
     local function usage()
-        platform.log("Usage: build.sh [--debug] [<target> ...]")
+        local flag_summary = platform.on_host
+            and "[--wibo-trace] [--no-syms]" or "[--no-syms]"
+        platform.log("Usage: build.sh " .. flag_summary .. " [<target> ...]")
         platform.log("")
         platform.log("No arguments → builds 'all' (every group + cr + disk).")
         platform.log("")
+        platform.log("Flags:")
+        if platform.on_host then
+            platform.log("  --wibo-trace  set WIBO_DEBUG=1 (one trace line per intercepted")
+            platform.log("                syscall in the host wibo wrapper)")
+        end
+        platform.log("  --no-syms     skip /Z7 + sidecar .DBG/.dwf generation")
+        platform.log("                (default: build with debug symbols — final binaries")
+        platform.log("                 differ only by a 28-byte IMAGE_DEBUG_DIRECTORY entry)")
+        platform.log("")
         platform.log("Top-level targets:")
         platform.log("  all, tools, ntoskrnl, drivers, userland, cr, efi, disk")
+        platform.log("  rebuild            — alias for `clean all` (full nuke + full build)")
         platform.log("")
         platform.log("Individual components (build order within each group):")
         platform.log("  tools:    " .. table.concat(TOOL_TARGETS,    ", "))
@@ -970,20 +1262,29 @@ function M.main(opts)
         platform.log("  clean:disk         — drops build/disk/")
     end
 
-    -- Parse --debug etc. before target names.  WIBO_DEBUG is exported
-    -- exactly the way build.sh does it, so build_envp's later getenv
-    -- pulls it through to wibo.
-    local positional = {}
-    for _, a in ipairs(args) do
-        if a == "--debug" then
-            platform.setenv("WIBO_DEBUG", "1")
-        elseif a:sub(1, 2) == "--" then
-            platform.log("Unknown flag: " .. a)
-            usage()
-            return 1
-        else
-            positional[#positional + 1] = a
-        end
+    -- argv parsing already handled at top of main() so the flags
+    -- could feed toolchain.configure.
+
+    -- After targets.clean wipes wibo-tools/, the toolchain symlink farm
+    -- has to be repopulated AND cmd-stub rebuilt before any subsequent
+    -- target can spawn an NT tool.  Both calls are idempotent (no-op
+    -- when wibo-tools/ exists and cmd.exe is fresh), so it's safe to
+    -- call them anywhere a clean might just have run.
+    local function reprovision_after_clean()
+        if not platform.on_host then return 0 end
+        toolchain.setup_wibo_tools()
+        return bootstrap_cmdstub_if_needed()
+    end
+
+    -- `rebuild` — clean nuke followed by full build.  Implemented inline
+    -- (rather than as a list "clean", "all") because targets.clean wipes
+    -- wibo-tools/ + cmd-stub, so we have to re-provision between phases.
+    targets.rebuild = function()
+        local rc = targets.clean()
+        if rc ~= 0 then return rc end
+        rc = reprovision_after_clean()
+        if rc ~= 0 then return rc end
+        return targets.all()
     end
 
     if platform.on_host then
@@ -1011,6 +1312,12 @@ function M.main(opts)
             end
             local rc = fn() or 0
             if rc ~= 0 then return rc end
+            -- targets.clean wipes wibo-tools/ + cmd-stub; if more targets
+            -- are queued, re-provision before they run.
+            if name == "clean" then
+                rc = reprovision_after_clean()
+                if rc ~= 0 then return rc end
+            end
         end
     end
     return 0

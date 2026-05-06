@@ -9,15 +9,22 @@
 #   make selftest     — boot pointed at selftest.lua, watch for ALL PASSED
 #   make smoke-disk   — disk image flavoured for smoke.lua (no boot)
 #   make smoketest    — boot smoke disk (used by CI matrix per shape)
-#   make symbols      — produce gdb-loadable ELF symbol files for
-#                       ntoskrnl + hal under build/gdb/
-#   make gdb          — launch gdb with kernel+hal symbols loaded and
-#                       attach to a running boot.sh --gdb session
+#   make gdb          — launch gdb with ntoskrnl + hal .dwf loaded
+#                       and attach to a running boot.sh --gdb session
+#                       (builds the .dwf files on demand if missing)
 #
 # Hardware shape — flags pass through to boot.sh:
-#   make boot MACHINE=q35 DISK=nvme        # canonical (default)
-#   make boot MACHINE=pc  DISK=ide         # legacy classic shape
-#   make smoketest MACHINE=pc DISK=nvme    # smoke on a specific shape
+#   make boot MACHINE=q35 DISK=nvme            # canonical (default)
+#   make boot MACHINE=pc  DISK=ide             # legacy classic shape
+#   make smoketest MACHINE=pc DISK=nvme        # smoke on a specific shape
+#
+# Boot-time options (compose with any of the above):
+#   GDB=1                  pause qemu on gdbstub :1234 for `make gdb`
+#   SERIAL_LOG=/tmp/boot.log  pipe stdout+stderr to a file (no terminal flood)
+#
+#   make smoketest GDB=1 SERIAL_LOG=/tmp/boot.log
+#       smoke.lua exits cleanly + everything's captured to /tmp/boot.log;
+#       grep '^staged' on it to find each PE's runtime VA.
 #
 # What this Makefile does NOT build
 #   - NT toolchain / kernel / drivers / userland — that's `src/build.sh`.
@@ -32,10 +39,9 @@ REPO        := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 SRC         := $(REPO)/src
 BOOT_EFI    := $(SRC)/boot-efi
 BUILD       := $(REPO)/build/disk
-GDB_DIR     := $(REPO)/build/gdb
 HOST_LUAJIT := $(REPO)/build/host-tools/luajit
 
-.PHONY: cr disk boot selftest smoketest smoke-disk symbols gdb
+.PHONY: cr disk boot selftest smoketest smoke-disk gdb
 
 # ---------------- cr binaries (run.exe + lua.dll) -------------------
 #
@@ -79,9 +85,26 @@ endif
 ifdef DISK
 BOOT_FLAGS += --disk $(DISK)
 endif
+# GDB=1 — pause qemu on the gdbstub on :1234 so `make gdb` (in another
+# shell) can attach.  Composes with selftest / smoketest:
+#   make boot GDB=1                      # interactive
+#   make smoketest GDB=1                 # boots smoke.lua, gdb-attached
+ifdef GDB
+BOOT_FLAGS += --gdb
+endif
+# SERIAL_LOG=/path — redirect both stdout and stderr to a file instead
+# of flooding the terminal.  Useful when main.lua's output scrolls past
+# scrollback and you want to grep for boot-efi BXLOG lines (e.g. the
+# 'staged ntoskrnl at phys ... base=0x...' line that reveals the
+# kernel's runtime VA).  Empty = print to terminal as usual.
+ifdef SERIAL_LOG
+BOOT_REDIRECT := > $(SERIAL_LOG) 2>&1
+else
+BOOT_REDIRECT :=
+endif
 
 boot: disk
-	$(SRC)/boot.sh $(BOOT_FLAGS)
+	$(SRC)/boot.sh $(BOOT_FLAGS) $(BOOT_REDIRECT)
 
 selftest: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\selftest.lua'
 selftest: boot
@@ -100,55 +123,55 @@ smoke-disk: disk
 smoketest: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\smoke.lua'
 smoketest: boot
 
-# ---------------- gdb symbols + interactive session -----------------
+# ---------------- gdb DWARF + interactive session -------------------
 #
-# Convert PE binaries to ELF symbol files for native gdb debugging.
-# Can't use `objcopy -I pei-i386` directly: LINK 2.50 stores COFF
-# symbol Value as RVA-from-ImageBase, but objcopy interprets it as
-# section-relative — symbols outside .text come out off-by-section-RVA
-# and gdb breakpoints land on never-executed addresses.  pe2elf.py
-# parses the COFF symbol table directly with the correct LINK 2.50
-# convention, strips the cdecl `_` prefix and stdcall `@N` suffix
-# (gas doesn't accept `@` in symbol names anyway), and emits an ELF
-# stub via `as`.
+# build.sh runs splitsym + dbg2dwf as part of every build (--syms is
+# default), producing <name>.dwf next to each PE.  Those carry full
+# DWARF — function names, source/line tables, locals (BP-rel + reg),
+# and the CV4 type table converted to DWARF type DIEs.  gdb consumes
+# them directly via symbol-file / add-symbol-file.
 #
-# Result: ~4600 symbols for ntoskrnl (functions in every section,
-# internals included) at correct kernel addresses.  In gdb,
-# `b KeBugCheckEx` and `b Phase1Initialization` work natively.
+# Drivers ship their .dwf alongside the PE under PUBLIC/SDK/LIB/I386.
+# Their runtime VA isn't known until the kernel's loader places them,
+# so we don't add-symbol-file them at gdb startup — instead the
+# `loaddrivers` command (registered by gdb_drivers.py) walks
+# PsLoadedModuleList at runtime, reads each LDR_DATA_TABLE_ENTRY's
+# DllBase, and add-symbol-file's the matching .dwf with the right
+# slide.  Run it after the kernel reaches a stop point past
+# IoInitSystem.
+
+NTOSKRNL_DWF := $(REPO)/src/NT/PRIVATE/NTOS/INIT/UP/obj/i386/ntoskrnl.dwf
+HAL_DWF      := $(REPO)/src/NT/PRIVATE/NTOS/NTHALS/HAL/obj/i386/hal.dwf
+GDB_INIT     := $(SRC)/tools/gdb.init
+GDB_DRIVERS  := $(SRC)/tools/gdb_drivers.py
+
+# `make gdb` — interactive: start `src/boot.sh --gdb` in another
+# terminal first; that boots under qemu paused on :1234.  This target
+# loads kernel+hal DWARF and connects.
 #
-# Drivers also work this way but their bases vary per boot
-# (boot-efi's PE loader allocates them dynamically); covering them
-# is a follow-up that needs boot-efi to emit a runtime base manifest.
-
-NTOSKRNL_PE := $(REPO)/src/NT/PRIVATE/NTOS/INIT/UP/obj/i386/ntoskrnl.exe
-HAL_PE      := $(REPO)/src/NT/PRIVATE/NTOS/NTHALS/HAL/obj/i386/hal.dll
-GDB_INIT    := $(SRC)/boot-efi/gdb.init
-PE2ELF      := $(SRC)/tools/pe2elf.py
-
-$(GDB_DIR):
-	mkdir -p $(GDB_DIR)
-
-$(GDB_DIR)/ntoskrnl.elf: $(NTOSKRNL_PE) $(PE2ELF) | $(GDB_DIR)
-	python3 $(PE2ELF) $< $@
-
-$(GDB_DIR)/hal.elf: $(HAL_PE) $(PE2ELF) | $(GDB_DIR)
-	python3 $(PE2ELF) $< $@
-
-symbols: $(GDB_DIR)/ntoskrnl.elf $(GDB_DIR)/hal.elf
-
-# `make gdb` — interactive: start QEMU paused on :1234 in another
-# terminal first (`make boot --gdb`-equivalent: actually run
-# `src/boot.sh --gdb` separately, since it needs to be in a different
-# shell so this gdb can attach).  This target loads kernel+hal
-# symbols, sources the helper definitions, and connects.
+# Symbol source: <name>.dwf produced by `src/build.sh` — full DWARF
+# (functions, source lines, locals, types).  build.sh defaults to
+# --syms so a normal build emits these alongside the .sys/.dll/.exe.
+# If the .dwf isn't present this target builds it on demand.
 #
-# To boot + attach in one command: `make gdb-boot` (TODO follow-up
-# that backgrounds boot.sh, waits for :1234, then attaches).
-gdb: symbols
+# Drivers can't be loaded statically — their runtime VA is chosen by
+# the kernel's loader.  `loaddrivers` is registered by gdb_drivers.py
+# and walks PsLoadedModuleList to add-symbol-file each driver's .dwf
+# at its actual DllBase.  Run it after the kernel has progressed past
+# IoInitSystem (after the first kernel-side breakpoint hits).
+
+$(NTOSKRNL_DWF):
+	$(SRC)/build.sh init
+
+$(HAL_DWF):
+	$(SRC)/build.sh hal
+
+gdb: $(NTOSKRNL_DWF) $(HAL_DWF)
 	gdb \
 	  -iex 'set confirm off' \
 	  -iex 'set pagination off' \
-	  -ex 'symbol-file $(GDB_DIR)/ntoskrnl.elf' \
-	  -ex 'add-symbol-file $(GDB_DIR)/hal.elf' \
+	  -ex 'symbol-file $(NTOSKRNL_DWF)' \
+	  -ex 'add-symbol-file $(HAL_DWF)' \
 	  -ex 'source $(GDB_INIT)' \
+	  -ex 'source $(GDB_DRIVERS)' \
 	  -ex 'target remote :1234'

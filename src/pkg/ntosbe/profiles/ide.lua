@@ -496,15 +496,24 @@ function M.disk_files(paths, list_tree)
     -- Also drops source tarballs (.tgz / .tar.gz / .zip / .bak) that
     -- the user might have stashed in the tree as backups — they
     -- violate 8.3 and aren't OS sources anyway.
+    --
+    -- Build outputs that happen to land in the source tree (notably
+    -- splitsym's .DBG and dbg2dwf's .dwf sidecars next to drivers in
+    -- PUBLIC/SDK/LIB/I386) are also dropped — they're produced by
+    -- the build, not consumed by it, so self-hosted re-build doesn't
+    -- need them.  pdbs likewise.
     local function nt_path_excluded(rel)
         for seg in rel:gmatch("[^/]+") do
             if nt_skip_dirs[seg] then return true end
         end
         local lower = rel:lower()
-        if lower:match("%.tgz$")    then return true end
+        if lower:match("%.tgz$")     then return true end
         if lower:match("%.tar%.gz$") then return true end
-        if lower:match("%.zip$")    then return true end
-        if lower:match("%.bak$")    then return true end
+        if lower:match("%.zip$")     then return true end
+        if lower:match("%.bak$")     then return true end
+        if lower:match("%.dbg$")     then return true end
+        if lower:match("%.dwf$")     then return true end
+        if lower:match("%.pdb$")     then return true end
         return false
     end
 

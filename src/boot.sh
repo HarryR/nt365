@@ -15,7 +15,8 @@
 #   --vga       Open a VGA window (stdvga) in addition to serial.
 #               Default: serial-console-only (-display none).
 #   --gdb       Pause CPU at boot and listen for gdb on :1234.
-#               Connect with `gdb -x boot-efi/gdb.init` from another shell.
+#               Connect from another shell with `make -C src gdb`
+#               (loads ntoskrnl + hal .dwf, sources tools/gdb.init).
 #   --trace     Log int / cpu_reset / in_asm to ./qemu.log.
 #               Produces a large file; opt-in for exception debugging.
 #   --netdump   Dump every virtio-net frame to ./vionet.pcap (override

@@ -1,0 +1,41 @@
+!IF 0
+
+MicroNT — dbg2dwf
+
+  Reads an NT 3.5 sidecar .DBG (or PE with embedded CV) via imagehlp's
+  MapDebugInformation, walks the CodeView OMF directory, and emits a
+  gdb-loadable ELF carrying:
+      .symtab        — function names → image VA
+      .debug_info    — one DW_TAG_compile_unit DIE per CV module
+      .debug_abbrev  — DIE shape declarations
+      .debug_line    — DWARF line-number program per module
+      .debug_str     — string table for DIE attributes
+      .debug_aranges — fast PC→CU lookup table
+
+  Output is a self-contained ET_EXEC ELF (.dwf) gdb consumes via
+  symbol-file / add-symbol-file.  Carries function names, source-line
+  tables, BP-relative locals, the CV4 type table, .debug_aranges and
+  .debug_frame CFI for 32-bit-on-x86-64 unwinding.
+
+!ENDIF
+
+MAJORCOMP=sdktools
+MINORCOMP=dbg2dwf
+
+TARGETNAME=dbg2dwf
+TARGETPATH=obj
+TARGETTYPE=PROGRAM
+
+UMTYPE=console
+
+INCLUDES=$(BASEDIR)\private\sdktools\vctools\langapi\include
+
+SOURCES=dbg2dwf.c
+
+UMLIBS=$(BASEDIR)\public\sdk\lib\*\imagehlp.lib
+
+C_DEFINES=-DNT_BUILD
+
+!if "$(NTDEBUG)" == "retail" || "$(NTDEBUG)" == "" || "$(NTDEBUG)" == "ntsdnodbg"
+C_DEFINES=$(C_DEFINES) -DNDEBUG
+!endif

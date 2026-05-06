@@ -8,6 +8,7 @@ Implemented:
 
 - [x] Self-hosting — booted MicroNT image rebuilds its own
   kernel, drivers, and userland from source
+- [x] `gdb` powered kernel & driver debugging
 - [x] 64-bit UEFI bootloader (`BOOTX64.EFI`, OVMF on qemu)
 - [x] PCI-native HAL (BAR relocation above 4 GiB, no PC/AT assumptions)
 - [x] Fast `SYSENTER`/`SYSEXIT` & Zw* kernel service dispatch
@@ -76,7 +77,7 @@ src/cr/                 native-NT LuaJIT runtime (run.exe + lua.dll + librt)
 src/pkg/                Lua tree staged at \SystemRoot\lua\ on disk
 src/pkg/ntosbe/         NT OS Build Environment (hive + disk + profiles)
 src/cmd-stub/           minimal cmd.exe replacement for NMAKE
-src/tools/              utility scripts (kdserial, pe2gdb, dumphive, …)
+src/tools/              utility scripts (gdb.init, gdb_drivers, dumphive, …)
 src/wibo-tools/         symlinks into PUBLIC/OAK/BIN/I386 (built first-run)
 src/build.sh            host CLI entry — bootstraps LuaJIT + dispatches into ntosbe.build
 src/bootstrap.sh        builds the host LuaJIT used by build.sh
@@ -108,8 +109,7 @@ curl -fL https://github.com/HarryR/wibo/releases/download/v1.1.0-micront.2/wibo-
 
 Three toolchains coexist:
 
-- **wibo** runs the original MS toolchain (CL 8.50, ML 6.11d, LINK 2.50,
-  NMAKE) under a tiny PE loader. No Wine.
+- **wibo** runs the original MS toolchain (CL 8.50, ML 6.11d, LINK 2.50, NMAKE). No Wine.
 - **gcc + gnu-efi** for the UEFI loader.
 - **mingw-w64 i686** for the cr testbed (LuaJIT cross-compiled for
   native-NT subsystem).
@@ -140,7 +140,6 @@ boot.sh --gdb                        # freeze CPU, listen on :1234 for gdb
 boot.sh --trace                      # -d int,cpu_reset,in_asm → ./qemu.log
 boot.sh --vga                        # add a VGA window
 boot.sh --mem 256                    # bump guest RAM (default 128 MiB)
-debug.sh                             # one-shot: paused QEMU + gdb.script + capture
 ```
 
 ## Iteration
@@ -155,18 +154,63 @@ debug.sh                             # one-shot: paused QEMU + gdb.script + capt
 - The build skips unchanged objects on `.c` mtime alone. Editing a `.h`
   doesn't trigger dependents — touch the `.c` or run `clean:<comp>`.
 
-## Symbol lookup under gdb
+## Debugging under gdb
 
-`pe2gdb.py` emits `ntoskrnl.gdb` and `hal.gdb` from each PE's export
-table. Internal statics (`KiTrap*`, `MiReserveSystemPtes`, MM helpers)
-aren't exported — disassemble and identify by call shape:
+`build.sh` defaults to `--syms`: every PE gets a sidecar `.DBG`
+(extracted by the in-tree `splitsym`) and a `.dwf` (CodeView 4 → DWARF,
+emitted by the in-tree `dbg2dwf`).  The `.dwf` carries function names,
+source-line tables, BP-relative locals scoped to each function's body
+range, the CV4 type table converted to DWARF type DIEs, `.debug_aranges`
+for precise CU-by-PC lookup, and `.debug_frame` CFI for 32-bit-on-x86-64
+unwinding.
 
-- `mov eax, fs:0x0` / `mov fs:0x0, esp` prologue → SEH-guarded routine.
-- `cmp WORD [x], 0x5a4d` + `cmp DWORD [x+e_lfanew], 0x4550` →
-  `RtlImageNtHeader`.
-- `mov edi, ds:0xXXXXXXXX` where the constant is a list head → walking
-  `PsLoadedModuleList` or similar.
+Build, then in two terminals:
 
-Break at `KeBugCheckEx` (from `ntoskrnl.gdb`) to catch every bugcheck;
-inspect `[esp+0..20]` for the call site and five parameters.
+```sh
+src/boot.sh --gdb              # boots paused, listens on :1234
+make -C src gdb                # loads ntoskrnl.dwf + hal.dwf, attaches
+```
+
+`make gdb` symbol-files `ntoskrnl.dwf` and `hal.dwf` (both linked at
+canonical bases — no slide).  Drivers can't be loaded statically since
+their runtime VA is chosen by the kernel's loader; after the first
+kernel-side breakpoint hits, run `loaddrivers` (registered by
+`tools/gdb_drivers.py`) to walk `PsLoadedModuleList` and
+`add-symbol-file` each driver `.dwf` at its actual `DllBase`.
+
+```
+(gdb) hbreak Phase1Initialization      # hbreak for pre-IoInitSystem syms
+(gdb) c
+Breakpoint 1, Phase1Initialization (Context=0x8077c100) at init.c:1065
+(gdb) bt
+#0  Phase1Initialization (Context=0x8077c100) at init.c:1065
+#1  0x801b2e48 in KiInitializeKernel (Process=0x8019c3b0 <KiIdleProcess>,
+    Thread=0x8019c5a0 <P0BootThread>, ...) at kernlini.c:547
+(gdb) loaddrivers                       # post-IoInitSystem
+(gdb) hbreak FatCommonRead
+```
+
+Caveats:
+
+- **`hbreak` not `b`** for any pre-`IoInitSystem` kernel symbol —
+  software bps set before the kernel's pages are mapped won't arm.
+- **gdb is in x86-64 mode** (qemu-system-x86_64 advertises target as
+  `i386:x86-64`).  The `.dwf` works around this by emitting x86-64
+  DWARF register numbers and 4-byte `DW_OP_deref_size` for stack reads.
+  Don't `set architecture i386` — it breaks the gdbstub protocol.
+- **FPO functions show params as `<optimized out>`** in their bodies.
+  Most kernel funcs compile with FPO under `/Oxs` despite `/Oy-`; CV
+  records BP-relative offsets that aren't valid at runtime, so dbg2dwf
+  emits an empty location list rather than wrong values.  Proper
+  ESP-relative tracking would need `.debug$F` FPO_DATA + esp-rel CFI.
+- **Source files don't auto-open** (`init.c: No such file or directory`).
+  CV records mixed-case (`AcChkSup.c`) but the dump tooling DOS-flattened
+  on-disk to uppercase (`ACCHKSUP.C`).  Linux is case-sensitive.  Until
+  dbg2dwf gains case-insensitive resolution, gdb resolves all symbols/
+  lines/types correctly; only the source-text display is missing.
+
+For ad-hoc poking: `src/tools/gdb.init` defines helpers — `regs`, `stk`,
+`pcr`, `seh`, `trapframe <addr>`, `iret`, `bugcheck` — sourced
+automatically by `make gdb`.  Break at `KeBugCheckEx` to catch every
+bugcheck and run `bugcheck` to dump the args.
 

@@ -118,7 +118,7 @@ NTTARGETFILE0=coff.c shared.c data.c
 !endif
 
 
-!if "$(NTDEBUG)" == "retail" || "$(NTDEBUG)" == ""
+!if "$(NTDEBUG)" == "retail" || "$(NTDEBUG)" == "" || "$(NTDEBUG)" == "ntsdnodbg"
 C_DEFINES = $(C_DEFINES) -DNDEBUG
 !endif
 

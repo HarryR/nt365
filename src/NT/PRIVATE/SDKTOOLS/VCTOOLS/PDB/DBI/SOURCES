@@ -56,7 +56,7 @@ MSC_WARNING_LEVEL = -W3 -WX
 
 C_DEFINES = -DNT_BUILD
 
-!if "$(NTDEBUG)" == "retail" || "$(NTDEBUG)" == ""
+!if "$(NTDEBUG)" == "retail" || "$(NTDEBUG)" == "" || "$(NTDEBUG)" == "ntsdnodbg"
 C_DEFINES = $(C_DEFINES)  -DNDEBUG
 !endif
 

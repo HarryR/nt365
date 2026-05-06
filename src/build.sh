@@ -10,7 +10,8 @@
 # Examples:
 #     src/build.sh                  # builds 'all' (every group + cr + disk)
 #     src/build.sh null             # one component
-#     src/build.sh --debug ke       # WIBO_DEBUG=1 + single component
+#     src/build.sh --wibo-trace ke  # WIBO_DEBUG=1 (host syscall trace) + single component
+#     src/build.sh --no-syms ke     # opt out of /Z7 + sidecar .DBG/.dwf (default is on)
 #     src/build.sh clean:disk       # drop build/disk/
 
 set -e

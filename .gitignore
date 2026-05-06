@@ -319,13 +319,34 @@ src/NT/PUBLIC/SDK/LIB/I386/rpcltc1.lib
 src/NT/PUBLIC/OAK/BIN/I386/gensrv.exe
 src/NT/PUBLIC/OAK/BIN/I386/MC.EXE
 src/NT/PUBLIC/OAK/BIN/I386/listmung.exe
+# Debug-pipeline tools rebuilt from in-tree source by build.sh — keep
+# the import libraries (IMAGEHLP.LIB) tracked, but the executables and
+# runtime DLL are regenerated each build.  cvpack.err is the message
+# data file CVPACK.EXE reads at runtime, also build-emitted.
+src/NT/PUBLIC/OAK/BIN/I386/BINPLACE.EXE
+src/NT/PUBLIC/OAK/BIN/I386/CVDUMP.EXE
+src/NT/PUBLIC/OAK/BIN/I386/CVPACK.EXE
+src/NT/PUBLIC/OAK/BIN/I386/DBG2DWF.EXE
+src/NT/PUBLIC/OAK/BIN/I386/MKMSG.EXE
+src/NT/PUBLIC/OAK/BIN/I386/PDBDUMP.EXE
+src/NT/PUBLIC/OAK/BIN/I386/SPLITSYM.EXE
+src/NT/PUBLIC/OAK/BIN/I386/IMAGEHLP.DLL
+src/NT/PUBLIC/OAK/BIN/I386/cvpack.err
+
+# imagehlp runtime + setargv stub — the .lib import stub stays tracked
+# (IMAGEHLP.LIB above), the rest is build output.
+src/NT/PUBLIC/SDK/LIB/I386/imagehlp.dll
+src/NT/PUBLIC/SDK/LIB/I386/imagehlp.exp
+src/NT/PUBLIC/SDK/LIB/I386/setargv.obj
+
+# Per-PE debug sidecars produced by splitsym + dbg2dwf as part of every
+# --syms build (default).  Anything matching these is regenerated.
+src/NT/PUBLIC/SDK/LIB/I386/*.DBG
+src/NT/PUBLIC/SDK/LIB/I386/*.dwf
 
 # gensrv-generated files (rebuilt every ntdll build)
 src/NT/PRIVATE/NTOS/DLL/DAYTONA/i386/usrstubs.asm
 src/NT/PRIVATE/NTOS/DLL/DAYTONA/ntdll.xtr
-
-# Generated sysroot trees
-src/ntoskrnl.gdb
 
 # Old HAL (preserved for reference, not built)
 src/NT/PRIVATE/NTOS/NTHALS.old/

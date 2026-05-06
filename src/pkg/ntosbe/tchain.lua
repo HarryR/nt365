@@ -206,6 +206,28 @@ end
 -- run_nmake — gen_objects + stale-obj nuke + spawn nmake.
 -- ----------------------------------------------------------------
 
+-- Per-component build-mode stamp.  Lets us detect when the operator
+-- ran without --syms last time and is now running with --syms (or
+-- vice versa).  nmake's mtime check would otherwise skip recompilation
+-- on unchanged .c files, producing a binary whose .obj files were
+-- compiled with stale /Z7-vs-no-/Z7 flags.  When the stamp mismatches
+-- we wipe obj/ before running nmake; on success the new mode is
+-- written back.
+local function _read_stamp(path)
+    local f = io.open(path, "r")
+    if not f then return nil end
+    local s = f:read("*l")
+    f:close()
+    return s
+end
+
+local function _write_stamp(path, val)
+    local f = io.open(path, "w")
+    if not f then return end
+    f:write(val)
+    f:close()
+end
+
 function M.run_nmake(linux_dir, desc, extra_args, opts)
     opts = opts or {}
     extra_args = extra_args or {}
@@ -217,6 +239,21 @@ function M.run_nmake(linux_dir, desc, extra_args, opts)
     if not platform.file_exists(linux_dir) then
         platform.log("ERROR: directory not found: " .. linux_dir)
         return 1
+    end
+
+    -- Detect --syms ↔ retail mode flip and wipe obj/ if needed before
+    -- nmake gets a chance to silently reuse stale .obj files.
+    do
+        local obj_root  = linux_dir .. "/obj"
+        local obj_arch  = obj_root .. "/i386"
+        local stamp     = obj_arch .. "/.syms-stamp"
+        local cur_mode  = cfg.debug_symbols and "syms" or "retail"
+        local prev_mode = _read_stamp(stamp)
+        if prev_mode and prev_mode ~= cur_mode then
+            platform.log((">>> build-mode change (%s → %s); wiping %s")
+                :format(prev_mode, cur_mode, obj_root))
+            platform.rmrf(obj_root)
+        end
     end
 
     platform.mkdir_p(linux_dir .. "/obj/i386")
@@ -256,12 +293,18 @@ function M.run_nmake(linux_dir, desc, extra_args, opts)
     end
 
     if umappl_override then tool_args[#tool_args + 1] = umappl_override end
+    if cfg.debug_symbols then
+        tool_args[#tool_args + 1] = "NTDEBUG=ntsdnodbg"
+        tool_args[#tool_args + 1] = "NTDEBUGTYPE=windbg"
+    end
     for _, a in ipairs(extra_args) do tool_args[#tool_args + 1] = a end
 
     local envp = M.build_envp({ "MAKEDIR=" .. makedir_win })
     local rc = spawn_tool(linux_dir, nmake, tool_args, envp)
 
     if rc == 0 then
+        _write_stamp(linux_dir .. "/obj/i386/.syms-stamp",
+                     cfg.debug_symbols and "syms" or "retail")
         platform.log(">>> " .. desc .. ": OK")
     else
         platform.log((">>> %s: FAILED (rc=%d)"):format(desc, rc))
@@ -378,6 +421,12 @@ function M.configure(opts)
         -- (drive-relative — toolchain quietly resolves wrong).
         -- On host: nil (host filesystem is mounted at Z:\).
         path_strip = opts.path_strip,
+        -- When true, every nmake invocation gets NTDEBUG=ntsdnodbg +
+        -- NTDEBUGTYPE=windbg passed on the command line, which makes
+        -- MAKEFILE.DEF emit /Z7 + -debug:full -debugtype:cv.  The
+        -- caller (build.lua) pairs this with a post-link splitsym
+        -- pass to extract CV into sidecar .DBG files.
+        debug_symbols = opts.debug_symbols and true or false,
     }
     if platform.on_host and not cfg.wibo_bin then
         error("ntosbe.toolchain.configure: wibo_bin required on host", 2)

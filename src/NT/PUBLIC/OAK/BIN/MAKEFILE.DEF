@@ -1118,6 +1118,12 @@ LIBRARY_OBJS=
 !IFDEF _NTTREE
 BINPLACE_CMD=binplace -R $(_NTTREE) $(BINPLACE_FLAGS) $@
 !ELSE
+# MicroNT: splitsym (which we'd run here when NTDEBUGTYPE=windbg)
+# links against imagehlp.dll, and wibo only resolves side DLLs from
+# the cwd it was launched from — not from the EXE's directory.
+# nmake invokes commands with cwd=build dir, so splitsym would fail
+# the dll lookup.  Instead, build.lua post-processes images via
+# run_splitsym() with cwd=wibo-tools.  Keep BINPLACE_CMD empty here.
 BINPLACE_CMD=
 !ENDIF
 
@@ -1159,7 +1165,9 @@ all:  obj\_objects.mac \
         $(UMEXEFILES) \
         $(NTTARGETFILES) $(MISCFILES)
 !IFDEF MISCFILES
+!IFDEF _NTTREE
     @binplace -R $(_NTTREE) $(BINPLACE_FLAGS) $(MISCFILES)
+!ENDIF
 !ENDIF
 !IF "$(BUILDMSG)" != ""
     @ech ; $(BUILDMSG) ;

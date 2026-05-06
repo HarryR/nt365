@@ -212,7 +212,14 @@ COPYDST=$(386COPYDST)
 LIB_COPY=nti386cp.cmd
 
 !IF "$(NTDEBUGTYPE)" == "windbg" || "$(NTDEBUGTYPE)" == "both"
-NTTEST_LINK_OPTIONS=-entry:main
+# MicroNT: keep -base:0x80100000 even in windbg/both modes — original
+# upstream dropped both `-fixed` and `-base` here, but only `-fixed`
+# is incompatible with relocations (debug builds want relocs preserved
+# so the kernel can run at any phys boot-efi gives it).  The base
+# itself MUST stay or the PE imagebase falls back to LINK's EXE
+# default 0x400000 and our .dwf VAs (PE_imagebase + RVA) point at
+# kernel-low-half addresses that never execute.
+NTTEST_LINK_OPTIONS=-base:0x80100000 -entry:main
 !ELSE
 NTTEST_LINK_OPTIONS=-fixed -base:0x80100000 -entry:main
 !ENDIF
