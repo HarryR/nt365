@@ -214,3 +214,56 @@ For ad-hoc poking: `src/tools/gdb.init` defines helpers — `regs`, `stk`,
 automatically by `make gdb`.  Break at `KeBugCheckEx` to catch every
 bugcheck and run `bugcheck` to dump the args.
 
+For user-mode crashes: `src/tools/gdb_users.py` adds `loaduser <name>
+<runtime_base>` (mirror of `loaddrivers` but for `link.exe`,
+`run.exe`, etc.), `loaduserpath`, `findpe <addr>` (reverse lookup),
+and `decodeav` (symbolicate `qemu.log` inline without leaving gdb).
+Hardware breakpoints (`hbreak`) work across CPL transitions — once
+the user binary's `.dwf` is symbol-loaded, debugging is identical to
+kernel-mode.
+
+For one-shot symbolication outside gdb: `src/tools/decode_av.py
+qemu.log` parses every `UMODE EXC` / `STOP` line, classifies each
+address, runs `addr2line` against the right `.dwf`, annotates
+faulting-address heap-fill patterns, and emits paste-ready gdb
+commands.  Use `--addr 0xVALUE` for a single-address lookup.
+
+**Bounded exit on bugcheck.**  Stock NT 3.5 spins forever after
+printing the "STOP:" text (the operator was meant to transcribe it
+from VGA and call Microsoft).  MicroNT exits QEMU cleanly via
+`isa-debug-exit` (port 0xf4) at the end of `KeBugCheckEx`,
+`KeEnterKernelDebugger`, and `ExpSystemErrorHandler` — `boot.sh`
+returns `rc = 0x85` (= 133) on bugcheck, `0` on clean shutdown.
+Lets an agentic harness terminate deterministically and read the
+bugcheck text from the serial log instead of staring at a stuck
+console.  When a kernel debugger is attached (`boot.sh --gdb`)
+`DbgBreakPoint()` is caught by gdb and the OUT never executes —
+original freeze-for-inspection semantics preserved.
+
+**Full-driving harness for agents.**  `src/tools/agent_run.sh`
+boots a chosen machine config under gdb, breaks at a symbol, runs
+inspection commands, and exits cleanly with a structured rc — one
+shell command from "code on disk" to "I have the symbolicated
+state at `<breakpoint>`".  Bounded in time (no infinite spins),
+process-group isolated (no zombie qemus on Ctrl-C), and
+JSON-emittable for agent consumption.  Uses an exported
+`KiAgentExit` kernel function as a deterministic gdb-driven exit
+point; gdb does `set $pc = KiAgentExit; continue` after inspection
+and qemu terminates with rc=1.  Example:
+
+```sh
+src/tools/agent_run.sh --machine q35 --disk nvme \
+    --break IopInitializeBootDrivers \
+    --inspect 'loaddrivers' \
+    --inspect 'info functions ^Iop' \
+    --json
+```
+
+Exit-code matrix and the recipes for common debug shapes are in
+[DEBUG-RECIPES.md](DEBUG-RECIPES.md) — keep that doc honest as the
+loop evolves.
+
+Recipes for common crash shapes (kernel bugcheck, user-mode AV, NTFS
+ghost entries, SEH chain corruption, hung boot) live in
+[DEBUG-RECIPES.md](DEBUG-RECIPES.md), updated as we hone the loop.
+

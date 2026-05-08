@@ -142,6 +142,43 @@ KeBugCheckUnicodeToAnsi(
 
 
 VOID
+KiAgentExit (
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    Clean qemu shutdown trigger for agentic gdb sessions.  A driver
+    script does `(gdb) jump KiAgentExit` (or `set $pc = KiAgentExit;
+    continue`) after finishing its inspection; qemu exits via the
+    isa-debug-exit device with rc = 1, distinguishable from a real
+    bugcheck (which uses al=0x42 -> rc=0x85).
+
+    Not invoked from anywhere in the kernel — exists purely to give
+    `tools/agent_run.sh` a deterministic exit point that doesn't
+    require synthesising guest instructions from gdb.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    Does not return.
+
+--*/
+
+{
+    _asm { mov dx, 0xf4 }
+    _asm { mov al, 0x00 }    /* qemu rc = (0<<1)|1 = 1 (clean inspect) */
+    _asm { out dx, al   }
+    _asm { cli          }
+    _asm { hlt          }
+}
+
+VOID
 KeBugCheckEx (
     IN ULONG BugCheckCode,
     IN ULONG BugCheckParameter1,
@@ -336,18 +373,36 @@ Return Value:
     }
 
     //
-    // Attempt to enter the kernel debugger.
+    // Attempt to enter the kernel debugger.  If one is attached, the
+    // DbgBreakPoint() raises STATUS_BREAKPOINT and the debugger
+    // catches it; we never reach the qemu-exit code below.
+    //
+    // MicroNT divergence: stock NT 3.5 spins forever here in a busy
+    // `for (;;) {}` so a human operator can transcribe the bugcheck
+    // text from a VGA screen and call Microsoft support.  We always
+    // run under qemu, fully agentically -- the bugcheck text is on
+    // the serial log, the agentic harness needs a bounded exit, and
+    // the busy loop pegs a host CPU core for no reason.
+    //
+    // Exit qemu cleanly via the isa-debug-exit device (boot.sh wires
+    // `-device isa-debug-exit,iobase=0xf4,iosize=0x04`).  If the
+    // device isn't present, OUT is a no-op and we fall through to a
+    // CLI/HLT -- power-efficient halt, no CPU peg, no auto-exit, but
+    // also no re-entry into the bugcheck path.  Either way the
+    // original "spin forever" is gone.
     //
 
-    while(TRUE) {
-        try {
-            DbgBreakPoint();
+    try {
+        DbgBreakPoint();
+    } except(EXCEPTION_EXECUTE_HANDLER) {
+        /* no kernel debugger caught the int 3 -- fall through */
+    }
 
-        } except(EXCEPTION_EXECUTE_HANDLER) {
-            for (;;) {
-            }
-        }
-    };
+    _asm { mov dx, 0xf4 }
+    _asm { mov al, 0x42 }    /* qemu rc = (0x42<<1)|1 = 0x85 */
+    _asm { out dx, al   }
+    _asm { cli          }
+    _asm { hlt          }
 
     return;
 }
@@ -397,15 +452,22 @@ Return Value:
         }
     }
 
-    while(TRUE) {
-        try {
-            DbgBreakPoint();
+    //
+    // See the matching comment in KeBugCheckEx -- same change here:
+    // try kdb once, exit qemu cleanly if no debugger is attached.
+    //
 
-        } except(EXCEPTION_EXECUTE_HANDLER) {
-            for (;;) {
-            }
-        }
-    };
+    try {
+        DbgBreakPoint();
+    } except(EXCEPTION_EXECUTE_HANDLER) {
+        /* no kernel debugger -- fall through to qemu exit */
+    }
+
+    _asm { mov dx, 0xf4 }
+    _asm { mov al, 0x42 }
+    _asm { out dx, al   }
+    _asm { cli          }
+    _asm { hlt          }
 }
 
 NTKERNELAPI

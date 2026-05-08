@@ -97,6 +97,24 @@ M.INDX_LEAF_CAPACITY   = M.INDEX_BUFFER_SIZE
                           - M.INDX_FIRST_ENTRY_OFFSET
                           - M.INDX_END_ENTRY_BYTES
 
+-- Unix seconds (UTC) → FILETIME (100-ns ticks since 1601-01-01 UTC).
+-- Used at the composer boundary so every `time_filetime` field stored
+-- on an NtfsImage node is a real FILETIME, not Unix seconds — readers
+-- of $STANDARD_INFORMATION / $FILE_NAME interpret these as 100-ns
+-- ticks, and stuffing Unix seconds in there reads back as "year 1601 +
+-- a couple of minutes", which makes NMAKE's _stat-based mtime
+-- comparison treat every image-baked file as far older than any
+-- guest-written file.
+--
+-- Constant matches rtl.lua's EPOCH_BIAS_SEC (Unix epoch is
+-- 11_644_473_600 s after 1601-01-01).  Kept inline rather than via
+-- require'd to keep this composer pure-Lua arithmetic, since the
+-- composer runs on host without nt.dll.rtl loaded.
+local function unix_to_filetime(secs)
+    if not secs or secs == 0 then return 0 end
+    return (secs + 11644473600) * 10000000
+end
+
 -- ----------------------------------------------------------------
 -- Build a FILE_REFERENCE (8 bytes): low 6 bytes = file number,
 -- high 2 bytes = sequence number.  Returned as a Lua-number that
@@ -1260,7 +1278,11 @@ function M.new(opts)
         sectors_per_cluster = opts.sectors_per_cluster or 8,   -- 4 KB cluster
         volume_label        = opts.volume_label or 'NTFS',
         volume_serial       = opts.volume_serial or 0,
-        now                 = opts.now or 0,
+        -- `now` is stored as a FILETIME (100-ns ticks since 1601 UTC) so
+        -- it can be assigned directly into `time_filetime` slots without
+        -- re-converting at every use site.  Callers pass Unix seconds
+        -- (matching platform.now()'s semantics).
+        now                 = unix_to_filetime(opts.now),
         root                = root,
     }, NtfsImage)
 end
@@ -1322,8 +1344,9 @@ function NtfsImage:add_file(dest, src_path, platform)
     if not data then
         error('ntfs.add_file: cannot read ' .. tostring(src_path), 2)
     end
+    local mtime_unix = platform.mtime and platform.mtime(src_path)
     return self:add_bytes(dest, data, {
-        time_filetime = platform.mtime and platform.mtime(src_path) or self.now,
+        time_filetime = mtime_unix and unix_to_filetime(mtime_unix) or self.now,
     })
 end
 

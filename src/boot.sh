@@ -269,6 +269,7 @@ exec qemu-system-x86_64 $MACHINE_FLAGS -m "$MEM" \
     -device virtio-mouse-pci \
     -netdev user,id=n0 \
     -device virtio-net-pci,netdev=n0 \
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -no-reboot \
     $EXTRA_DRIVE_FLAGS \
     $DISPLAY_FLAGS $GDB_FLAGS $TRACE_FLAGS $NETDUMP_FLAGS

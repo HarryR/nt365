@@ -449,3 +449,125 @@ Hypothetical title: *"Why does winlogon take down my entire OS just by
 trying to give me a default profile?"* Answer: "Because the security
 subsystem assumed the token would always have a non-NULL default owner,
 and you're the first person in 30 years to feed it one that didn't."
+
+---
+
+## 4. NTFS log records can't disambiguate FRS within a cluster
+
+### The punchline
+
+NT 3.5's NTFS Log File Service (`LFS`) writes log records that locate
+the on-disk target by **VCN + cluster count**.  With a 4 KB cluster and
+the standard 1 KB File Record Segment, **four FRS share the same VCN**.
+The log record has nowhere to record *which* FRS within the cluster it
+applies to.  On replay (and on every in-memory update that goes through
+the duplicated-info path) the LFS picks one — and it's not always the
+right one.
+
+The visible failure: directory creates succeed, the file is openable
+by exact name, the parent's `$INDEX_ROOT` / `$INDEX_ALLOCATION` carry
+the entry — but `NtQueryDirectoryFile` walks the index and silently
+skips it.  Five `CreateFile`s in a row go in fine; 1, 2, 4 enumerate;
+3, 5 are invisible.  This is one of those bugs where every primitive
+test ("can I open it by name?", "is it in the index?") passes
+individually and only the composite operation fails.
+
+### The setup
+
+`NtfsCommonCleanup` (NCC) in `CLEANUP.C` calls `NtfsUpdateDuplicateInfo`
+(NUDI) to re-stamp the directory entry's duplicated `$STANDARD_INFORMATION`
+and `$FILE_NAME` fields.  NUDI in turn issues an LFS log record so the
+update can be replayed after a crash.  The log-record header in NT 3.5:
+
+```c
+// NTFSLOG.H (pre-fix)
+typedef struct _NTFS_LOG_RECORD_HEADER {
+    LSN              ThisLsn;
+    USHORT           RedoOperation;
+    USHORT           UndoOperation;
+    USHORT           RedoOffset;
+    USHORT           RedoLength;
+    ...
+    LCN              TargetVcn;
+    ULONG            ClusterCount;
+    USHORT           Reserved[2];      // ← 4 unused bytes
+    USHORT           AttributeOffset;
+    ...
+} NTFS_LOG_RECORD_HEADER, *PNTFS_LOG_RECORD_HEADER;
+```
+
+`TargetVcn + ClusterCount` is enough to identify a target *if* one
+cluster maps to one logical thing.  When `BytesPerCluster >
+BytesPerFileRecordSegment`, that invariant breaks.  NT 3.5's design
+quietly assumed cluster ≥ FRS; the format-time defaults satisfy it; the
+LFS schema therefore has no field to record sub-cluster offset.
+
+### Why MicroNT trips it
+
+We format with the canonical NTFS 1.x defaults: `1024 B/sector × 4
+sectors/cluster = 4 KB cluster`, `BytesPerFileRecordSegment = 1024 B`.
+Four FRS per cluster.  Any cleanup of FRS *N* for *N ∈ {1, 2, 3}*
+within a cluster issues a log record whose `TargetVcn` is the cluster
+holding all four — the LFS replay path picks FRS 0 by default and
+patches the wrong record.  After enough creates, the directory's
+$INDEX_ALLOCATION accumulates a divergence between what was written
+and what the duplicated-info path subsequently re-stamps; entries
+that *survive* the divergence are visible, the ones that don't are
+ghosts.
+
+### What NT 4.0 did
+
+Changed the LFS record schema to **byte-form**: `StreamOffset`
+(LONGLONG) + `StructureSize` (ULONG) replace `TargetVcn + ClusterCount`,
+and the previously-reserved 4 bytes become a `ClusterBlockOffset` to
+record the FRS-within-cluster index for the sub-cluster case:
+
+```c
+// NTFSLOG.H (post-fix, byte-form)
+typedef struct _NTFS_LOG_RECORD_HEADER {
+    ...
+    LONGLONG         TargetStreamOffset;   // was VCN
+    ULONG            StructureSize;        // was ClusterCount
+    USHORT           ClusterBlockOffset;   // was Reserved[0]
+    USHORT           Reserved;             // was Reserved[1]
+    ...
+} NTFS_LOG_RECORD_HEADER, *PNTFS_LOG_RECORD_HEADER;
+```
+
+Same wire bytes (the field widening reuses the previously-reserved
+slots).  The signature change of `NtfsWriteLog` ripples through ~43
+callers — every `LfsWriteLogRecord` site picks up the new
+sub-cluster-aware locator.
+
+### The fix in MicroNT
+
+NT 4.0's byte-form was backported wholesale.  The diff:
+
+- `NTFSLOG.H` — `TargetVcn` → `TargetStreamOffset`, `ClusterCount` →
+  `StructureSize`, `Reserved[0]` → `ClusterBlockOffset`.
+- `LOGSUP.C` — `NtfsWriteLog` signature flipped from `(VCN Vcn, ULONG
+  ClusterCount)` to `(LONGLONG StreamOffset, ULONG StructureSize)`;
+  internal derivation of `LogClusterCount` / `LogVcn` /
+  `ClusterBlockOffset` from byte form for compatibility with
+  cluster-shaped LFS internals.
+- ~43 caller sites converted from `Vcn / ClusterCount` to
+  `StreamOffset / StructureSize`.
+
+### Detection
+
+Without instrumentation, the symptom presents as "every other file in
+this directory is invisible to FindFirstFile but openable by exact name."
+With instrumentation, the cleanest probe is to dump every
+`NtfsWriteLog` call's `(Vcn, ClusterCount)` and grep for cases where
+`ClusterCount == 1` *and* `BytesPerCluster > BytesPerFileRecordSegment`
+— every such call is a sub-cluster log record, and on cluster-form
+NT 3.5 every one is a candidate ghost.
+
+### For Raymond
+
+Hypothetical title: *"Why does my brand-new file exist when I open it by
+name, but disappear when I list the folder it lives in?"*  Answer:
+"Because NTFS's transaction log writes target locators in clusters, and
+your cluster has more than one file record in it.  The log replays the
+wrong one.  Pick a cluster size that exactly matches a file record and
+your problem goes away.  Or upgrade to NT 4.0."

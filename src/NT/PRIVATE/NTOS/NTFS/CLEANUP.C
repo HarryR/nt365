@@ -38,6 +38,17 @@ Revision History:
 #pragma alloc_text(PAGE, NtfsFsdCleanup)
 #endif
 
+//
+// Toggle for the SEH fs:[0] save/restore workaround.  Default ON; set
+// to 0 (build-time) to unmask the underlying chain corruption so
+// KiValidateExceptionChain (KE/I386/EXCEPTN.C) trips its bugcheck and
+// dumps the frame's neighborhood for debugging.  See feedback memory
+// project_seh_global_unwind2_bug.
+//
+#ifndef NTFS_NCC_FS0_WORKAROUND
+#define NTFS_NCC_FS0_WORKAROUND 0  /* TEMP: off so KiValidateExceptionChain dumps */
+#endif
+
 
 NTSTATUS
 NtfsFsdCleanup (
@@ -247,11 +258,13 @@ Return Value:
     //  bugchecking the same way, replicate this pattern there until
     //  the underlying SEH leak is fixed.
     //
+#if NTFS_NCC_FS0_WORKAROUND
     ULONG _saved_fs0;
     __asm {
         mov eax, dword ptr fs:[0]
         mov _saved_fs0, eax
     }
+#endif
 
     ASSERT_IRP_CONTEXT( IrpContext );
     ASSERT_IRP( Irp );
@@ -1665,6 +1678,7 @@ Return Value:
                 NOTHING;
             }
 
+#if NTFS_NCC_FS0_WORKAROUND
             //
             //  Restore fs:[0] = our function's EH3 frame (saved at
             //  entry).  See the top-of-function block for the SEH
@@ -1674,6 +1688,7 @@ Return Value:
                 mov eax, _saved_fs0
                 mov dword ptr fs:[0], eax
             }
+#endif
 
             UpdateDuplicateInfo = TRUE;
         }

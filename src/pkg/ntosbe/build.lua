@@ -267,9 +267,17 @@ function M.main(opts)
             local since = platform.now()
             local rc = run_nmake(dir, desc, extras, t_opts)
             if rc ~= 0 then return rc end
-            -- Auto-scan: most components produce final binaries here.
+            -- Auto-scan two locations for fresh PE images:
+            --   PUB_LIB                — shared driver/SDK staging
+            --   <dir>/obj/i386         — component's own EXE/DLL outputs
+            -- Without the second scan, userland EXEs (link.exe, mkmsg,
+            -- gensrv, cmd-stub, run.exe, …) never get .DBG/.dwf unless
+            -- their target wires splitsym explicitly — exactly the kind
+            -- of thing that rots and leaves an agent without symbols.
             local srcr = splitsym_dir(PUB_LIB, since)
             if srcr ~= 0 then return srcr end
+            local srcr2 = splitsym_dir(dir .. "/obj/i386", since)
+            if srcr2 ~= 0 then return srcr2 end
             if t_opts and t_opts.post then
                 local prc = t_opts.post()
                 if prc and prc ~= 0 then return prc end
@@ -584,8 +592,18 @@ function M.main(opts)
         if run_nmake(link_dir .. "/DISASM68",  "link/disasm68.lib")    ~= 0 then return 1 end
         if run_nmake(link_dir .. "/COFF",      "link/coff (link.exe)") ~= 0 then return 1 end
 
-        if not install_host_tool(link_dir .. "/COFF/obj/i386/link.exe", "LINK.EXE") then
+        local link_exe = link_dir .. "/COFF/obj/i386/link.exe"
+        if not install_host_tool(link_exe, "LINK.EXE") then
             return 1
+        end
+        -- Build target only ran splitsym automatically against PUBLIC/SDK/
+        -- LIB/I386; link.exe lands in its own obj dir so we need an
+        -- explicit pass to get a .DBG/.dwf next to it.  Required to
+        -- resolve any link.exe userland AV during self-host builds.
+        if debug_symbols then
+            local rc = run_splitsym(link_exe)
+            if rc == 0 then rc = run_dbg2dwf(link_exe) end
+            if rc ~= 0 then return rc end
         end
         log(">>> LINK.EXE rebuilt with error message resources")
         return 0

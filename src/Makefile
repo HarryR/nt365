@@ -152,6 +152,7 @@ NTOSKRNL_DWF := $(REPO)/src/NT/PRIVATE/NTOS/INIT/UP/obj/i386/ntoskrnl.dwf
 HAL_DWF      := $(REPO)/src/NT/PRIVATE/NTOS/NTHALS/HAL/obj/i386/hal.dwf
 GDB_INIT     := $(SRC)/tools/gdb.init
 GDB_DRIVERS  := $(SRC)/tools/gdb_drivers.py
+GDB_USERS    := $(SRC)/tools/gdb_users.py
 
 # `make gdb` — interactive: start `src/boot.sh --gdb` in another
 # terminal first; that boots under qemu paused on :1234.  This target
@@ -182,4 +183,5 @@ gdb: $(NTOSKRNL_DWF) $(HAL_DWF)
 	  -ex 'add-symbol-file $(HAL_DWF)' \
 	  -ex 'source $(GDB_INIT)' \
 	  -ex 'source $(GDB_DRIVERS)' \
+	  -ex 'source $(GDB_USERS)' \
 	  -ex 'target remote :1234'

@@ -323,6 +323,7 @@ EXPORTS
     KeWaitForSingleObject
     KeWaitForMutexObject=KeWaitForSingleObject
     KiAcquireSpinLock
+    KiAgentExit                         // MicroNT — clean qemu exit for gdb-driven sessions
     KiReleaseSpinLock
     KeInitializeSpinLock
     KeAcquireSpinLockAtDpcLevel

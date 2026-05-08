@@ -270,18 +270,32 @@ punt2:;
     // if we get here then a crash dump was not invoked
     //
 
-    while(TRUE) {
-        try {
+    //
+    // MicroNT divergence: stock NT 3.5 spins forever here so a human
+    // operator can transcribe the "STOP: <code>" text from VGA and
+    // call support.  We always run under qemu, fully agentically --
+    // exit cleanly via the isa-debug-exit device (boot.sh wires
+    // `-device isa-debug-exit,iobase=0xf4,iosize=0x04`) so the outer
+    // harness terminates with rc != 0 and the agent reacts.  If a
+    // kernel debugger is attached, DbgBreakPoint() is caught and we
+    // never reach the OUT.  See KE/BUGCHECK.C for the same pattern.
+    //
 
-            DbgBreakPoint();
+    try {
 
-        } except(EXCEPTION_EXECUTE_HANDLER) {
+        DbgBreakPoint();
 
-            for (;;) {
-            }
+    } except(EXCEPTION_EXECUTE_HANDLER) {
 
-        }
+        /* no kernel debugger -- fall through to qemu exit */
+
     }
+
+    _asm { mov dx, 0xf4 }
+    _asm { mov al, 0x42 }
+    _asm { out dx, al   }
+    _asm { cli          }
+    _asm { hlt          }
 }
 
 NTSTATUS

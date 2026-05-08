@@ -21,27 +21,38 @@
 set disassembly-flavor intel
 
 define jb
-  # "jump back" — show the call stack guess by walking saved EBPs.
+  # "jump back" — walk saved EBPs to show the call chain.  Don't name
+  # the loop variable $bp — gdb treats $bp as the 16-bit BP register
+  # alias and silently truncates on assignment, masking the real ebp
+  # value to its low 16 bits.  $myebp is just a convenience var.
+  # %lx + explicit (unsigned long) cast forces 32-bit display since
+  # gdb's printf doesn't honor type width on its own.
   printf "EBP chain (manual unwind):\n"
-  set $bp = $ebp
+  set $myebp = ((unsigned long)$rbp) & 0xFFFFFFFF
   set $i = 0
-  while $bp != 0 && $i < 16
-    printf "  #%d  ebp=%p  saved-eip=%p\n", $i, $bp, *(unsigned int*)($bp + 4)
-    set $bp = *(unsigned int*)$bp
+  while $myebp != 0 && $i < 16
+    set $next_ebp = ((unsigned long) *(unsigned int*)$myebp) & 0xFFFFFFFF
+    set $ret_ip   = ((unsigned long) *(unsigned int*)($myebp + 4)) & 0xFFFFFFFF
+    printf "  #%d  ebp=0x%08lx  saved-eip=0x%08lx  ", $i, $myebp, $ret_ip
+    info symbol $ret_ip
+    set $myebp = $next_ebp
     set $i = $i + 1
   end
 end
 
 define stk
   # "stack" — dump 32 dwords from current ESP.
-  x/32xw $esp
+  x/32xw $rsp
 end
 
 define regs
-  # "registers" — quick essential dump.
-  printf "EIP=%08x  ESP=%08x  EBP=%08x  CR2=%08x\n", $eip, $esp, $ebp, $cr2
-  printf "EAX=%08x  EBX=%08x  ECX=%08x  EDX=%08x\n", $eax, $ebx, $ecx, $edx
-  printf "ESI=%08x  EDI=%08x  CS=%04x SS=%04x DS=%04x FS=%04x\n", $esi, $edi, $cs, $ss, $ds, $fs
+  # "registers" — quick essential dump.  See `jb` for why $rNN.
+  printf "EIP=%08x  ESP=%08x  EBP=%08x  CR2=%08x\n", \
+      (unsigned int)$rip, (unsigned int)$rsp, (unsigned int)$rbp, (unsigned int)$cr2
+  printf "EAX=%08x  EBX=%08x  ECX=%08x  EDX=%08x\n", \
+      (unsigned int)$rax, (unsigned int)$rbx, (unsigned int)$rcx, (unsigned int)$rdx
+  printf "ESI=%08x  EDI=%08x  CS=%04x SS=%04x DS=%04x FS=%04x\n", \
+      (unsigned int)$rsi, (unsigned int)$rdi, $cs, $ss, $ds, $fs
 end
 
 # ---------------- SEH / KPCR / KTRAP_FRAME --------------------------
@@ -132,11 +143,12 @@ define bugcheck
   # 4 params.  Names are from PRIVATE/NTOS/NLS/BUGCODES.h — most
   # commonly seen ones are inline; for the long tail run
   # `shell grep 0x000000XX src/NT/PRIVATE/NTOS/NLS/BUGCODES.h`.
-  set $code = *(unsigned int*)($esp + 4)
-  set $p1   = *(unsigned int*)($esp + 8)
-  set $p2   = *(unsigned int*)($esp + 12)
-  set $p3   = *(unsigned int*)($esp + 16)
-  set $p4   = *(unsigned int*)($esp + 20)
+  set $sp = (unsigned long long)$rsp
+  set $code = *(unsigned int*)($sp + 4)
+  set $p1   = *(unsigned int*)($sp + 8)
+  set $p2   = *(unsigned int*)($sp + 12)
+  set $p3   = *(unsigned int*)($sp + 16)
+  set $p4   = *(unsigned int*)($sp + 20)
   printf "KeBugCheckEx call:\n"
   printf "  Code:    0x%08x  ", $code
   if $code == 0x0000000A
@@ -171,21 +183,22 @@ define bugcheck
   printf "  Param 2: 0x%08x\n", $p2
   printf "  Param 3: 0x%08x\n", $p3
   printf "  Param 4: 0x%08x\n", $p4
-  printf "  Return:  0x%08x  ", *(unsigned int*)$esp
-  info symbol *(unsigned int*)$esp
+  printf "  Return:  0x%08x  ", *(unsigned int*)$sp
+  info symbol *(unsigned int*)$sp
 end
 
 define iret
   # Decode the iret return frame at top of stack (CS:EIP, EFlags,
   # SS:ESP if cross-priv).  Useful when stepping past an interrupt
   # handler — shows where execution will jump back to.
-  printf "iret frame @ %08x:\n", $esp
-  printf "  EIP    = %08x  ", *(unsigned int*)($esp + 0)
-  info symbol *(unsigned int*)($esp + 0)
-  printf "  CS     = %04x\n", *(unsigned int*)($esp + 4) & 0xFFFF
-  printf "  EFlags = %08x\n", *(unsigned int*)($esp + 8)
-  printf "  ESP    = %08x  (if priv-change)\n", *(unsigned int*)($esp + 12)
-  printf "  SS     = %04x  (if priv-change)\n", *(unsigned int*)($esp + 16) & 0xFFFF
+  set $sp = (unsigned long long)$rsp
+  printf "iret frame @ %08x:\n", (unsigned int)$sp
+  printf "  EIP    = %08x  ", *(unsigned int*)($sp + 0)
+  info symbol *(unsigned int*)($sp + 0)
+  printf "  CS     = %04x\n", *(unsigned int*)($sp + 4) & 0xFFFF
+  printf "  EFlags = %08x\n", *(unsigned int*)($sp + 8)
+  printf "  ESP    = %08x  (if priv-change)\n", *(unsigned int*)($sp + 12)
+  printf "  SS     = %04x  (if priv-change)\n", *(unsigned int*)($sp + 16) & 0xFFFF
 end
 
 echo \nGdb helpers loaded.\n

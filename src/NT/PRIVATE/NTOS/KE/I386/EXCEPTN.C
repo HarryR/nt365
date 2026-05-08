@@ -842,6 +842,148 @@ KipAddressInModule (
     return FALSE;
 }
 
+//
+// Pre-bugcheck diagnostic dump.  When we've detected SEH chain corruption
+// the system is going to halt anyway, so dump structured state to KD
+// (serial) before taking the bugcheck.  Lets us disambiguate the three
+// suspects for the NCC fs:[0] leak (libcntpr _global_unwind2 binary
+// drift, RtlUnwind ordering, specific_handler thunk) without live gdb.
+//
+// What we print, for each guard trip:
+//   - The bad Frame's full EH3 layout (Next, Handler, scopetable,
+//     trylevel, _ebp).
+//   - 8 DWORDs before and 8 after Frame on the stack — neighboring
+//     saved-register / return-address state of whichever function
+//     owns this stack frame.
+//   - The full SEH chain walk from fs:[0], with the loaded-module
+//     match for each Handler so we can resolve symbols against the
+//     .dwf files.
+//
+static VOID
+KiSehDumpCorruption (
+    IN PVOID                BadFrame,
+    IN ULONG                Why,
+    IN ULONG                ExtraValue,
+    IN PEXCEPTION_RECORD    ExceptionRecord
+    )
+{
+    PEXCEPTION_REGISTRATION_RECORD Frame;
+    PULONG StackPtr;
+    PLIST_ENTRY Entry;
+    PLDR_DATA_TABLE_ENTRY Module;
+    ULONG i, walkDepth = 0;
+    ULONG StackTop, StackBottom;
+    PKTHREAD Thread = KeGetCurrentThread();
+
+    StackTop    = (ULONG)Thread->InitialStack;
+    StackBottom = StackTop - KERNEL_STACK_SIZE;
+
+    DbgPrint("\n*** SEH chain corruption: why=%lu badFrame=%08lx extra=%08lx exc=%08lx\n",
+             Why, (ULONG)BadFrame, ExtraValue, ExceptionRecord->ExceptionCode);
+    DbgPrint("    fs:[0]=%08lx StackBottom=%08lx StackTop=%08lx\n",
+             (ULONG)KeGetPcr()->NtTib.ExceptionList,
+             StackBottom, StackTop);
+
+    //
+    // Bad-frame field dump.  Only meaningful when Why ∈ {3,4} (Handler-
+    // related); for Why==2 (off-stack) BadFrame may not be a real address
+    // and we skip the deref.
+    //
+    if (Why != 2 &&
+        (ULONG)BadFrame >= StackBottom &&
+        (ULONG)BadFrame  < StackTop &&
+        ((ULONG)BadFrame & 0x3) == 0) {
+
+        PULONG f = (PULONG)BadFrame;
+        DbgPrint("    EH3 @ %08lx: Next=%08lx Handler=%08lx scope=%08lx try=%08lx ebp=%08lx\n",
+                 (ULONG)BadFrame, f[0], f[1], f[2], f[3], f[4]);
+
+        DbgPrint("    stack-before:");
+        StackPtr = (PULONG)BadFrame - 8;
+        for (i = 0; i < 8; i++) {
+            if ((ULONG)StackPtr >= StackBottom &&
+                (ULONG)StackPtr <  StackTop) {
+                DbgPrint(" %08lx", *StackPtr);
+            } else {
+                DbgPrint(" --------");
+            }
+            StackPtr++;
+        }
+        DbgPrint("\n    stack-after: ");
+        StackPtr = (PULONG)BadFrame + 5;        // skip 5 EH3 fields
+        for (i = 0; i < 8; i++) {
+            if ((ULONG)StackPtr >= StackBottom &&
+                (ULONG)StackPtr <  StackTop) {
+                DbgPrint(" %08lx", *StackPtr);
+            } else {
+                DbgPrint(" --------");
+            }
+            StackPtr++;
+        }
+        DbgPrint("\n");
+    }
+
+    //
+    // Walk the full chain, resolving each Handler against PsLoadedModuleList
+    // so the user can match it against a .dwf when reading the serial log.
+    //
+    DbgPrint("    chain walk from fs:[0]:\n");
+    Frame = KeGetPcr()->NtTib.ExceptionList;
+    while (Frame != EXCEPTION_CHAIN_END && walkDepth < KI_SEH_MAX_DEPTH) {
+
+        if ((ULONG)Frame < StackBottom ||
+            (ULONG)Frame >= StackTop ||
+            ((ULONG)Frame & 0x3) != 0) {
+            DbgPrint("      [%2lu] frame=%08lx OFF-STACK or unaligned, stopping walk\n",
+                     walkDepth, (ULONG)Frame);
+            break;
+        }
+
+        Module = NULL;
+        if (PsLoadedModuleList.Flink != NULL) {
+            for (Entry = PsLoadedModuleList.Flink;
+                 Entry != &PsLoadedModuleList;
+                 Entry = Entry->Flink) {
+
+                PLDR_DATA_TABLE_ENTRY M = CONTAINING_RECORD(
+                    Entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+
+                if (((PVOID)Frame->Handler >=  M->DllBase) &&
+                    ((PUCHAR)Frame->Handler <  (PUCHAR)M->DllBase + M->SizeOfImage)) {
+                    Module = M;
+                    break;
+                }
+            }
+        }
+
+        DbgPrint("      [%2lu] frame=%08lx Next=%08lx Handler=%08lx",
+                 walkDepth,
+                 (ULONG)Frame,
+                 (ULONG)Frame->Next,
+                 (ULONG)Frame->Handler);
+        if (Module != NULL) {
+            DbgPrint(" in module @ %08lx (+%lx)\n",
+                     (ULONG)Module->DllBase,
+                     (ULONG)Frame->Handler - (ULONG)Module->DllBase);
+        } else {
+            DbgPrint(" UNKNOWN MODULE\n");
+        }
+
+        Frame = Frame->Next;
+        walkDepth++;
+    }
+    DbgPrint("*** end SEH dump\n\n");
+}
+
+#define KI_SEH_TRIP(why, frame, extra)                                  \
+    do {                                                                \
+        KiSehDumpCorruption((PVOID)(frame), (why), (ULONG)(extra),      \
+                            ExceptionRecord);                           \
+        KeBugCheckEx(KI_SEH_GUARD_BUGCHECK,                             \
+                     (ULONG)(frame), (why), (ULONG)(extra),             \
+                     ExceptionRecord->ExceptionCode);                   \
+    } while (0)
+
 static VOID
 KiValidateExceptionChain (
     IN PEXCEPTION_RECORD ExceptionRecord
@@ -863,36 +1005,23 @@ KiValidateExceptionChain (
     while (Frame != EXCEPTION_CHAIN_END) {
 
         if (++Depth > KI_SEH_MAX_DEPTH) {
-            KeBugCheckEx(KI_SEH_GUARD_BUGCHECK,
-                         (ULONG)PrevFrame, 1,            // chain too deep
-                         (ULONG)Frame,
-                         ExceptionRecord->ExceptionCode);
+            KI_SEH_TRIP(1, PrevFrame, Frame);            // chain too deep
         }
 
         if ((ULONG)Frame < StackBottom || (ULONG)Frame >= StackTop) {
             //
             //  Bad frame: PrevFrame->Next pointed off-stack.  The corrupting
             //  function is the one that owns PrevFrame on the kernel stack.
-            //  arg1 = PrevFrame, arg2 = 2, arg3 = bad Frame, arg4 = orig exc.
             //
-            KeBugCheckEx(KI_SEH_GUARD_BUGCHECK,
-                         (ULONG)PrevFrame, 2,            // frame off-stack
-                         (ULONG)Frame,
-                         ExceptionRecord->ExceptionCode);
+            KI_SEH_TRIP(2, PrevFrame, Frame);            // frame off-stack
         }
 
         if ((ULONG)Frame->Handler >= 0xFB000000) {
-            KeBugCheckEx(KI_SEH_GUARD_BUGCHECK,
-                         (ULONG)Frame, 4,                // Handler in pool
-                         (ULONG)Frame->Handler,
-                         ExceptionRecord->ExceptionCode);
+            KI_SEH_TRIP(4, Frame, Frame->Handler);       // Handler in pool
         }
 
         if (!KipAddressInModule((PVOID)Frame->Handler)) {
-            KeBugCheckEx(KI_SEH_GUARD_BUGCHECK,
-                         (ULONG)Frame, 3,                // bogus Handler
-                         (ULONG)Frame->Handler,
-                         ExceptionRecord->ExceptionCode);
+            KI_SEH_TRIP(3, Frame, Frame->Handler);       // bogus Handler
         }
 
         PrevFrame = Frame;
