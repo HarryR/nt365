@@ -40,7 +40,7 @@ LDFLAGS := \
     -Bsymbolic -L$(EFI_LIB) -m elf_x86_64
 
 OBJS := main.o com1.o fs.o memmap.o mmu.o pe.o \
-        arena.o uart.o hwtree.o lpb.o handoff.o
+        arena.o uart.o hwtree.o lpb.o handoff.o fwcfg.o
 
 all: BOOTX64.EFI
 

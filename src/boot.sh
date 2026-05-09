@@ -4,6 +4,7 @@
 #
 # Usage: boot.sh [--machine pc|q35] [--disk ide|nvme|virtio-blk]
 #                [--vga] [--gdb] [--trace] [--netdump] [--mem MB]
+#                [--kernel-opts STRING]
 #   --machine   QEMU machine type. q35 = ICH9 (default, modern PCIe
 #               topology, no legacy IDE bus); pc = i440fx + PIIX3
 #               (legacy shape, classic chipset with legacy IDE).
@@ -23,6 +24,12 @@
 #               with NETDUMP_FILE=...). Open with wireshark/tshark to
 #               see ARP, DHCP, outbound IP exactly as it leaves the guest.
 #   --mem MB    Guest RAM in megabytes. Default 128.
+#   --kernel-opts STRING
+#               LOADER_PARAMETER_BLOCK.LoadOptions string (NT-style,
+#               whitespace-separated, e.g. "/NOCACHEDSECTIONS /BURNMEMORY=4").
+#               Pushed to the guest via fw_cfg blob `opt/micront/loadopts`,
+#               which boot-efi reads and stamps into the LPB.  Empty by
+#               default — kernel runs as if no flags were set.
 #
 # Same disk image works across every machine + disk combo: boot-efi
 # pre-loads atdisk + scsiport + scsidisk + nvme2k unconditionally and
@@ -52,6 +59,7 @@ GDB_FLAGS=""
 TRACE_FLAGS=""
 NETDUMP_FLAGS=""
 EXTRA_DRIVE_FLAGS=""
+KERNEL_OPTS=""
 MEM=128
 # Canonical modern shape: q35 + NVMe, true PCIe topology, no legacy
 # IDE bus.  pc + ide is still supported (and exercised in the CI
@@ -97,6 +105,11 @@ while [ $# -gt 0 ]; do
         --mem)
             shift
             MEM="$1"
+            shift
+            ;;
+        --kernel-opts)
+            shift
+            KERNEL_OPTS="$1"
             shift
             ;;
         --machine)
@@ -199,6 +212,19 @@ if [ -n "$DISPLAY_FLAGS" ] && [ "$DISPLAY_FLAGS" != "-display none" ]; then
     echo "[boot.sh]   display: $DISPLAY_FLAGS"
 fi
 echo "[boot.sh]   memory:  ${MEM} MB"
+if [ -n "$KERNEL_OPTS" ]; then
+    echo "[boot.sh]   kernel-opts: $KERNEL_OPTS"
+fi
+
+# fw_cfg: pass kernel-opts string as a named blob.  boot-efi reads it
+# at LPB build time and stamps it into LOADER_PARAMETER_BLOCK.LoadOptions.
+# qemu rejects an empty `string=`, so omit the option entirely when
+# nothing was supplied — boot-efi treats a missing file the same as
+# an empty one (LoadOptions ends up "").
+KERNEL_OPTS_FLAGS=""
+if [ -n "$KERNEL_OPTS" ]; then
+    KERNEL_OPTS_FLAGS="-fw_cfg name=opt/micront/loadopts,string=$KERNEL_OPTS"
+fi
 
 # --- QEMU --------------------------------------------------------------------
 #
@@ -272,4 +298,5 @@ exec qemu-system-x86_64 $MACHINE_FLAGS -m "$MEM" \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -no-reboot \
     $EXTRA_DRIVE_FLAGS \
+    $KERNEL_OPTS_FLAGS \
     $DISPLAY_FLAGS $GDB_FLAGS $TRACE_FLAGS $NETDUMP_FLAGS

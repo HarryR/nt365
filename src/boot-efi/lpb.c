@@ -1,5 +1,6 @@
 #include "lpb.h"
 #include "arena.h"
+#include "fwcfg.h"
 #include "log.h"
 #include "mmu.h"
 #include "memmap.h"
@@ -210,7 +211,22 @@ EFI_STATUS lpb_build(void) {
     }
     lpb->NtBootPathName    = kseg0_of(arena_dup_ascii("\\"));
     lpb->NtHalPathName     = kseg0_of(arena_dup_ascii("\\"));
-    lpb->LoadOptions       = kseg0_of(arena_dup_ascii(""));
+
+    /* LoadOptions: read from the qemu fw_cfg file `opt/micront/loadopts`
+     * if present (boot.sh --kernel-opts populates it).  Empty string
+     * otherwise — kernel parsers tolerate it the same as a missing
+     * flag.  256 bytes is roughly twice the longest plausible flag
+     * combo (NT 4 max LoadOptions in boot.ini was 128). */
+    {
+        char *opts = arena_alloc(256, 1);
+        if (!opts) return EFI_OUT_OF_RESOURCES;
+        opts[0] = 0;
+        unsigned n = fwcfg_read_string("opt/micront/loadopts", opts, 256);
+        if (n > 1) {
+            BXLOG(L"LoadOptions: '%a'", opts);
+        }
+        lpb->LoadOptions = kseg0_of(opts);
+    }
 
     /* --- UEFI wall-clock seed (optional).  Stash the EFI_TIME
      * latched by lpb_set_boot_time into the arena, point Spare1 at
