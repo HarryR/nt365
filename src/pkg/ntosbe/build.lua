@@ -1169,7 +1169,6 @@ function M.main(opts)
         rmrf(NTOS .. "/RTL/obj")
         rmrf(NT_ROOT .. "/PRIVATE/WINDOWS/BASE/obj")
         rmrf(NT_ROOT .. "/PRIVATE/WINDOWS/obj")
-        rmrf(NT_ROOT .. "/PRIVATE/RPC/MIDL20/lib")
 
         -- nmake / rc temp files.  rc.exe leaves R[CD]<letter><5digits>; nmake
         -- leaves nm<pid>.  Both have no other meaning so blanket-remove.
@@ -1194,26 +1193,6 @@ function M.main(opts)
             "PRIVATE/WINDOWS/BASE/CLIENT/winerror.rc",
             "PRIVATE/WINDOWS/BASE/CLIENT/DAYTONA/MSG00001.bin",
         }) do platform.unlink(NT_ROOT .. "/" .. f) end
-
-        -- MIDL-generated stubs (RPC / IDL clients/servers).
-        for _, d in ipairs({
-            "PRIVATE/RPC/RUNTIME/RTIFS",
-            "PRIVATE/RPC/RUNTIME/MTRT",
-            "PRIVATE/WINDOWS/SCREG/WINREG",
-            "PRIVATE/WINDOWS/SCREG/SC",
-            "PRIVATE/EVENTLOG",
-            "PRIVATE/LSA",
-            "PRIVATE/NEWSAM",
-        }) do
-            for _, pat in ipairs({ "*_c.c", "*_s.c", "*rpc.h", "*rpc_c.h" }) do
-                local matches = {}
-                find_named(NT_ROOT .. "/" .. d, 2, glob_to_pattern(pat),
-                           function(p, is_dir)
-                               if not is_dir then matches[#matches + 1] = p end
-                           end)
-                for _, p in ipairs(matches) do platform.unlink(p) end
-            end
-        end
 
         -- PUBLIC/SDK/LIB/I386 outputs we produce.  Anything imported from
         -- the bootstrap libs (LINK.EXE, RC.EXE, ntdll.lib pre-builds)

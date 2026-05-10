@@ -440,11 +440,25 @@ build_indexed_dir_attrs = function(dir_node, parent_ref,
             fn_value = ''
         else
             local child = dir_node.children[name]
+            -- NODE entry's FILE_NAME body carries real metadata —
+            -- NTFS feeds it into directory enumeration (FileBoth /
+            -- FileFullDir info classes) without re-reading the
+            -- referenced FRS.  Mirror what the leaf encoder writes:
+            -- allocated_size cluster-rounded for non-resident files,
+            -- 0 for directories and resident files.
+            local size, alloc
+            if child.is_dir then
+                size, alloc = 0, 0
+            else
+                size  = child.data_size
+                alloc = child.resident and 0
+                                       or (child.cluster_count * cluster_size)
+            end
             fn_value = M.attrs.file_name_value{
                 parent_ref      = self_ref,
                 time_filetime   = child.time_filetime or 0,
-                allocated_size  = 0,
-                file_size       = (child.is_dir and 0) or child.data_size,
+                allocated_size  = alloc,
+                file_size       = size,
                 file_attributes = child.is_dir
                                    and M.attrs.DIRECTORY_ATTRIBUTES
                                    or  M.attrs.FILE_ATTRIBUTE_ARCHIVE,
@@ -962,12 +976,41 @@ end
 -- Mirrors NT 3.5 INDEXSUP.C runtime semantics, computed up-front
 -- since at build time we know the entire sorted entry list.
 --
--- Per-level packing is identical: greedy fill INDX-sized buffers
--- with entries; when an entry doesn't fit, close the buffer and
--- promote the entry to the parent level.  The promoted entry lives
--- ONLY at the parent — never duplicated in the level below — so
--- in-order traversal yields each key exactly once (this is what
--- INDEXSUP.C/InsertWithBufferSplit also enforces).
+-- Per-level packing: greedy fill INDX-sized buffers with entries;
+-- when an entry doesn't fit, close the buffer and promote a separator
+-- to the parent level.
+--
+-- The split semantic mirrors NT 3.5 InsertWithBufferSplit at
+-- INDEXSUP.C:5066-5079 (NtfsRestartWriteEndOfIndex at :5303-5305):
+-- when a buffer overflows, MiddleIndexEntry is *removed* from the
+-- old buffer and promoted to the parent — promote-only, NOT
+-- separator-duplication.  The old buffer becomes
+-- [first..MiddleIndexEntry-1] + END; the new buffer gets the entries
+-- after MiddleIndexEntry; MiddleIndexEntry exists only at the parent
+-- NODE level.
+--
+-- This matters for delete.  In a separator-duplicated tree the leaf
+-- twin gets deleted but the parent NODE separator's stale FRS_ref is
+-- left behind by DeleteFromIndex (INDEXSUP.C:5396; the leaf-only
+-- delete path at Step 2 never touches the parent path).  When the FRS
+-- gets reused, FindNextIndexEntry's "walk up after END" (3435-3500)
+-- yields the stale separator → NtfsOpenFile gets a wrong FRS+seq →
+-- STATUS_FILE_CORRUPT_ERROR at MFTSUP.C:149.  In a promote-only tree
+-- there is no leaf twin: lookups land at the parent NODE separator
+-- via that walk-up, and DeleteFromIndex sees `DeleteEntry` already at
+-- the NODE level (NODE flag set), enters Step 1, and replaces the
+-- separator with a successor leaf entry.  Same algorithm, different
+-- entry point.
+--
+-- Greedy fill, promote-only: when input doesn't fit, pop the LAST
+-- entry of the current buffer (it becomes the parent's separator),
+-- close the (now-shorter) buffer, and start the new buffer with the
+-- overflow input.  Both leaf and intermediate levels use the same
+-- semantic.  The new buffer is never empty (always has the overflow
+-- input).  An earlier design — "promote the overflow input, leave a
+-- new empty buffer to be filled" — would leave a trailing empty leaf
+-- when the overflow was the last input, which NTFS rejects as corrupt
+-- (INDEXSUP.C:3416-3422).
 --
 -- Difference between leaf and intermediate levels:
 --   * intermediate entries carry an 8-byte trailing VCN pointing at
@@ -1035,18 +1078,25 @@ local function pack_indx_level(inputs, kind, buf_capacity_bytes,
         local esize = entry_size_fn(input.name)
         if cur.bytes_used + esize + end_size > buf_capacity_bytes
            and #cur.entries > 0 then
-            -- Close current buffer.  For intermediate level: END VCN
-            -- = THIS overflow input's child_vcn (the keys that didn't
-            -- fit live in *that* subtree).  For leaf level: no END VCN.
+            -- Pop the last entry — it becomes the parent's separator.
+            -- For intermediate level the popped entry's child_vcn was
+            -- pointing at the leaf (or sub-tree) holding keys
+            -- between the new last entry and the popped key; that
+            -- subtree becomes the rightmost subtree of the closed
+            -- buffer (its END.subVCN).
+            local separator = table.remove(cur.entries)
+            cur.bytes_used  = cur.bytes_used - entry_size_fn(separator.name)
             local closed_vcn = next_vcn_ref[1]
             next_vcn_ref[1]  = closed_vcn + 1
             cur.vcn          = closed_vcn
-            if kind == 'intermediate' then cur.tail_vcn = input.child_vcn end
+            if kind == 'intermediate' then
+                cur.tail_vcn = separator.child_vcn
+            end
             table.insert(buffers, cur)
-            -- Promote this input.
             table.insert(promotes,
-                          { name = input.name, closed_buffer_vcn = closed_vcn })
-            cur = { entries = {}, bytes_used = 0 }
+                          { name = separator.name, closed_buffer_vcn = closed_vcn })
+            -- New buffer starts with the overflow input.
+            cur = { entries = { input }, bytes_used = esize }
             i = i + 1
         else
             table.insert(cur.entries, input)

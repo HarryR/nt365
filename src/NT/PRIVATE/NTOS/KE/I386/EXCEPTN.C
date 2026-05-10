@@ -785,26 +785,36 @@ Return Value:
 }
 
 //
-// KiValidateExceptionChain - structural sanity check on the kernel-mode SEH
-// chain at the moment of an exception.  Catches latent stack corruption that
-// would otherwise present as a #UD inside RtlpExecuteHandlerForException
-// doing `call ecx` against pool data.  On any structural failure we
-// BugCheck so the bad frame's address is preserved in the bugcheck args
-// rather than being lost when the dispatcher walks off into garbage.
+// KiValidateExceptionChain — diagnostic helper, default OFF.
+//
+// Structural sanity check on the kernel-mode SEH chain at the moment of
+// an exception.  Catches latent stack corruption that would otherwise
+// present as a #UD inside RtlpExecuteHandlerForException doing `call ecx`
+// against pool data.  On any structural failure we BugCheck so the bad
+// frame's address is preserved in the bugcheck args rather than being
+// lost when the dispatcher walks off into garbage.
+//
+// To enable, set KI_SEH_VALIDATE_CHAIN to 1 — either edit the #define
+// below or pass -DKI_SEH_VALIDATE_CHAIN=1 at build time.  The matching
+// kernel-side guard in RTL/I386/EXDSPTCH.C uses the same macro.  See
+// the top-level SEH-PROBLEMS.md for the full debug recipe.
 //
 // Bugcheck shape: 0xCAFE5E1F (Frame, why, badFieldValue, exceptionCode)
 //   why = 1: chain too deep (> KI_SEH_MAX_DEPTH = 64)
 //   why = 2: frame off-stack (Frame outside thread stack range)
 //   why = 3: Handler not in any loaded module
 //   why = 4: Handler points into pool (>= 0xFB000000)
+//   why = 5: (RTL guard) Handler in pool — fired by RtlDispatchException
 //
-// If you see this fire with why=2/3/4, the most likely cause is a known
-// SEH-runtime leak around try/except in NTFS — see the manual fs:[0]
-// save/restore in NtfsCommonCleanup (CLEANUP.C) and the project memory
-// note project_seh_global_unwind2_bug.  The same pattern may need to
-// be replicated in any NTFS function whose try/except wraps an SEH-
-// heavy callee.
+// Cost when ON: one EH3-chain walk + module-list lookup per kernel
+// exception.  Cost when OFF: zero (the call site compiles out).
 //
+
+#ifndef KI_SEH_VALIDATE_CHAIN
+#define KI_SEH_VALIDATE_CHAIN 0
+#endif
+
+#if KI_SEH_VALIDATE_CHAIN
 
 #define KI_SEH_MAX_DEPTH      64
 #define KI_SEH_GUARD_BUGCHECK 0xCAFE5E1F
@@ -1029,6 +1039,8 @@ KiValidateExceptionChain (
     }
 }
 
+#endif  // KI_SEH_VALIDATE_CHAIN
+
 VOID
 KiDispatchException (
     IN PEXCEPTION_RECORD ExceptionRecord,
@@ -1168,7 +1180,9 @@ Return Value:
 
             // Kernel debugger didn't handle exception.
 
+#if KI_SEH_VALIDATE_CHAIN
             KiValidateExceptionChain(ExceptionRecord);
+#endif
             if (RtlDispatchException(ExceptionRecord, &ContextFrame) == TRUE) {
                 goto Handled1;
             }

@@ -324,20 +324,21 @@ src/NT/PUBLIC/OAK/BIN/I386/listmung.exe
 # the import libraries (IMAGEHLP.LIB) tracked, but the executables and
 # runtime DLL are regenerated each build.
 #
-# CVPACK.EXE + cvpack.err stay TRACKED — they're load-bearing for
-# bootstrap.  The original NT 3.5 LINK.EXE auto-invokes CVPACK on
-# every CV-debug link (which is every link once --syms is on, even
-# when building MKMSG / CVPACK itself), so a clean checkout has to
-# already have CVPACK to bootstrap the toolchain phase.  Same
-# treatment as the other "load-bearing for bootstrap" binaries
+# Load-bearing-for-bootstrap exceptions stay TRACKED:
+#   - CVPACK.EXE + cvpack.err — NT 3.5 LINK.EXE auto-invokes CVPACK on
+#     every CV-debug link (which is every link once --syms is on, even
+#     when building MKMSG / CVPACK itself).
+#   - SPLITSYM.EXE / DBG2DWF.EXE / IMAGEHLP.DLL — install_host_tool
+#     (build.lua) extracts a .DBG sidecar via SPLITSYM + DBG2DWF on
+#     every rebuilt host PE; SPLITSYM loads IMAGEHLP.DLL as a sibling.
+#     First call hits during targets.link (before targets.imagehlp
+#     would have rebuilt them), so a clean checkout has to ship them.
+# Same treatment as the other "load-bearing for bootstrap" binaries
 # (CL.EXE, NMAKE.EXE, the import .LIB files).
 src/NT/PUBLIC/OAK/BIN/I386/BINPLACE.EXE
 src/NT/PUBLIC/OAK/BIN/I386/CVDUMP.EXE
-src/NT/PUBLIC/OAK/BIN/I386/DBG2DWF.EXE
 src/NT/PUBLIC/OAK/BIN/I386/MKMSG.EXE
 src/NT/PUBLIC/OAK/BIN/I386/PDBDUMP.EXE
-src/NT/PUBLIC/OAK/BIN/I386/SPLITSYM.EXE
-src/NT/PUBLIC/OAK/BIN/I386/IMAGEHLP.DLL
 
 # imagehlp runtime + setargv stub — the .lib import stub stays tracked
 # (IMAGEHLP.LIB above), the rest is build output.

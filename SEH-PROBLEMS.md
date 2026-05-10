@@ -1,209 +1,139 @@
-# SEH chain corruption around NTFS try/except — open
+# SEH chain corruption — resolved
 
-Latent kernel-mode SEH bug.  Currently masked (does not reproduce
-after recent NTFS cleanup) but unconfirmed-fixed.  Re-verify any
-time stack layout in NCC's call tree changes.
+Kernel-mode SEH chain corruption that bugchecked `0xCAFE5E1F`
+during NTFS `t.raises` selftest cycles.  Tracked here from open
+investigation through to the underlying `_KiKernelDispatch` fix.
 
-## Symptom
+**Status:** fixed in `3f4a3d0` — *"ke: synthetic trap frame in
+`_KiKernelDispatch` for `NtContinue`/`NtRaiseException`."*
 
-Bugcheck `0xCAFE5E1F` (`KI_SEH_GUARD_BUGCHECK`) raised by
-`KiValidateExceptionChain` (`src/NT/PRIVATE/NTOS/KE/I386/EXCEPTN.C`)
-during exception dispatch.  Args:
+## Root cause
 
-    arg1 = bad EH3 Frame address (somewhere on the kernel stack)
-    arg2 = guard reason
-            1 = chain too deep (> KI_SEH_MAX_DEPTH = 64)
-            2 = frame outside thread stack range
-            3 = Handler not in any loaded module
-            4 = Handler points into pool (>= 0xFB000000)
-    arg3 = the bad field value (Handler value, or off-stack ptr)
-    arg4 = original ExceptionCode being dispatched
+`KE/I386/sysstubs.asm:_KiKernelDispatch` (the kernel-mode `Zw*`
+fast path that replaced INT 2E in MicroNT) didn't build a real
+`KTRAP_FRAME`.  It did its own C-style `push ebp; mov ebp,esp`
+prolog and called the service routine.
 
-Originally observed: arg2=3 with Handler = `0x00000246` (an
-EFLAGS-looking value left on dead stack memory).  Indicates fs:[0]
-is pointing into stack that was once a real frame but has since
-been reused.
+`_NtContinue` (`TRAP.ASM`) and `_NtRaiseException` both treat
+`[ebp+0]` (their own saved-ebp slot) as a `KTRAP_FRAME *`.  Down
+that path:
 
-## When it fires
+1. `KiContinue` writes context fields into the bogus "trap frame"
+   — actually `_KiKernelDispatch`'s saved-ebp area on the stack.
+2. `EXIT_ALL` (`KIMACRO.INC`) reads `[esp]+TsExceptionList`
+   (offset `0x4C`) and writes it to `PCR.NtTib.ExceptionList`.
+   That field was never populated by `KeContextToKframes`
+   (`CONTEXT` has no `ExceptionList` member), so the value is
+   whatever stale stack bytes happen to live there — typically a
+   leftover `fs:[0]` pointer from a long-dead frame.
+3. `fs:[0]` is now pointing into dead stack.  The next kernel-mode
+   exception walks the rotten chain, lands on a frame whose
+   `Handler` field reads back as `0x00000246` (an EFLAGS-shaped
+   value), and the dispatcher would `call ecx` against pool data.
 
-After several `t.raises` calls in `pkg/test/fs.lua` /
-`pkg/test/os.lua`.  Cumulative damage — single exceptions don't
-trip it; the third or fourth raised-and-caught exception finds the
-chain already corrupt.
+The dense reproducer was NCC's `try { NtfsUpdateDuplicateInfo() }
+except` body in `CLEANUP.C` — the first kernel-mode try/except
+whose body raised reliably under selftest.  Fastfat had the same
+latent exposure but didn't exercise it densely.
 
-## Mechanism (hypothesised)
+## The fix
 
-`NtfsCommonCleanup` (NCC) wraps `NtfsUpdateDuplicateInfo` (NUDI)
-in an inner `try { } except { }`.  After the inner unwind,
-`fs:[0]` does NOT equal NCC's own EH3 frame as it should.  When
-NCC eventually returns, the compiler-emitted `__SEH_epilog` pops
-what it thinks is NCC's frame off `fs:[0]`, but actually pops a
-stranded inner frame.  `fs:[0]` is left pointing into dead stack.
-Next exception walks the rotten chain → bugcheck.
+`_KiKernelDispatch` now builds a synthetic `KTRAP_FRAME` for
+service numbers it knows take a `KTRAP_FRAME *` (`NtContinue`,
+`NtRaiseException`), with `TsExceptionList = current fs:[0]`,
+`TsPreviousPreviousMode`, and `TsSegCs = R0_CODE` so `EXIT_ALL`
+does an intra-priv IRET.  ~20 lines of asm in `sysstubs.asm`;
+impact limited to kernel-mode `Zw*` callers.
 
-By the math, this should not happen.  C8 `_except_handler2` calls
-`_global_unwind2(stop=NCC_EH3)` → `RtlUnwind(TargetFrame=NCC_EH3,
-TargetIp=_gu_return)`.  `RtlUnwind` walks `fs:[0]` popping frames
-via `RtlpUnlinkHandler` (`XCPTMISC.ASM:365`) until current ==
-target, at which point it `ZwContinue`s without popping target.
-`fs:[0]` should equal `NCC_EH3` at that moment.  Empirically it
-doesn't.
+After the fix:
 
-### Three suspects (one of these)
+* The previous NTFS-side fs:[0] save/restore workaround in
+  `NtfsCommonCleanup` (`NTFS_NCC_FS0_WORKAROUND`) was removed —
+  `fs:[0]` now stays consistent across kernel `Zw*` round trips.
+* `pkg/test/fs.lua`'s `t.raises` cycles run cleanly; the in-OS
+  rebuild progresses past the SEH-heavy NTFS path.
 
-1. **`libcntpr.lib`'s `_global_unwind2` differs from NT 3.5 source.**
-   Our build links a pre-built binary `LIBCNTPR.LIB` for the kernel
-   CRT (see `MAKEFILE.DEF:1454`); we don't have the asm source in
-   the active tree.  NT 3.5 source for the function is in
-   `stuff/.../PRIVATE/CRT32/MISC/I386/EXSUP.ASM:119` and is six
-   instructions long; the binary may differ.
+## Diagnostic helper — `KI_SEH_VALIDATE_CHAIN`
 
-2. **`RtlUnwind` ordering bug.**
-   `EXDSPTCH.C:495-502` reads `Frame->Next` BEFORE running the
-   frame's handler via `RtlpExecuteHandlerForUnwind`.  If a handler
-   itself raises-and-catches (modifying `fs:[0]`), the cached
-   `Next` we then unlink against is stale.
+A "super extra SEH debugging helper" stays compiled into the tree
+behind a macro, **default OFF**, ready to flip on when (if) the
+chain looks corrupt again.  When enabled it gives you the
+bugcheck-with-context shape that originally led to the
+`_KiKernelDispatch` discovery, instead of a generic #UD inside
+`RtlpExecuteHandlerForException`.
 
-3. **Compiler-emitted `specific_handler` thunk doesn't restore
-   ESP / `fs:[0]` when JMPing back to post-`__try` code.**
-   Standard MSC C8 thunks do `lea esp, [ebp - locals]`; ours might
-   not, and might leave fs:[0] pointing at the spot the thunk
-   itself pushed.
+### What it does
 
-## Workaround
+* `KE/I386/EXCEPTN.C` — `KiValidateExceptionChain` walks
+  `PCR.NtTib.ExceptionList` on every kernel-mode exception
+  (first chance), and trips `0xCAFE5E1F` on:
 
-Manual `fs:[0]` save/restore around NCC's inner try/except.  Lives
-in `src/NT/PRIVATE/NTOS/NTFS/CLEANUP.C`:
+  | `arg2` | meaning |
+  |--------|---------|
+  | 1 | chain depth > 64 (`KI_SEH_MAX_DEPTH`) |
+  | 2 | frame outside thread stack range |
+  | 3 | `Handler` not in any loaded module |
+  | 4 | `Handler >= 0xFB000000` (pool-resident) |
 
-    #ifndef NTFS_NCC_FS0_WORKAROUND
-    #define NTFS_NCC_FS0_WORKAROUND 0  /* TEMP: off so bug, when it
-                                          returns, fires a clean
-                                          KiSehDumpCorruption rather
-                                          than silently corrupting */
-    #endif
+  It also dumps (via `DbgPrint` to KD/serial) the bad frame's
+  EH3 layout, the 8 dwords either side of it on the stack, and a
+  full chain walk with each `Handler` resolved against
+  `PsLoadedModuleList`.
 
-    #if NTFS_NCC_FS0_WORKAROUND
-        ULONG _saved_fs0;
-        __asm { mov eax, dword ptr fs:[0]
-                mov _saved_fs0, eax }
-    #endif
-    ...
-    #if NTFS_NCC_FS0_WORKAROUND
-        __asm { mov eax, _saved_fs0
-                mov dword ptr fs:[0], eax }
-    #endif
+* `RTL/I386/EXDSPTCH.C` — pre-dispatch guard.  Same `0xFB000000`
+  bound check before `RtlpExecuteHandlerForException` is allowed
+  to `call` the handler.  Trips `0xCAFE5E1F` with `arg2 = 5`.
 
-Default is currently **0** (workaround OFF, canary mode) — the
-bug doesn't reproduce on selftest after recent cleanup, so we keep
-it unmasked.  If the underlying corruption returns we'll see a
-clean bugcheck with full dump rather than a quiet wrong-state
-mask.  Flip to `1` (or build with `-DNTFS_NCC_FS0_WORKAROUND=1`)
-if the bug returns aggressively and you need a quick patch while
-investigating.
+### How to enable
 
-## Diagnostic dump
+Set `KI_SEH_VALIDATE_CHAIN` to 1 — either edit the `#define` near
+the top of `EXCEPTN.C` (and the matching one in `EXDSPTCH.C`), or
+pass `-DKI_SEH_VALIDATE_CHAIN=1` to the kernel build.  Both halves
+read the same macro name; you can flip them independently if you
+only want one side.
 
-`KiValidateExceptionChain` (`KE/I386/EXCEPTN.C`) calls
-`KiSehDumpCorruption` before bugchecking.  Dumps to KD/serial:
+### Cost
 
-  - bad Frame's EH3 layout (Next, Handler, scopetable, trylevel,
-    saved \_ebp)
-  - 8 stack DWORDs before and after the bad Frame
-  - the full SEH chain walked from `fs:[0]`, with each Handler's
-    loaded-module match (DllBase + offset, suitable for resolution
-    against `.dwf` files)
+* OFF (default): zero — both sites compile out.
+* ON: one chain walk + per-frame module-list lookup per
+  kernel-mode exception.  Negligible on normal workloads,
+  measurable on SEH-heavy paths (NTFS, etc.).
 
-Read the serial log starting at `*** SEH chain corruption:`
-through `*** end SEH dump`.
+### When it'd be useful again
 
-### Disambiguation rubric
+* Any future regression that resembles "exception dispatcher
+  jumps to garbage / random #UD".
+* When importing more NT subsystems with their own try/except
+  patterns and you're not confident the trap-frame plumbing
+  handles every kernel-mode `Zw*` path.
+* Suspected kernel stack corruption from drivers — frame 2/3
+  hits will name the corrupting frame's owner directly via the
+  `DbgPrint` dump.
 
-  - `stack-before:` shows return addresses pointing into
-    `ntoskrnl.exe` near `_global_unwind2` / `RtlUnwind` — suspect
-    #1 or #2.  The `_gu_return` label is at a known offset; resolve
-    against `ntoskrnl.dwf`.
-  - `stack-before:` shows what looks like NUDI's saved-register
-    state (a frame-pointer that walks back into
-    `NtfsUpdateDuplicateInfo` body) — suspect #3.  Pop fs:[0] is
-    NUDI's old EH3 frame on dead stack.
-  - The chain walk shows a frame whose `Handler` is in the
-    expected module (`ntfs.sys` / `ntoskrnl.exe`) but whose
-    `Next` points off-stack — confirms it's been popped by the
-    compiler thunk somewhere we didn't expect.
+## Quick re-investigation recipe
 
-## Current state (2026-05-08)
+If the bugcheck returns:
 
-- Bug does NOT reproduce on selftest after the NT 4.0 byte-form
-  `NtfsWriteLog` backport + diagnostic-guard cleanup (commit
-  14ccee8) plus the kernel-side dump enhancement.
-- Workaround is gated, currently default OFF (canary mode — see
-  Workaround section).  Tests pass with workaround OFF in the
-  current selftest run, suggesting either:
-    a) recent changes accidentally fixed the underlying bug, or
-    b) stack layout shifted enough to mask it (FS0_CHECK locals
-       and asm guard ebp-walks both removed → smaller frames),
-       and it'll come back when something pushes more stack into
-       NCC's call tree.
-- Re-verify any time we touch NCC's inner try/except, NUDI, the
-  byte-form WriteLog path, or anything else that adjusts NTFS's
-  stack-frame footprint.
-
-## Why this likely lives outside NTFS
-
-NT4's `CLEANUP.C` has no such workaround.  NT4's NTFS is the same
-algorithm; the differences from NT 3.5 are in callees and in the
-log-record byte form (already backported).  The bug therefore lives
-in:
-
-  - `LIBCNTPR.LIB` (pre-built kernel CRT) — supplies
-    `_global_unwind2`, `_except_handler2`, `_local_unwind2` to
-    `ntoskrnl.exe`; re-exported to drivers via
-    `INIT/I386DEF.SRC:73-75`.
-  - or `EXDSPTCH.C` `RtlUnwind` (we have source).
-  - or the C8.50 compiler's `specific_handler` thunk emitted into
-    each function with `__try`/`__except` (binary-only; we have no
-    source).
-
-## Build chain context (for whoever rebuilds libcntpr)
-
-`libcntpr.lib` is itself imported as a binary in our tree.  Its
-NT 3.5 source build (per `stuff/.../PRIVATE/CRTLIB/MAKEFILE`):
-
-    libcntpr.lib = libcnt.lib + trannt.lib
-
-  - `libcnt.lib` from `PRIVATE/CRT32NT/{MISC,STARTUP,HELPER,LOWIO,
-    STDIO,STRING,TIME,DLLSTUFF}/`
-  - `trannt.lib` from `PRIVATE/fp32nt/`
-
-The relevant SEH primitives all live in `CRT32NT/MISC/i386/`:
-
-  - `exsup.asm`   — `__except_list` symbol (= 0)
-  - `exsup2.asm`  — `_except_handler2`, `_global_unwind2` (C8)
-  - `exsup3.asm`  — `_except_handler3` (C9, our compiler doesn't
-    emit this)
-  - `sehsupp.c`   — C-side helpers
-
-To investigate suspect #1 we'd need to either (a) extract the
-`_global_unwind2` member from the binary `LIBCNTPR.LIB` and disasm
-it, comparing to NT 3.5 source, or (b) bring `CRT32NT/` and
-`fp32nt/` into the active build tree, build our own
-`libcntpr.lib`, and link `ntoskrnl.exe` against it.  Option (b) is
-substantial but yields source-debuggable kernel SEH.
-
-## Quick-start when the bugcheck returns
-
-1. Boot to selftest, capture serial output.
-2. Confirm `*** SEH chain corruption:` block appears.
-3. Disambiguate via the rubric above.
-4. If suspect #1 or #2: extract / read source as appropriate.  If
-   #3: build a tiny test function with `__try { __try { raise } __except (1) {} } __except (1) {}`, dump fs:[0] before/after each except, see if the inner-thunk's epilog leaves
-   fs:[0] correct.
+1. Flip `KI_SEH_VALIDATE_CHAIN` to 1 in both `EXCEPTN.C` and
+   `EXDSPTCH.C`, rebuild kernel.
+2. Reproduce.  Capture serial output — the
+   `*** SEH chain corruption ***` block names the bad frame and
+   walks the chain.
+3. Map the bad `Handler` value to a function via `.dwf` files
+   (gdb `add-symbol-file`).  Walk back through the chain to find
+   the frame whose owner left a stranded `Next` or `Handler`.
+4. Cross-check against the root-cause section above: any
+   kernel-mode `Zw*` whose service routine takes a
+   `KTRAP_FRAME *` is in the same risk class as the original
+   `_KiKernelDispatch` bug.
 
 ## Related
 
-- `feedback memory project_seh_global_unwind2_bug` — concise
-  version of this writeup for future-session context.
-- `pack(2)` leak (top of `TODO.md`) — different bug, separate
-  fix in `NTFSPROC.H:61`.  Not the current SEH issue but the
-  mechanism (stack overrun via struct-size mismatch) was once a
-  candidate.
+* Project memory: `project_seh_global_unwind2_bug` — full
+  forensic trail of the original investigation, suspect list,
+  and how `_KiKernelDispatch` was identified.
+* Fix commit: `3f4a3d0` (`ke: synthetic trap frame in
+  _KiKernelDispatch for NtContinue/NtRaiseException`).
+* The NCC workaround removal (`NTFS_NCC_FS0_WORKAROUND` /
+  `_saved_fs0` blocks in `CLEANUP.C`) lands separately as part
+  of the same cleanup cycle.
