@@ -323,6 +323,31 @@ local function build_dir_record(dir_node, parent_ref, cluster_size, file_attrs)
 
     -- Build INDEX_ENTRYs in already-sorted order.
     local entries = {}
+
+    -- Root directory: prepend a "." self-reference into its $I30.  Stock
+    -- NT 3.5 FORMAT.CXX:685-715 inserts this; without it, NTFS.SYS raises
+    -- STATUS_FILE_CORRUPT_ERROR from NtfsUpdateFileNameInIndex
+    -- (INDEXSUP.C:921) on every NtOpenFile of the root, because
+    -- NtfsUpdateDuplicateInfo's root-special branch (ATTRSUP.C:7201-7214)
+    -- synthesizes a "." FILE_NAME and looks it up in the root's $I30.
+    -- '.' (0x2E) collates before every other legal name, so it always
+    -- sorts to the front — placement here matches the COLLATION_FILE_NAME
+    -- key order that NTFS expects.
+    if dir_node.parent == nil then
+        local self_fn = M.attrs.file_name_value{
+            parent_ref      = self_ref,
+            time_filetime   = dir_node.time_filetime or 0,
+            allocated_size  = 0,
+            file_size       = 0,
+            file_attributes = file_attrs or M.attrs.DIRECTORY_ATTRIBUTES,
+            name            = '.',
+        }
+        table.insert(entries, M.attrs.index_entry_filename(
+            dir_node.file_number,    -- file_ref_lo (= 5 for root)
+            dir_node.file_number,    -- sequence_number (= 5 to match stock format)
+            self_fn))
+    end
+
     for _, name in ipairs(dir_node.sorted_child_names or {}) do
         table.insert(entries,
                      child_index_entry(dir_node.children[name],
