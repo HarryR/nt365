@@ -367,7 +367,6 @@ function M.main(opts)
     nmake_target("kd",     NTOS .. "/KD/UP",     "KD - Kernel Debugger")
     nmake_target("fsrtl",  NTOS .. "/FSRTL/UP",  "FSRTL - File System RTL")
     nmake_target("raw",    NTOS .. "/RAW/UP",    "RAW - Raw File System")
-    nmake_target("vdm",    NTOS .. "/VDM/UP",    "VDM - Virtual DOS Machine")
 
     -- ----- File-system / I/O drivers -----
     nmake_target("atdisk",  NTOS .. "/DD/HARDDISK", "ATDISK - IDE disk driver")
@@ -507,15 +506,6 @@ function M.main(opts)
             if rc ~= 0 then return rc end
         end
         return 0
-    end
-
-    -- ----- Video miniport composite — videoprt.sys built first, then
-    -- vga miniports against it.  vga_miniport handled inline; build.sh
-    -- always rebuilds videoprt before each, but here we let group order
-    -- handle that since videoprt is in the trivial-target list above.
-    targets.vga_miniport = function()
-        local rc = targets.videoprt(); if rc ~= 0 then return rc end
-        return run_nmake(NTOS .. "/VIDEO/VGA", "VGA - VGA miniport driver")
     end
 
     -- ----- RTL — needs error.h generated first (Python helper for now). -----
@@ -971,7 +961,7 @@ function M.main(opts)
     local NTOSKRNL_TARGETS = {
         "geni386",
         "ke", "rtl", "ex", "ob", "se", "ps", "mm", "cache", "config",
-        "lpc", "dbgk", "io", "kd", "fsrtl", "raw", "vdm",
+        "lpc", "dbgk", "io", "kd", "fsrtl", "raw",
         "init",
         "hal",
     }
@@ -979,7 +969,7 @@ function M.main(opts)
     local DRIVER_TARGETS = {
         "atdisk", "null", "fastfat", "lfs", "ntfs", "npfs", "msfs", "serial",
         "i8042prt", "kbdclass", "mouclass",
-        "vga_miniport", "bochsvga",
+        "videoprt", "bochsvga",
         "ndis_wrapper",
         "virtio",
         "dd_class", "dd_scsiport", "dd_scsidisk", "dd_nvme2k", "dd_vioblk",
@@ -1035,7 +1025,6 @@ function M.main(opts)
     clean_dirs.rc        = { NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/RC",
                              NT_ROOT .. "/PRIVATE/SDKTOOLS/VCTOOLS/RCDLL" }
     clean_dirs.tdi_tcpip_ip   = { NTOS .. "/TDI/TCPIP/IP", NTOS .. "/TDI/TCPIP" }
-    clean_dirs.vga_miniport   = { NTOS .. "/VIDEO/VGA" }
 
     -- Composites — clean each member's dir.
     clean_dirs.virtio = {

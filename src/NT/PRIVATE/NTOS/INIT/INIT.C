@@ -1597,13 +1597,6 @@ Phase1Initialization(
         KeBugCheck(LPC_INITIALIZATION_FAILED);
 
 #if i386
-    //
-    // Initialize Vdm specific stuff
-    //
-    // Note:  If this fails, vdms may not be able to run, but it doesn't
-    //        seem neceesary to bugcheck the system because of this.
-    //
-    KeI386VdmInitialize();
 #endif
 
     //

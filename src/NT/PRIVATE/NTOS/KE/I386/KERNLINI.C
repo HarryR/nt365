@@ -136,7 +136,7 @@ Routine Description:
     so user-mode SYSENTER instructions land at KiFastSystemCall.  Per-CPU;
     called once from KiInitializeKernel after KeFeatureBits is up to date.
 
-    Per-thread IA32_SYSENTER_ESP updates happen in Ki386AdjustEsp0
+    Per-thread IA32_SYSENTER_ESP updates happen in SwapContext
     (CTXSWAP.ASM) so each context switch keeps the MSR pointing at the
     current thread's kernel stack.
 
@@ -233,7 +233,6 @@ PVOID KiTrap08;
 
 extern KSPIN_LOCK KiIopmLock;
 extern PVOID Ki387RoundModeTable;
-extern PVOID Ki386IopmSaveArea;
 
 //
 // Profile vars
@@ -524,18 +523,6 @@ Return Value:
     if (Number == 0) {
         KiTimeIncrementReciprocal = KiComputeReciprocal((LONG)KeMaximumIncrement,
                                                         &KiTimeIncrementShiftCount);
-    }
-
-    //
-    // Allocate 8k IOPM bit map saved area to allow BiosCall swap
-    // bit maps.
-    //
-
-    if (Number == 0) {
-        Ki386IopmSaveArea = ExAllocatePool(PagedPool, PAGE_SIZE * 2);
-        if (Ki386IopmSaveArea == NULL) {
-            KeBugCheck(NO_PAGES_AVAILABLE);
-        }
     }
 
     //

@@ -205,7 +205,6 @@ typedef struct _EPROCESS {
     ULONG DefaultHardErrorProcessing;
     PVOID LdtInformation;
     PVOID VadFreeHint;
-    PVOID VdmObjects;
     KMUTANT ProcessMutant;
 
     UCHAR ImageFileName[ 16 ];

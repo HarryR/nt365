@@ -1,6 +1,5 @@
 #include "cmd.h"
 #include "cmdproto.h"
-#include "..\inc\vdmapi.h"
 
 #define DBENV	0x0080
 #define DBENVSCAN	0x0010
@@ -200,60 +199,6 @@ unsigned wf ;
 }
 
 
-VOID
-RestoreCurrentDirectories( VOID )
-
-/* this routine sets the current process's current directories to
-   those of the child if the child was the VDM to fix DOS batch files.
-*/
-
-{
-    ULONG cchCurDirs;
-    UINT PreviousErrorMode;
-    PTCHAR pCurDirs,pCurCurDir;
-    BOOL CurDrive=TRUE;
-#ifdef UNICODE
-    PCHAR pT;
-#endif
-
-    cchCurDirs = GetVDMCurrentDirectories( 0,
-                                           NULL
-                                         );
-    if (cchCurDirs == 0)
-        return;
-
-    pCurDirs = gmkstr(cchCurDirs*sizeof(TCHAR));
-#ifdef UNICODE
-    pT = gmkstr(cchCurDirs);
-#endif
-
-    GetVDMCurrentDirectories( cchCurDirs,
-#ifdef UNICODE
-			       pT
-#else
-			       pCurDirs
-#endif
-                            );
-#ifdef UNICODE
-    MultiByteToWideChar(CurrentCP, MB_PRECOMPOSED, pT, -1, pCurDirs, cchCurDirs);
-#endif
-
-    // set error mode so we don't get popup if trying to set curdir
-    // on empty floppy drive
-
-    PreviousErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
-    for (pCurCurDir=pCurDirs;*pCurCurDir!=NULLC;pCurCurDir+=(_tcslen(pCurCurDir)+1)) {
-        ChangeDir2(pCurCurDir,CurDrive);
-        CurDrive=FALSE;
-    }
-    SetErrorMode(PreviousErrorMode);
-    //free(pCurDirs);
-#ifdef UNICODE
-    FreeStr((PTCHAR)pT);
-#endif
-}
-
-
 /********************* START OF SPECIFICATION **************************/
 /*								       */
 /* SUBROUTINE NAME: ExecPgm					       */
@@ -322,7 +267,6 @@ ExecPgm(
     )
 {
         int i ;                                 /* Work variable           */
-        BOOL VdmProcess;
 
 #if 1
         STARTUPINFO StartupInfo;
@@ -359,7 +303,6 @@ ExecPgm(
 	   return(FAILURE) ;
 	  }
         hChildProcess = ChildProcessInfo.hProcess;
-        VdmProcess = (ULONG)(hChildProcess) & 1;
         CloseHandle(ChildProcessInfo.hThread);
         i = SUCCESS;
         start_type = EXECPGM;
@@ -381,9 +324,6 @@ ExecPgm(
         if (ai == AI_SYNC) {             /* Async exec...   */
 	        LastRetCode = WaitProc((unsigned)hChildProcess);
 	        i = LastRetCode ;
-            if (VdmProcess) {
-                RestoreCurrentDirectories();
-            }
         }
 
 /*  If real async (discarding retcode), just print PID and return.  If
@@ -481,7 +421,6 @@ TCHAR *loc ;
 	TCHAR *tmps01;
 	TCHAR *tmps02 = NULL;
 	TCHAR pcstr[3];
-        LONG BinaryType;
 
 	size_t cName;	// number of characters in file name.
 
@@ -770,12 +709,14 @@ TCHAR *loc ;
                             if ((DosErr != ERROR_FILE_NOT_FOUND) && DosErr)
                                     continue;                        /* Try next path */
 
-                            if (DoFind(loc, dotloc, TEXT("\0"), TRUE)) {
-                                if (GetBinaryType(loc,&BinaryType) &&
-                                    BinaryType == SCS_POSIX_BINARY) {          // Found .
-                                    return(SFE_ISEXECOM) ;
-                                }
-                            }
+                            //
+                            // POSIX subsystem detection used to live here via
+                            // GetBinaryType; both the POSIX subsystem and
+                            // GetBinaryType are gone from this build, so just
+                            // fall through and let the caller try the next
+                            // extension.
+                            //
+                            (void)DoFind(loc, dotloc, TEXT("\0"), TRUE);
                         }
 		}
 	} // end for

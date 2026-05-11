@@ -45,7 +45,6 @@ EXPORTS
     CloseConsoleHandle
     CloseHandle
     CloseProfileUserMapping
-    CmdBatNotification
     CommConfigDialogA
     CommConfigDialogW
     CompareFileTime
@@ -120,7 +119,6 @@ EXPORTS
     EscapeCommFunction
     ExitProcess
     ExitThread
-    ExitVDM
     ExpandEnvironmentStringsA
     ExpandEnvironmentStringsW
     ExpungeConsoleCommandHistoryA
@@ -165,9 +163,6 @@ EXPORTS
     GetACP
     GetAtomNameA
     GetAtomNameW
-    GetBinaryTypeW
-    GetBinaryTypeA
-    GetBinaryType = GetBinaryTypeA
     GetCommandLineA
     GetCommandLineW
     GetCommConfig
@@ -257,7 +252,6 @@ EXPORTS
     GetNamedPipeHandleStateA
     GetNamedPipeHandleStateW
     GetNamedPipeInfo
-    GetNextVDMCommand
     GetNumberOfConsoleFonts
     GetNumberOfConsoleInputEvents
     GetNumberOfConsoleMouseButtons
@@ -326,7 +320,6 @@ EXPORTS
     GetVersion
     GetVersionExA
     GetVersionExW
-    GetVDMCurrentDirectories
     GetVolumeInformationA
     GetVolumeInformationW
     GetWindowsDirectoryA
@@ -470,9 +463,7 @@ EXPORTS
     ReadFile
     ReadFileEx
     ReadProcessMemory
-    RegisterConsoleVDM
     RegisterWaitForInputIdle
-    RegisterWowExec
     ReleaseMutex
     ReleaseSemaphore
     RemoveDirectoryA
@@ -549,7 +540,6 @@ EXPORTS
     SetThreadPriority
     SetTimeZoneInformation
     SetUnhandledExceptionFilter
-    SetVDMCurrentDirectories
     SetVolumeLabelA
     SetVolumeLabelW
     SetupComm
@@ -578,8 +568,6 @@ EXPORTS
     RtlFillMemory = NTDLL.RtlFillMemory
     UpdateResourceA
     UpdateResourceW
-    VDMConsoleOperation
-    VDMOperationStarted
     VerifyConsoleIoHandle
     VerLanguageNameW
     VerLanguageNameA
@@ -604,8 +592,6 @@ EXPORTS
     WriteConsoleA
     WriteConsoleInputA
     WriteConsoleInputW
-    WriteConsoleInputVDMA
-    WriteConsoleInputVDMW
     WriteConsoleOutputA
     WriteConsoleOutputAttribute
     WriteConsoleOutputCharacterA

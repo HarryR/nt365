@@ -56,7 +56,6 @@ Revision History:
 #include "ex.h"
 #include "ps.h"
 #include "exboosts.h"
-#include "vdmntos.h"
 
 #include "abios.h"
 #define _NTOS_
@@ -401,7 +400,6 @@ main(
     p2("TbCountOfOwnedCriticalSections", OFFSET(TEB, CountOfOwnedCriticalSections));
     p2("TbSystemReserved1", OFFSET(TEB, SystemReserved1));
     p2("TbSystemReserved2", OFFSET(TEB, SystemReserved2));
-    p2("TbVdm", OFFSET(TEB, Vdm));
     p2("TbCsrQlpcStack", OFFSET(TEB, CsrQlpcStack));
     p2("TbGdiClientPID", OFFSET(TEB, GdiClientPID));
     p2("TbGdiClientTID", OFFSET(TEB, GdiClientTID));
@@ -1114,72 +1112,6 @@ main(
 
     p2("PAGE_SIZE",PAGE_SIZE);
 
-    //
-    // Define the VDM instruction emulation count indexes
-    //
-
-    p1("\n");
-    p1(";\n");
-    p1(";  VDM equates.\n");
-    p1(";\n");
-    p1("\n");
-    p2("VDM_INDEX_Invalid",      VDM_INDEX_Invalid);
-    p2("VDM_INDEX_0F",           VDM_INDEX_0F);
-    p2("VDM_INDEX_ESPrefix",     VDM_INDEX_ESPrefix);
-    p2("VDM_INDEX_CSPrefix",     VDM_INDEX_CSPrefix);
-    p2("VDM_INDEX_SSPrefix",     VDM_INDEX_SSPrefix);
-    p2("VDM_INDEX_DSPrefix",     VDM_INDEX_DSPrefix);
-    p2("VDM_INDEX_FSPrefix",     VDM_INDEX_FSPrefix);
-    p2("VDM_INDEX_GSPrefix",     VDM_INDEX_GSPrefix);
-    p2("VDM_INDEX_OPER32Prefix", VDM_INDEX_OPER32Prefix);
-    p2("VDM_INDEX_ADDR32Prefix", VDM_INDEX_ADDR32Prefix);
-    p2("VDM_INDEX_INSB",         VDM_INDEX_INSB);
-    p2("VDM_INDEX_INSW",         VDM_INDEX_INSW);
-    p2("VDM_INDEX_OUTSB",        VDM_INDEX_OUTSB);
-    p2("VDM_INDEX_OUTSW",        VDM_INDEX_OUTSW);
-    p2("VDM_INDEX_PUSHF",        VDM_INDEX_PUSHF);
-    p2("VDM_INDEX_POPF",         VDM_INDEX_POPF);
-    p2("VDM_INDEX_INTnn",        VDM_INDEX_INTnn);
-    p2("VDM_INDEX_INTO",         VDM_INDEX_INTO);
-    p2("VDM_INDEX_IRET",         VDM_INDEX_IRET);
-    p2("VDM_INDEX_NPX",          VDM_INDEX_NPX);
-    p2("VDM_INDEX_INBimm",       VDM_INDEX_INBimm);
-    p2("VDM_INDEX_INWimm",       VDM_INDEX_INWimm);
-    p2("VDM_INDEX_OUTBimm",      VDM_INDEX_OUTBimm);
-    p2("VDM_INDEX_OUTWimm",      VDM_INDEX_OUTWimm);
-    p2("VDM_INDEX_INB",          VDM_INDEX_INB);
-    p2("VDM_INDEX_INW",          VDM_INDEX_INW);
-    p2("VDM_INDEX_OUTB",         VDM_INDEX_OUTB);
-    p2("VDM_INDEX_OUTW",         VDM_INDEX_OUTW);
-    p2("VDM_INDEX_LOCKPrefix",   VDM_INDEX_LOCKPrefix);
-    p2("VDM_INDEX_REPNEPrefix",  VDM_INDEX_REPNEPrefix);
-    p2("VDM_INDEX_REPPrefix",    VDM_INDEX_REPPrefix);
-    p2("VDM_INDEX_CLI",          VDM_INDEX_CLI);
-    p2("VDM_INDEX_STI",          VDM_INDEX_STI);
-    p2("VDM_INDEX_HLT",          VDM_INDEX_HLT);
-    p2("MAX_VDM_INDEX",          MAX_VDM_INDEX);
-
-    //
-    // Vdm feature bits
-    //
-
-    p1("\n");
-    p1(";\n");
-    p1(";  VDM feature bits.\n");
-    p1(";\n");
-    p1("\n");
-    p2("V86_VIRTUAL_INT_EXTENSIONS",V86_VIRTUAL_INT_EXTENSIONS);
-    p2("PM_VIRTUAL_INT_EXTENSIONS",PM_VIRTUAL_INT_EXTENSIONS);
-
-    //
-    // Selector type
-    //
-    p1("\n");
-    p1(";\n");
-    p1(";  Selector types.\n");
-    p1(";\n");
-    p1("\n");
-    p2("SEL_TYPE_NP",SEL_TYPE_NP);
     return 0;
 }
 

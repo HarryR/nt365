@@ -1,6 +1,5 @@
 #include "cmd.h"
 #include "cmdproto.h"
-#include "..\inc\vdmapi.h"
 
 /* The following are definitions of the debugging group and level bits
  * for the code in this file.
@@ -192,12 +191,6 @@ void SigCleanUp()				/* M000 - Now void	   */
 	Heof = FALSE;
 
         if (CurBat) {
-
-            // 27-May-1993 sudeepb
-            // Following CmdBatNotification call is a cleanup for the
-            // same call made from BatProc (in cbatch.c).
-
-            CmdBatNotification (CMD_BAT_OPERATION_TERMINATING);
             EchoFlag = EchoSave ;
             GotoFlag = FALSE ;
             eEndlocal((struct cmdnode *) NULL) ;

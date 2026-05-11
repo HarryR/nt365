@@ -81,11 +81,6 @@ endif
 
         xor     eax, eax                ; set FALSE
 
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jnz     short stnpx_10               ; Yes, then not supported
-
         mov     ebx, PCR[PcTeb]         ; R3 Teb
         cmp     [ebx].Einstall, 0       ; Initialized?
         je      short stnpx_10          ; No, then don't return NpxFrame
@@ -345,11 +340,6 @@ if DBG
 endif
 
         xor     eax, eax                ; set FALSE
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jnz     short npxts_10               ; Yes, then not supported
 
         mov     ebx, PCR[PcTeb]         ; R3 Teb
         cmp     [ebx].Einstall, 0       ; Initialized?

@@ -113,6 +113,7 @@ SOURCES= ..\base.rc    \
          ..\module.c   \
          ..\namepipe.c \
          ..\pathmisc.c \
+         ..\pathsmol.c \
          ..\perfctr.c  \
          ..\pipe.c     \
          ..\process.c  \
@@ -124,7 +125,6 @@ SOURCES= ..\base.rc    \
          ..\wsprintf.c \
          ..\csrstub.c  \
          ..\comm.c     \
-         ..\vdm.c      \
          ..\updres.c   \
          ..\blddcb.c   \
          ..\tapeapi.c  \

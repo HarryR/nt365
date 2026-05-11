@@ -27,7 +27,6 @@ Revision History:
 #include "zwapi.h"
 #include "stdlib.h"
 #include "string.h"
-#include "vdmntos.h"
 
 #define PSP_INVALID_ID 2        // BUGBUG - Copied from ps\psp.h
 extern PVOID PspCidTable;       // BUGBUG - Copied from ps\psp.h
@@ -113,11 +112,6 @@ ExpGetObjectInformation(
     OUT PULONG Length
     );
 
-
-NTSTATUS
-ExpGetInstemulInformation(
-    OUT PSYSTEM_VDM_INSTEMUL_INFO Info
-    );
 
 NTSTATUS
 ExpGetPoolTagInfo (
@@ -1175,29 +1169,6 @@ Return Value:
 
             break;
 
-        case SystemVdmInstemulInformation:
-#ifdef i386
-            if (SystemInformationLength < sizeof( SYSTEM_VDM_INSTEMUL_INFO )) {
-                return STATUS_INFO_LENGTH_MISMATCH;
-            }
-
-            if (ARGUMENT_PRESENT( ReturnLength )) {
-                *ReturnLength = 0;
-            }
-
-            Status = ExpGetInstemulInformation(
-                                            (PSYSTEM_VDM_INSTEMUL_INFO)SystemInformation
-                                            );
-
-            if (ARGUMENT_PRESENT( ReturnLength )) {
-                *ReturnLength = sizeof(SYSTEM_VDM_INSTEMUL_INFO);
-            }
-#else
-            Status = STATUS_NOT_IMPLEMENTED;
-#endif
-            break;
-
-
 #endif // DEVL
 
 #if DBG
@@ -1919,65 +1890,6 @@ ExpCopyThreadInfo (
     ThreadInfo->StartAddress = Thread->StartAddress;
 }
 
-#if DEVL
-#ifdef i386
-extern ULONG ExVdmOpcodeDispatchCounts[256];
-extern ULONG VdmBopCount;
-extern ULONG ExVdmSegmentNotPresent;
-
-#if defined(ALLOC_PRAGMA)
-#pragma alloc_text(PAGE, ExpGetInstemulInformation)
-#endif
-
-
-NTSTATUS
-ExpGetInstemulInformation(
-    OUT PSYSTEM_VDM_INSTEMUL_INFO Info
-    )
-{
-    SYSTEM_VDM_INSTEMUL_INFO LocalInfo;
-
-    LocalInfo.VdmOpcode0F       = ExVdmOpcodeDispatchCounts[VDM_INDEX_0F];
-    LocalInfo.OpcodeESPrefix    = ExVdmOpcodeDispatchCounts[VDM_INDEX_ESPrefix];
-    LocalInfo.OpcodeCSPrefix    = ExVdmOpcodeDispatchCounts[VDM_INDEX_CSPrefix];
-    LocalInfo.OpcodeSSPrefix    = ExVdmOpcodeDispatchCounts[VDM_INDEX_SSPrefix];
-    LocalInfo.OpcodeDSPrefix    = ExVdmOpcodeDispatchCounts[VDM_INDEX_DSPrefix];
-    LocalInfo.OpcodeFSPrefix    = ExVdmOpcodeDispatchCounts[VDM_INDEX_FSPrefix];
-    LocalInfo.OpcodeGSPrefix    = ExVdmOpcodeDispatchCounts[VDM_INDEX_GSPrefix];
-    LocalInfo.OpcodeOPER32Prefix= ExVdmOpcodeDispatchCounts[VDM_INDEX_OPER32Prefix];
-    LocalInfo.OpcodeADDR32Prefix= ExVdmOpcodeDispatchCounts[VDM_INDEX_ADDR32Prefix];
-    LocalInfo.OpcodeINSB        = ExVdmOpcodeDispatchCounts[VDM_INDEX_INSB];
-    LocalInfo.OpcodeINSW        = ExVdmOpcodeDispatchCounts[VDM_INDEX_INSW];
-    LocalInfo.OpcodeOUTSB       = ExVdmOpcodeDispatchCounts[VDM_INDEX_OUTSB];
-    LocalInfo.OpcodeOUTSW       = ExVdmOpcodeDispatchCounts[VDM_INDEX_OUTSW];
-    LocalInfo.OpcodePUSHF       = ExVdmOpcodeDispatchCounts[VDM_INDEX_PUSHF];
-    LocalInfo.OpcodePOPF        = ExVdmOpcodeDispatchCounts[VDM_INDEX_POPF];
-    LocalInfo.OpcodeINTnn       = ExVdmOpcodeDispatchCounts[VDM_INDEX_INTnn];
-    LocalInfo.OpcodeINTO        = ExVdmOpcodeDispatchCounts[VDM_INDEX_INTO];
-    LocalInfo.OpcodeIRET        = ExVdmOpcodeDispatchCounts[VDM_INDEX_IRET];
-    LocalInfo.OpcodeINBimm      = ExVdmOpcodeDispatchCounts[VDM_INDEX_INBimm];
-    LocalInfo.OpcodeINWimm      = ExVdmOpcodeDispatchCounts[VDM_INDEX_INWimm];
-    LocalInfo.OpcodeOUTBimm     = ExVdmOpcodeDispatchCounts[VDM_INDEX_OUTBimm];
-    LocalInfo.OpcodeOUTWimm     = ExVdmOpcodeDispatchCounts[VDM_INDEX_OUTWimm];
-    LocalInfo.OpcodeINB         = ExVdmOpcodeDispatchCounts[VDM_INDEX_INB];
-    LocalInfo.OpcodeINW         = ExVdmOpcodeDispatchCounts[VDM_INDEX_INW];
-    LocalInfo.OpcodeOUTB        = ExVdmOpcodeDispatchCounts[VDM_INDEX_OUTB];
-    LocalInfo.OpcodeOUTW        = ExVdmOpcodeDispatchCounts[VDM_INDEX_OUTW];
-    LocalInfo.OpcodeLOCKPrefix  = ExVdmOpcodeDispatchCounts[VDM_INDEX_LOCKPrefix];
-    LocalInfo.OpcodeREPNEPrefix = ExVdmOpcodeDispatchCounts[VDM_INDEX_REPNEPrefix];
-    LocalInfo.OpcodeREPPrefix   = ExVdmOpcodeDispatchCounts[VDM_INDEX_REPPrefix];
-    LocalInfo.OpcodeHLT         = ExVdmOpcodeDispatchCounts[VDM_INDEX_HLT];
-    LocalInfo.OpcodeCLI         = ExVdmOpcodeDispatchCounts[VDM_INDEX_CLI];
-    LocalInfo.OpcodeSTI         = ExVdmOpcodeDispatchCounts[VDM_INDEX_STI];
-    LocalInfo.BopCount          = VdmBopCount;
-    LocalInfo.SegmentNotPresent = ExVdmSegmentNotPresent;
-
-    RtlMoveMemory(Info,&LocalInfo,sizeof(LocalInfo));
-
-    return STATUS_SUCCESS;
-}
-#endif
-
 NTSTATUS
 ExpGetStackTraceInformation (
     OUT PVOID SystemInformation,
@@ -2323,8 +2235,6 @@ Return Value:
 
     return( Status );
 }
-
-#endif
 
 NTSTATUS
 ExpGetPoolTagInfo (

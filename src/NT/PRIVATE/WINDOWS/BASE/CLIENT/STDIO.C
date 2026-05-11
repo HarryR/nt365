@@ -54,7 +54,7 @@ Author:
 #include <nturtl.h>
 #include <windows.h>
 #include "basedll.h"
-#include <conapi.h>     // private console types: CONSOLE_FONT_INFO, RegisterConsoleVDM, GetConsoleHardwareState, ConsoleSubst, ...
+#include <conapi.h>     // private console types: CONSOLE_FONT_INFO, GetConsoleHardwareState, ConsoleSubst, ...
 #include <conroute.h>   // OpenConsoleW / DuplicateConsoleHandle / VerifyConsoleIoHandle / etc.
 
 /* --------------------------------------------------------------------- */
@@ -284,10 +284,6 @@ STUB_BOOL  (WriteConsoleInputA,
     (HANDLE h, CONST INPUT_RECORD *r, DWORD n, LPDWORD nw))
 STUB_BOOL  (WriteConsoleInputW,
     (HANDLE h, CONST INPUT_RECORD *r, DWORD n, LPDWORD nw))
-STUB_BOOL  (WriteConsoleInputVDMA,
-    (HANDLE h, CONST INPUT_RECORD *r, DWORD n, LPDWORD nw))
-STUB_BOOL  (WriteConsoleInputVDMW,
-    (HANDLE h, CONST INPUT_RECORD *r, DWORD n, LPDWORD nw))
 
 /* --- 2D character/attribute output --- */
 STUB_BOOL  (ReadConsoleOutputA,
@@ -380,11 +376,7 @@ STUB_BOOL  (SetConsoleKeyShortcuts,
 STUB_BOOL  (SetConsoleMenuClose,             (BOOL b))
 STUB_HMENU (ConsoleMenuControl,              (HANDLE h, DWORD a, DWORD b))
 
-/* --- VDM / private handle ops --- */
-STUB_BOOL  (RegisterConsoleVDM,
-    (DWORD a, HANDLE b, HANDLE c, HANDLE d, DWORD e, LPDWORD f,
-     PVOID *g, PVOID h, DWORD i, COORD j, PVOID *k))
-STUB_BOOL  (VDMConsoleOperation,             (DWORD a, LPVOID b))
+/* --- private handle ops --- */
 STUB_BOOL  (CloseConsoleHandle,              (HANDLE h))
 STUB_HANDLE(DuplicateConsoleHandle,
     (HANDLE h, DWORD access, BOOL inherit, DWORD options))

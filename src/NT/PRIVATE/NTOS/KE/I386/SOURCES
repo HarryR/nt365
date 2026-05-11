@@ -3,14 +3,11 @@ i386_SOURCES=..\i386\mpipi.c      \
              ..\i386\abiosc.c     \
              ..\i386\allproc.c    \
              ..\i386\apcuser.c    \
-             ..\i386\biosa.asm    \
-             ..\i386\biosc.c      \
              ..\i386\clockint.asm \
              ..\i386\ctxswap.asm  \
              ..\i386\cpu.asm      \
              ..\i386\cyrix.c      \
              ..\i386\dmpstate.c   \
-             ..\i386\emv86.asm    \
              ..\i386\emxcptn.asm  \
              ..\i386\exceptn.c    \
              ..\i386\flush.c      \
@@ -22,7 +19,6 @@ i386_SOURCES=..\i386\mpipi.c      \
              ..\i386\iopm.c       \
              ..\i386\i386init.c   \
              ..\i386\i386pcr.asm  \
-             ..\i386\instemul.asm \
              ..\i386\kernlini.c   \
              ..\i386\ldtsup.c     \
              ..\i386\ldtsup2.asm  \
@@ -37,6 +33,4 @@ i386_SOURCES=..\i386\mpipi.c      \
              ..\i386\thredini.c   \
              ..\i386\timindex.asm \
              ..\i386\trap.asm     \
-             ..\i386\trapc.c      \
-             ..\i386\vdm.c        \
-             ..\i386\vdmint21.c
+             ..\i386\trapc.c

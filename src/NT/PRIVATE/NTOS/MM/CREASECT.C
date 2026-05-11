@@ -84,12 +84,6 @@ MiVerifyImageHeader (
     IN ULONG NtHeaderSize
     );
 
-BOOLEAN
-MiCheckDosCalls (
-    IN PIMAGE_OS2_HEADER Os2Header,
-    IN ULONG HeaderSize
-    );
-
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE,MiCreateImageFileMap)
@@ -97,20 +91,9 @@ MiCheckDosCalls (
 #pragma alloc_text(PAGE,NtOpenSection)
 #pragma alloc_text(PAGE,MiGetImageProtection)
 #pragma alloc_text(PAGE,MiVerifyImageHeader)
-#pragma alloc_text(PAGE,MiCheckDosCalls)
 #pragma alloc_text(PAGE,MiCreatePagingFileMap)
 #pragma alloc_text(PAGE,MiCreateDataFileMap)
 #endif
-
-#pragma pack (1)
-typedef struct _PHARLAP_CONFIG {
-    UCHAR  uchCopyRight[0x32];
-    USHORT usType;
-    USHORT usRsv1;
-    USHORT usRsv2;
-    USHORT usSign;
-} CONFIGPHARLAP, *PCONFIGPHARLAP;
-#pragma pack ()
 
 
 NTSTATUS
@@ -2183,101 +2166,7 @@ BadSection:
 }
 
 
-BOOLEAN
-MiCheckDosCalls (
-    IN PIMAGE_OS2_HEADER Os2Header,
-    IN ULONG HeaderSize
-    )
 
-/*++
-
-Routine Description:
-
-
-Arguments:
-
-Return Value:
-
-    Returns the status value.
-
-    TBS
-
---*/
-{
-    PUCHAR  ImportTable;
-    UCHAR   EntrySize;
-    USHORT  ModuleCount,ModuleSize,i;
-    PUSHORT ModuleTable;
-
-    PAGED_CODE();
-
-    // if there are no modules to check return immidiatly.
-    if ((ModuleCount = Os2Header->ne_cmod) == 0)
-        return FALSE;
-
-    // exe headers are notorious and sometime have jink values for offsets
-    // in  import table and module table. We need to guard against any such
-    // bad offset by putting our exception handler.
-
-    try {
-        // Find out where the Module ref table is. Mod table has two byte
-        // for each entry in import table. These two bytes tell the offset
-        // in the import table for that entry.
-
-        ModuleTable = (PUSHORT)((ULONG)Os2Header + (ULONG)Os2Header->ne_modtab);
-
-        // make sure that complete module table is in our pages. Note that each
-        // module table entry is 2 bytes long.
-        if (((ULONG)Os2Header->ne_modtab + (ModuleCount*2)) > HeaderSize)
-                return FALSE;
-
-        // now search individual entries for DOSCALLS.
-        for (i=0 ; i<ModuleCount ; i++) {
-
-            ModuleSize = *((UNALIGNED USHORT *)ModuleTable);
-
-            // import table has count byte followed by the string where count
-            // is the string length.
-            ImportTable = (PUCHAR)((ULONG)Os2Header +
-                          (ULONG)Os2Header->ne_imptab + (ULONG)ModuleSize);
-
-            // make sure the offset is within in our valid range.
-            if (((ULONG)Os2Header->ne_imptab + (ULONG)ModuleSize)
-                            > HeaderSize)
-                return FALSE;
-
-            EntrySize = *ImportTable++;
-
-            // 0 is a bad size, bail out.
-            if (EntrySize == 0)
-                return FALSE;
-
-            // make sure the offset is within our valid range.
-            if (((ULONG)Os2Header->ne_imptab + (ULONG)ModuleSize +
-                            (ULONG)EntrySize) > HeaderSize)
-                return FALSE;
-
-            // If size matches compare DOSCALLS
-            if (EntrySize == 8) {
-                if (RtlCompareMemory (ImportTable,
-                                      "DOSCALLS",
-                                      8) == 8) {
-                    return TRUE;
-                }
-            }
-            // move on to next module table entry. Each entry is 2 bytes.
-            ModuleTable = (PUSHORT)((ULONG)ModuleTable + 2);
-        }
-    } except (EXCEPTION_EXECUTE_HANDLER) {
-        ASSERT (FALSE);
-        return FALSE;
-    }
-
-    return FALSE;
-}
-
-
-
 NTSTATUS
 MiVerifyImageHeader (
     IN PIMAGE_NT_HEADERS NtHeader,
@@ -2289,170 +2178,30 @@ MiVerifyImageHeader (
 
 Routine Description:
 
+    Validate a section-create image header.  NTVDM / WoW16 / OS2SS are
+    not supported in this build, so the only signature we accept is a
+    real PE header; NE, LE, PharLap/Rational/Borland DOS-extender, and
+    bare-MZ images are all rejected with STATUS_INVALID_IMAGE_PROTECT.
 
 Arguments:
 
+    NtHeader - Mapped NT/PE header (or unrecognized signature).
+    DosHeader - The DOS stub header at file offset 0 (unused now).
+    NtHeaderSize - Size of the mapped NT-header window (unused now).
+
 Return Value:
 
-    Returns the status value.
-
-    TBS
+    NTSTATUS.
 
 --*/
 
-
-
 {
-    PCONFIGPHARLAP PharLapConfigured;
-    PUCHAR         pb;
-    LONG           pResTableAddress;
+    UNREFERENCED_PARAMETER (DosHeader);
+    UNREFERENCED_PARAMETER (NtHeaderSize);
 
     PAGED_CODE();
 
     if (NtHeader->Signature != IMAGE_NT_SIGNATURE) {
-        if ((USHORT)NtHeader->Signature == (USHORT)IMAGE_OS2_SIGNATURE) {
-
-            //
-            // Check to see if this is a win-16 image.
-            //
-
-            if ((!MiCheckDosCalls ((PIMAGE_OS2_HEADER)NtHeader, NtHeaderSize)) &&
-                ((((PIMAGE_OS2_HEADER)NtHeader)->ne_exetyp == 2)
-                                ||
-                ((((PIMAGE_OS2_HEADER)NtHeader)->ne_exetyp == 0)  &&
-                  (((((PIMAGE_OS2_HEADER)NtHeader)->ne_expver & 0xff00) ==
-                        0x200)  ||
-                ((((PIMAGE_OS2_HEADER)NtHeader)->ne_expver & 0xff00) ==
-                        0x300))))) {
-
-                //
-                // This is a win-16 image.
-                //
-
-                return STATUS_INVALID_IMAGE_WIN_16;
-            }
-
-            // The following os2 hedaers types go to NTDOS
-            //
-            // - exetype == 5 means binary is for Dos 4.0.
-            //                e.g Borland Dos extender type
-            //
-            // - os2 apps which have no import table entries
-            //   cannot be meant for os2ss.
-            //                e.g. QuickC for dos binaries
-            //
-            //  - "old" Borland Dosx BC++ 3.x, Paradox 4.x
-            //     exe type == 1
-            //     DosHeader->e_cs * 16 + DosHeader->e_ip + 0x200 - 10
-            //     contains the string " mode EXE$"
-            //     but import table is empty, so we don't make special check
-            //
-
-            if (((PIMAGE_OS2_HEADER)NtHeader)->ne_exetyp == 5  ||
-                ((PIMAGE_OS2_HEADER)NtHeader)->ne_enttab ==
-                  ((PIMAGE_OS2_HEADER)NtHeader)->ne_imptab  )
-               {
-                return STATUS_INVALID_IMAGE_PROTECT;
-            }
-
-
-            //
-            // Borland Dosx types: exe type 1
-            //
-            //  - "new" Borland Dosx BP7.0
-            //     exe type == 1
-            //     DosHeader + 0x200 contains the string "16STUB"
-            //     0x200 happens to be e_parhdr*16
-            //
-
-            if (((PIMAGE_OS2_HEADER)NtHeader)->ne_exetyp == 1 &&
-                RtlCompareMemory((PUCHAR)DosHeader + 0x200, "16STUB", 6) == 6)
-               {
-                return STATUS_INVALID_IMAGE_PROTECT;
-            }
-
-            //
-            // Check for PharLap extended header which we run as a dos app.
-            // The PharLap config block is pointed to by the SizeofHeader
-            // field in the DosHdr.
-            // The following algorithm for detecting a pharlap exe
-            // was recommended by PharLap Software Inc.
-            //
-
-            PharLapConfigured =(PCONFIGPHARLAP) ((ULONG)DosHeader +
-                                      ((ULONG)DosHeader->e_cparhdr << 4));
-
-            if ((ULONG)PharLapConfigured <
-                       (ULONG)DosHeader + PAGE_SIZE - sizeof(CONFIGPHARLAP)) {
-                if (RtlCompareMemory(&PharLapConfigured->uchCopyRight[0x18],
-                                     "Phar Lap Software, Inc.", 24) == 24 &&
-                    (PharLapConfigured->usSign == 0x4b50 ||  // stub loader type 2
-                     PharLapConfigured->usSign == 0x4f50 ||  // bindable 286|DosExtender
-                     PharLapConfigured->usSign == 0x5650  )) // bindable 286|DosExtender (Adv)
-                  {
-                    return STATUS_INVALID_IMAGE_PROTECT;
-                }
-            }
-
-
-
-            //
-            // Check for Rational extended header which we run as a dos app.
-            // We look for the rational copyright at:
-            //     wCopyRight = *(DosHeader->e_cparhdr*16 + 30h)
-            //     pCopyRight = wCopyRight + DosHeader->e_cparhdr*16
-            //     "Copyright (C) Rational Systems, Inc."
-            //
-
-            pb = (PUCHAR)((ULONG)DosHeader + ((ULONG)DosHeader->e_cparhdr << 4));
-
-            if ((ULONG)pb < (ULONG)DosHeader + PAGE_SIZE - 0x30 - sizeof(USHORT)) {
-                pb += *(PUSHORT)(pb + 0x30);
-                if ( (ULONG)pb < (ULONG)DosHeader + PAGE_SIZE - 36 &&
-                     RtlCompareMemory(pb,
-                                      "Copyright (C) Rational Systems, Inc.",
-                                      36) == 36 )
-                   {
-                    return STATUS_INVALID_IMAGE_PROTECT;
-                }
-            }
-
-            //
-            // Check for lotus 123 family of applications. Starting
-            // with 123 3.0 (till recently shipped 123 3.4), every
-            // exe header is bound but is meant for DOS. This can
-            // be checked via, a string signature in the extended
-            // header. <len byte>"1-2-3 Preloader" is the string
-            // at ne_nrestab offset.
-            //
-
-            pResTableAddress = ((PIMAGE_OS2_HEADER)NtHeader)->ne_nrestab;
-            if (pResTableAddress > DosHeader->e_lfanew &&
-                ((ULONG)((pResTableAddress+16) - DosHeader->e_lfanew) <
-                            NtHeaderSize) &&
-                RtlCompareMemory(
-                    (PUCHAR)((ULONG)NtHeader + 1 +
-                             (ULONG)(pResTableAddress - DosHeader->e_lfanew)),
-                    "1-2-3 Preloader",
-                    15) == 15 ) {
-                    return STATUS_INVALID_IMAGE_PROTECT;
-            }
-
-            return STATUS_INVALID_IMAGE_NE_FORMAT;
-        }
-
-        if ((USHORT)NtHeader->Signature == (USHORT)IMAGE_OS2_SIGNATURE_LE) {
-
-            //
-            // This is a LE (OS/2) image. We dont support it, so give it to
-            // DOS subsystem. There are cases (Rbase.exe) which have a LE
-            // header but actually it is suppose to run under DOS. When we
-            // do support LE format, some work needs to be done here to
-            // decide wether to give it to VDM or OS/2.
-            //
-
-            return STATUS_INVALID_IMAGE_PROTECT;
-        }
         return STATUS_INVALID_IMAGE_PROTECT;
     }
 

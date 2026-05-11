@@ -1,6 +1,5 @@
 #include "cmd.h"
 #include "cmdproto.h"
-#include "..\inc\vdmapi.h"
 
 /* The following are definitions of the debugging group and level bits
  * for the code in this file.
@@ -181,20 +180,7 @@ int typflg ;				/* M011 - "how called" flag        */
 	if (SetBat(n, fname))			/* M031 - All work done    */
 		return(FAILURE) ;		/* ...in SetBat now	   */
 
-        // 27-May-1993 sudeepb
-        // Following two CmdBatNotification calls are being made to
-        // let NTVDM know that the binary is coming from a .bat/.cmd
-        // file. Without this all those DOS .bat progrmas are broken which
-        // first run a TSR and then run a real DOS app. There are a lot
-        // of such cases, Ventura Publisher, Civilization and many more
-        // games which first run a TSR. If .bat/.cmd does'nt have any
-        // DOS binary these calls dont have any effect.
-
-        if (istoplevel)
-            CmdBatNotification (CMD_BAT_OPERATION_STARTING);
 	batretcode = BatLoop(bdat,n) ;				/* M039    */
-        if (istoplevel)
-            CmdBatNotification (CMD_BAT_OPERATION_TERMINATING);
 	DEBUG((BPGRP, BPLVL, "BP: Returned from BatLoop")) ;
 	DEBUG((BPGRP, BPLVL, "BP: bdat = %lx curbat = %lx",bdat,CurBat)) ;
 

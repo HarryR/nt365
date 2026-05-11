@@ -1561,30 +1561,6 @@ Return Value:
         ObDereferenceObject(Process);
         return st;
 
-    case ProcessIoPortHandlers:
-
-        st = ObReferenceObjectByHandle(
-                ProcessHandle,
-                PROCESS_SET_INFORMATION,
-                PsProcessType,
-                PreviousMode,
-                (PVOID *)&Process,
-                NULL
-                );
-
-        if ( !NT_SUCCESS(st) ) {
-            return st;
-        }
-
-        st = PspSetProcessIoHandlers(
-                Process,
-                ProcessInformation,
-                ProcessInformationLength
-                );
-
-        ObDereferenceObject(Process);
-        return st;
-
     case ProcessUserModeIOPL:
 
         //

@@ -795,10 +795,9 @@ SeSinglePrivilegeCheck@12
 CcZeroData@16                             
 CmpOpenHiveFiles@36                       
 DaysAndFractionToTime@12                  
-DbgkExitThread@4                          
-KdpCheckTracePoint@8                      
-Ki386AdjustEsp0@4                         
-KiEspToTrapFrame@8                        
+DbgkExitThread@4
+KdpCheckTracePoint@8
+KiEspToTrapFrame@8
 LpcpCopyRequestData@28                    
 MiDeleteFreeVm@8                          
 NtOpenSection@12                          

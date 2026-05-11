@@ -25,21 +25,6 @@ VOID
 WINAPI
 SetLastConsoleEventActive( VOID );
 
-#define VDM_HIDE_WINDOW 	1
-#define VDM_IS_ICONIC           2
-#define VDM_CLIENT_RECT         3
-#define VDM_CLIENT_TO_SCREEN    4
-#define VDM_SCREEN_TO_CLIENT    5
-#define VDM_IS_HIDDEN           6
-#define VDM_FULLSCREEN_NOPAINT  7
-
-BOOL
-WINAPI
-VDMConsoleOperation(
-    DWORD iFunction,
-    LPVOID lpData
-    );
-
 typedef struct _CONSOLE_FONT_INFO {
     DWORD  nFont;
     COORD  dwFontSize;
@@ -119,25 +104,6 @@ SetConsoleDisplayMode(
     HANDLE hConsoleOutput,
     DWORD dwFlags,
     PCOORD lpNewScreenBufferDimensions
-    );
-
-#define CONSOLE_UNREGISTER_VDM 0
-#define CONSOLE_REGISTER_VDM   1
-#define CONSOLE_REGISTER_WOW   2
-
-BOOL
-RegisterConsoleVDM(
-    IN DWORD dwRegisterFlags,
-    IN HANDLE hStartHardwareEvent,
-    IN HANDLE hEndHardwareEvent,
-    IN LPWSTR lpStateSectionName,
-    IN DWORD dwStateSectionNameLength,
-    OUT LPDWORD lpStateLength,
-    OUT PVOID *lpState,
-    IN LPWSTR lpVDMBufferSectionName,
-    IN DWORD dwVDMBufferSectionNameLength,
-    COORD VDMBufferSize OPTIONAL,
-    OUT PVOID *lpVDMBuffer
     );
 
 BOOL
@@ -277,11 +243,3 @@ ConsoleSubst(
     IN DWORD dwPhysicalDriveBufferLength
     );
 
-BOOL
-WINAPI
-WriteConsoleInputVDM%(
-    HANDLE hConsoleInput,
-    PINPUT_RECORD lpBuffer,
-    DWORD nLength,
-    LPDWORD lpNumberOfEventsWritten
-    );

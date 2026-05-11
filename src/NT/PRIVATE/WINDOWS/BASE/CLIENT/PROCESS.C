@@ -21,9 +21,6 @@ Revision History:
 #include "basedll.h"
 #include "ntdbg.h"
 #include "winuser.h"
-#include <vdmapi.h>
-#include "vdm.h"
-#include "basevdm.h"
 
 BOOL
 BuildSubSysCommandLine(
@@ -461,7 +458,7 @@ Return Value:
     NTSTATUS Status;
     OBJECT_ATTRIBUTES Obja;
     POBJECT_ATTRIBUTES pObja;
-    HANDLE ProcessHandle, ThreadHandle, WaitHandle = NULL;
+    HANDLE ProcessHandle, ThreadHandle;
     HANDLE FileHandle, SectionHandle;
     CLIENT_ID ClientId;
     UNICODE_STRING PathName;
@@ -480,25 +477,15 @@ Return Value:
     PPEB Peb;
     BASE_API_MSG m;
     PBASE_CREATEPROCESS_MSG a= (PBASE_CREATEPROCESS_MSG)&m.u.CreateProcess;
-    PBASE_CHECKVDM_MSG b= (PBASE_CHECKVDM_MSG)&m.u.CheckVDM;
     PWCH TempNull;
     WCHAR TempChar;
-    PWCH VdmName;
-    PVOID BaseAddress;
-    ULONG Reserve;
-    ULONG iTask=0;
     UNICODE_STRING SaveIt;
     LPWSTR CurdirBuffer, CurdirFilePart;
     DWORD CurdirLength,CurdirLength2;
-    ULONG VDMCreationState=0,fShowConsole=0;
-    USHORT IsWowBinary = FALSE;
-    USHORT IsSeparateWow = FALSE;
     UNICODE_STRING  SubSysCommandLine;
     PIMAGE_NT_HEADERS NtHeaders;
     BOOLEAN QuoteCmdLine = FALSE;
     DWORD dwNoWindow = (dwCreationFlags & CREATE_NO_WINDOW);
-    ANSI_STRING AnsiStringVDMEnv;
-    UNICODE_STRING UnicodeStringVDMEnv;
 #if DBG
     WCHAR ImageFileDebuggerCommand[ 64 ];
 #endif
@@ -512,8 +499,6 @@ Return Value:
         return FALSE;
 	}
 
-    AnsiStringVDMEnv.Buffer = NULL;
-    UnicodeStringVDMEnv.Buffer = NULL;
     //
     // the lowest specified priority class is used.
     //
@@ -596,9 +581,6 @@ Return Value:
     ThreadHandle = NULL;
     FreeBuffer = NULL;
     NameBuffer = NULL;
-    VdmName = NULL;
-    BaseAddress = (PVOID)1;
-    Reserve = 0L;
     CurdirBuffer = NULL;
     CurdirFilePart = NULL;
     SubSysCommandLine.Buffer = NULL;
@@ -778,109 +760,15 @@ VdmRetry:
         if (!NT_SUCCESS(Status) ) {
 
             switch (Status) {
-                // 16 bit OS/2 exe
-                case STATUS_INVALID_IMAGE_NE_FORMAT:
-#ifdef i386
-                    //
-                    // OS/2 is only supported on x86. If we are
-                    // not running on an x86, then let these apps
-                    // fall into the bound app DOS case
-                    //
-
-                    if ( !BuildSubSysCommandLine( L"OS2 /P ",
-                                                  lpApplicationName,
-                                                  lpCommandLine,
-                                                  &SubSysCommandLine
-                                                ) ) {
-                        return FALSE;
-                    }
-
-                    lpCommandLine = SubSysCommandLine.Buffer;
-
-                    lpApplicationName = NULL;
-
-                    RtlFreeHeap(RtlProcessHeap(), 0,FreeBuffer);
-                    FreeBuffer = NULL;
-                    goto VdmRetry;
-#endif
-                    // Falls into Dos case, so that stub message will be
-                    // printed, and bound apps will run w/o OS/2 subsytem
-
-                // Dos .exe or .com
-
+                //
+                // NTVDM / WoW16 / OS2SS are not part of this build, so the
+                // only non-PE status we still know how to handle is the
+                // .bat / .cmd "script wrapper" rewrite into `cmd /c`.
+                //
                 case STATUS_INVALID_IMAGE_PROTECT:
                 case STATUS_INVALID_IMAGE_NOT_MZ:
 
-		    fShowConsole = BINARY_TYPE_DOS_EXE;
-                    if (Status == STATUS_INVALID_IMAGE_PROTECT   ||
-                        Status == STATUS_INVALID_IMAGE_NE_FORMAT ||
-		       (fShowConsole = BaseIsDosApplication(&PathName,Status)) )
-		       {
-			// create the environment before going to the
-			// server. This was done becuase we want NTVDM
-			// to have the new environment when it gets
-			// created.
-			if (!BaseCreateVDMEnvironment(
-				    lpEnvironment,
-				    &AnsiStringVDMEnv,
-				    &UnicodeStringVDMEnv
-				    ))
-			    return FALSE;
-
-			if(BaseCheckVDM (BINARY_TYPE_DOS | fShowConsole,
-                                         lpApplicationName,
-                                         lpCommandLine,
-                                         lpCurrentDirectory,
-					 &AnsiStringVDMEnv,
-                                         &m,
-					 &iTask,
-					 dwCreationFlags,
-					 lpStartupInfo) == FALSE)
-			    return FALSE;
-
-                        // Check the return value from the server
-                        switch (b->VDMState & VDM_STATE_MASK){
-                            case VDM_NOT_PRESENT:
-                                if (!BaseGetDosVdmConfigInfo(
-                                        &lpCommandLine,
-                                        iTask,
-                                        &Reserve)
-                                   ) {
-                                    BaseSetLastNTError(Status);
-                                    VDMCreationState = VDM_PARTIALLY_CREATED;
-                                    return FALSE;
-                                    }
-                                VdmName = (PWCH)lpCommandLine;
-                                lpApplicationName = NULL;
-                                VDMCreationState = VDM_PARTIALLY_CREATED;
-                                break;
-
-                            case VDM_PRESENT_NOT_READY:
-                                SetLastError (ERROR_NOT_READY);
-                                return FALSE;
-
-                            case VDM_PRESENT_AND_READY:
-                                VDMCreationState = VDM_BEING_REUSED;
-                                WaitHandle = b->WaitObjectForParent;
-                                break;
-                            }
-                         RtlFreeHeap(RtlProcessHeap(), 0,FreeBuffer);
-                         FreeBuffer = NULL;
-                         Reserve -= 1;               // we reserve from addr 1
-                         if(WaitHandle)
-                            goto VdmExists;
-                         else{
-                            bInheritHandles = FALSE;
-			    if (lpEnvironment &&
-				!(dwCreationFlags & CREATE_UNICODE_ENVIRONMENT)){
-				RtlDestroyEnvironment(lpEnvironment);
-				}
-			    lpEnvironment = UnicodeStringVDMEnv.Buffer;
-                            goto VdmRetry;
-                            }
-                        }
-                    else {
-
+                    {
                         //
                         // must be a .bat or .cmd file
                         //
@@ -980,117 +868,11 @@ itsok:
 
                         }
 
-                // 16 bit windows exe
-                case STATUS_INVALID_IMAGE_WIN_16:
-                    IsWowBinary = TRUE;
-                    IsSeparateWow = dwCreationFlags & CREATE_SEPARATE_WOW_VDM ? TRUE : FALSE;
-
-                    //
-                    // Separate WOW VDMs get kicked off here without calling
-                    // BaseCheckVDM, since we don't want this app queued
-                    // to the shared VDM.  BaseSrv doesn't know anything about
-                    // separate WOW VDMs.
-                    //
-		    if (!BaseCreateVDMEnvironment(lpEnvironment,
-						  &AnsiStringVDMEnv,
-						  &UnicodeStringVDMEnv
-						  ))
-			return FALSE;
-
-                    if (IsSeparateWow) {
-                        b->VDMState = VDM_NOT_PRESENT;
-                        }
-                    else {
-                        if(BaseCheckVDM (BINARY_TYPE_WIN16,
-                                     lpApplicationName,
-                                     lpCommandLine,
-                                     lpCurrentDirectory,
-				     &AnsiStringVDMEnv,
-                                     &m,
-                                     &iTask,
-                                     dwCreationFlags,
-                                     lpStartupInfo) == FALSE)
-
-                        //
-                        // If we failed with access denied, it may be because
-                        // the caller isn't allowed to access the default wow's
-                        // desktop, so retry as a separate wow
-                        // BUGBUG: this is a temporary fix until sep wows are
-                        // cleaned up correctly in the basesrv where this error
-                        // case will be handled in the BaseCheckVdm call.
-                        //
-                        if (GetLastError() == ERROR_ACCESS_DENIED ) {
-                            IsSeparateWow = TRUE;
-                            b->VDMState = VDM_NOT_PRESENT;
-                            dwCreationFlags |= CREATE_SEPARATE_WOW_VDM;
-                            }
-                        else {
-                            return FALSE;
-                            }
-                        }
-
-                    // Check the return value from the server
-                    switch (b->VDMState & VDM_STATE_MASK){
-                        case VDM_NOT_PRESENT:
-			    if (!BaseGetWowVdmConfigInfo(&lpCommandLine, IsSeparateWow, &Reserve, &fShowConsole, lpCommandLine)) {
-                                VDMCreationState = VDM_PARTIALLY_CREATED;
-                                BaseSetLastNTError(Status);
-                                return FALSE;
-                                }
-                            VdmName = (PWCH)lpCommandLine;
-                            lpApplicationName = NULL;
-                            VDMCreationState = VDM_PARTIALLY_CREATED;
-                            if (fShowConsole == 0){
-                                dwCreationFlags |= CREATE_NO_WINDOW;
-                                dwCreationFlags &= ~CREATE_NEW_CONSOLE;
-                                }
-                            if (lpStartupInfo)
-                                lpStartupInfo->dwFlags |= STARTF_FORCEONFEEDBACK;
-                            break;
-
-                        case VDM_PRESENT_NOT_READY:
-                            SetLastError (ERROR_NOT_READY);
-                            return FALSE;
-
-                        case VDM_PRESENT_AND_READY:
-                            VDMCreationState = VDM_BEING_REUSED;
-                            WaitHandle = b->WaitObjectForParent;
-                            break;
-                        }
-
-                    RtlFreeHeap(RtlProcessHeap(), 0,FreeBuffer);
-                    FreeBuffer = NULL;
-                    Reserve -= 1;               // we reserve from addr 1
-                    if(WaitHandle)
-                        goto VdmExists;
-                    else {
-                        bInheritHandles = FALSE;
-			// replace the environment with ours
-			if (lpEnvironment &&
-                            !(dwCreationFlags & CREATE_UNICODE_ENVIRONMENT)) {
-                            RtlDestroyEnvironment(lpEnvironment);
-			    }
-			lpEnvironment = UnicodeStringVDMEnv.Buffer;
-                        goto VdmRetry;
-                        }
-
                 default :
                     SetLastError(ERROR_BAD_EXE_FORMAT);
                     return FALSE;
             }
         }
-
-        //
-        // Make sure only WOW apps can have the CREATE_SEPARATE_WOW_VDM flag.
-        //
-
-        if (!IsWowBinary && (dwCreationFlags & CREATE_SEPARATE_WOW_VDM)) {
-#if DBG
-            DbgPrint("BASE: CreateProcess ignoring CREATE_SEPARATE_WOW_VDM flag for non-Win16 binary.\n");
-#endif
-            dwCreationFlags &= ~CREATE_SEPARATE_WOW_VDM;
-        }
-
 
 #if DBG
         ImageFileDebuggerCommand[ 0 ] = UNICODE_NULL;
@@ -1257,26 +1039,6 @@ itsok:
             }
 
         //
-        // If the process is being created for a VDM call the server with
-        // process handle.  We don't do this for the shared WOW VDM, since
-        // there is no server side data on those.
-        //
-
-        if ( Reserve != 0) {
-            WaitHandle = ProcessHandle;
-            if (!IsSeparateWow &&
-                !BaseUpdateVDMEntry(
-                    UPDATE_VDM_PROCESS_HANDLE,
-                    &WaitHandle,
-                    iTask,
-                    IsWowBinary)
-                    ) {
-                return FALSE;
-                }
-            VDMCreationState |= VDM_FULLY_CREATED;
-            }
-
-        //
         // if we're a detached priority, we don't have the focus, so
         // don't create with boosted priority.
         //
@@ -1292,28 +1054,6 @@ itsok:
                                               );
             ASSERT(NT_SUCCESS(Status));
         }
-
-#ifdef i386
-        //
-        // Reserve memory in the new process' address space if necessary
-        // (for vdms). This is required only for x86 system.
-        //
-
-    if ( Reserve ) {
-            Status = NtAllocateVirtualMemory(
-                        ProcessHandle,
-                        &BaseAddress,
-                        0L,
-                        &Reserve,
-                        MEM_RESERVE,
-                        PAGE_EXECUTE_READWRITE
-                        );
-            if ( !NT_SUCCESS(Status) ){
-                BaseSetLastNTError(Status);
-                return FALSE;
-            }
-    }
-#endif
 
         //
         // Determine the location of the
@@ -1394,10 +1134,6 @@ itsok:
             return FALSE;
             }
 
-        if (VdmName) {
-            RtlFreeHeap(RtlProcessHeap(), 0,VdmName);
-            VdmName = NULL;
-        }
         //
         // Create the thread...
         //
@@ -1509,19 +1245,7 @@ itsok:
         if (lpStartupInfo->dwFlags & STARTF_FORCEOFFFEEDBACK)
             a->ProcessHandle = (HANDLE)((DWORD)a->ProcessHandle & ~1);
 
-        if (WaitHandle){
-            a->IsVDM = TRUE;
-            if (IsWowBinary)
-                a->hVDM = (HANDLE)-1;
-            else if (iTask) {
-                a->hVDM = 0;
-                a->IsVDM = iTask;
-                }
-            else
-                a->hVDM = NtCurrentPeb()->ProcessParameters->ConsoleHandle;
-        }
-        else
-            a->IsVDM = FALSE;
+        a->IsVDM = FALSE;
 
         CsrClientCallServer( (PCSR_API_MSG)&m,
                              NULL,
@@ -1541,41 +1265,10 @@ itsok:
             NtResumeThread(ThreadHandle,&i);
             }
 
-VdmExists:
         bStatus = TRUE;
-        if (WaitHandle)
-            VDMCreationState |= VDM_CREATION_SUCCESSFUL;
 
         try {
-            if (WaitHandle && !IsSeparateWow){
-
-                //
-                // tag Shared WOW VDM handles so that wait for input idle has a
-                // chance to work.  Shared WOW VDM "process" handles are actually
-                // event handles,  Separate WOW VDM handles are real process
-                // handles. Also mark DOS handles with 0x1 so WaitForInputIdle
-                // has a way to distinguish DOS apps and not block forever.
-                //
-
-                if (IsWowBinary)
-                    lpProcessInformation->hProcess =
-                            (HANDLE)((DWORD)WaitHandle | 0x2);
-                else
-                    lpProcessInformation->hProcess =
-                            (HANDLE)((DWORD)WaitHandle | 0x1);
-
-		// The calling process doesn't know we did this substitution and there
-		// is no way for it to close the handle for us until it terminates. We
-		// don't want to keep this handle opened during the calling process
-		// life time so we close it here.
-		// The only case that the ProcessHandle != NULL is when the NTVDM process
-		// just got created.
-		if (ProcessHandle != NULL)
-		    NtClose(ProcessHandle);
-                }
-            else{
-                lpProcessInformation->hProcess = ProcessHandle;
-                }
+            lpProcessInformation->hProcess = ProcessHandle;
             lpProcessInformation->hThread = ThreadHandle;
             lpProcessInformation->dwProcessId = (DWORD)ClientId.UniqueProcess;
             lpProcessInformation->dwThreadId = (DWORD)ClientId.UniqueThread;
@@ -1587,8 +1280,6 @@ VdmExists:
             NtClose( ThreadHandle );
             ProcessHandle = NULL;
             ThreadHandle = NULL;
-            if (WaitHandle)
-                VDMCreationState &= ~VDM_CREATION_SUCCESSFUL;
             }
         }
     finally {
@@ -1618,24 +1309,8 @@ VdmExists:
         if ( ProcessHandle ) {
             NtClose(ProcessHandle);
             }
-        if ( VdmName ) {
-            RtlFreeHeap(RtlProcessHeap(), 0,VdmName);
-            }
         if ( SubSysCommandLine.Buffer ) {
             RtlFreeUnicodeString(&SubSysCommandLine);
-	    }
-	if (AnsiStringVDMEnv.Buffer || UnicodeStringVDMEnv.Buffer)
-	    BaseDestroyVDMEnvironment(&AnsiStringVDMEnv, &UnicodeStringVDMEnv);
-
-        if (VDMCreationState && !(VDMCreationState & VDM_CREATION_SUCCESSFUL)){
-            BaseUpdateVDMEntry (
-                UPDATE_VDM_UNDO_CREATION,
-                (HANDLE *)&iTask,
-                VDMCreationState,
-                IsWowBinary );
-            if(WaitHandle) {
-                NtClose(WaitHandle);
-                }
             }
         }
 
@@ -1931,10 +1606,6 @@ Return Value:
 {
     NTSTATUS Status;
     PROCESS_BASIC_INFORMATION BasicInformation;
-
-
-    if (BaseCheckForVDM (hProcess,lpExitCode) == TRUE)
-        return TRUE;
 
     Status = NtQueryInformationProcess(
                 hProcess,

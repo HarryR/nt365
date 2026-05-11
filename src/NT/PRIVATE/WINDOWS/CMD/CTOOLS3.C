@@ -291,8 +291,6 @@ int GetDir(TCHAR *str, TCHAR dlet)
  *	directory of the current drive is changed, the global variable
  *	CurDrvDir is updated.
  *
- *      This routine is used by RestoreCurrentDirectories
- *
  *  int ChangeDir2(BYTE *newdir, BOOL )
  *
  *  Args:

@@ -962,7 +962,6 @@ PspProcessDelete(
     }
 
     PspDeleteLdt( Process );
-    PspDeleteVdmObjects( Process );
 
     if ( AddressSpace ) {
 

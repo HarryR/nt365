@@ -23,8 +23,7 @@ $(BASEDIR)\public\sdk\lib\$(TARGET_DIRECTORY)\ntoskrnl.lib $(BASEDIR)\public\sdk
         $(TARGETPATH)\$(TARGET_DIRECTORY)\ps.lib     \
         $(TARGETPATH)\$(TARGET_DIRECTORY)\raw.lib    \
         $(TARGETPATH)\$(TARGET_DIRECTORY)\ntosrtl.lib\
-        $(TARGETPATH)\$(TARGET_DIRECTORY)\se.lib     \
-        $(TARGETPATH)\$(TARGET_DIRECTORY)\vdm.lib
+        $(TARGETPATH)\$(TARGET_DIRECTORY)\se.lib
     link -lib -nologo @<<
 -def:obj\$(TARGET_DIRECTORY)\ntoskrnl.def
 -out:$(@D)\tmp.lib
@@ -46,7 +45,6 @@ $(TARGETPATH)\$(TARGET_DIRECTORY)\ps.lib
 $(TARGETPATH)\$(TARGET_DIRECTORY)\raw.lib
 $(TARGETPATH)\$(TARGET_DIRECTORY)\ntosrtl.lib
 $(TARGETPATH)\$(TARGET_DIRECTORY)\se.lib
-$(TARGETPATH)\$(TARGET_DIRECTORY)\vdm.lib
 $(BASEDIR)\public\sdk\lib\$(TARGET_DIRECTORY)\libcntpr.lib
 !ENDIF
 <<NOKEEP

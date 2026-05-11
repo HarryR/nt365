@@ -223,16 +223,6 @@ typedef struct _DEVICE_EXTENSION {
     PVIDEO_HW_TIMER HwTimer;
 
     //
-    // Stores the size and pointer to the EmulatorAccessEntries. These are
-    // kept since they will be accessed later on when the Emulation must be
-    // enabled.
-    //
-
-    ULONG NumEmulatorAccessEntries;
-    PEMULATOR_ACCESS_ENTRY EmulatorAccessEntries;
-    ULONG EmulatorAccessEntriesContext;
-
-    //
     // Determines the size required to save the video hardware state
     //
 
@@ -284,14 +274,6 @@ typedef struct _DEVICE_EXTENSION {
     //
 
     VP_ERROR_LOG_ENTRY ErrorLogEntry;
-
-    //
-    // VDM and int10 support
-    //
-
-    ULONG ServerBiosAddressSpaceInitialized;
-    PHYSICAL_ADDRESS VdmPhysicalVideoMemoryAddress;
-    ULONG VdmPhysicalVideoMemoryLength;
 
 } DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
@@ -446,33 +428,3 @@ pVideoPortReportResourceList(
     );
 
 
-//
-// i386\porti386.c
-// mips\portmips.c
-// alpha\portalpha.c
-
-NTSTATUS
-pVideoPortEnableVDM(
-    IN PDEVICE_EXTENSION DeviceExtension,
-    IN BOOLEAN Enable,
-    IN PVIDEO_VDM VdmInfo,
-    IN ULONG VdmInfoSize
-    );
-
-NTSTATUS
-pVideoPortRegisterVDM(
-    IN PDEVICE_EXTENSION DeviceExtension,
-    IN PVIDEO_VDM VdmInfo,
-    IN ULONG VdmInfoSize,
-    OUT PVIDEO_REGISTER_VDM RegisterVdm,
-    IN ULONG RegisterVdmSize,
-    OUT PULONG OutputSize
-    );
-
-NTSTATUS
-pVideoPortSetIOPM(
-    IN ULONG NumAccessRanges,
-    IN PVIDEO_ACCESS_RANGE AccessRange,
-    IN BOOLEAN Enable,
-    IN ULONG IOPMNumber
-    );

@@ -602,57 +602,13 @@ Return Value:
 
         ioControlCode = irpStack->Parameters.DeviceIoControl.IoControlCode;
 
-        //
-        // Enabling or disabling the VDM is done only by the port driver.
-        //
-
-        if (ioControlCode == IOCTL_VIDEO_REGISTER_VDM) {
-
-            pVideoDebugPrint((2, "VideoPort - RegisterVdm\n"));
-
-            statusBlock->Status = pVideoPortRegisterVDM(deviceExtension,
-                                                        (PVIDEO_VDM) ioBuffer,
-                                                        inputBufferLength,
-                                                        (PVIDEO_REGISTER_VDM) ioBuffer,
-                                                        outputBufferLength,
-                                                        &statusBlock->Information);
-
-        } else if (ioControlCode == IOCTL_VIDEO_DISABLE_VDM) {
-
-            pVideoDebugPrint((2, "VideoPort - DisableVdm\n"));
-
-            statusBlock->Status = pVideoPortEnableVDM(deviceExtension,
-                                                      FALSE,
-                                                      (PVIDEO_VDM) ioBuffer,
-                                                      inputBufferLength);
-
-        } else {
+        {
 
             //
-            // All other request need to be passed to the miniport driver.
+            // All requests get passed to the miniport driver.
             //
 
             switch (ioControlCode) {
-
-            case IOCTL_VIDEO_ENABLE_VDM:
-
-                pVideoDebugPrint((2, "VideoPort - EnableVdm\n"));
-
-                statusBlock->Status = pVideoPortEnableVDM(deviceExtension,
-                                                          TRUE,
-                                                          (PVIDEO_VDM) ioBuffer,
-                                                          inputBufferLength);
-
-#if DBG
-                if (statusBlock->Status == STATUS_CONFLICTING_ADDRESSES) {
-
-                    ASSERT(FALSE);
-
-                }
-#endif
-
-                break;
-
 
             case IOCTL_VIDEO_SAVE_HARDWARE_STATE:
 
@@ -773,26 +729,10 @@ Return Value:
                     }
 
                     pVideoPortMapToNtStatus(statusBlock);
-
-                    //
-                    // !!! Compatibility:
-                    // Do not require a miniport to support the REGISTER_VDM
-                    // IOCTL, so if we get an error in that case, just
-                    // return success.
-                    //
-                    // Do put up a message so people fix this.
-                    //
-
-                    if (ioControlCode == IOCTL_VIDEO_ENABLE_VDM) {
-
-                        statusBlock->Status = STATUS_SUCCESS;
-                        pVideoDebugPrint((0, "VIDEO PORT: The video miniport driver does not support the IOCTL_VIDEO_ENABLE_VDM function. The video miniport driver *should* be fixed. \n"));
-
-                    }
                 }
             }
 
-        } // if (ioControlCode == ...
+        }
 
         break;
 
@@ -2401,28 +2341,6 @@ Environment:
         goto EndOfInitialization;
 
     }
-
-    //
-    // Store the emulator data in the device extension so we can use it
-    // later.
-    //
-
-    deviceExtension->NumEmulatorAccessEntries =
-        miniportConfigInfo.NumEmulatorAccessEntries;
-
-    deviceExtension->EmulatorAccessEntries =
-        miniportConfigInfo.EmulatorAccessEntries;
-
-    deviceExtension->EmulatorAccessEntriesContext =
-        miniportConfigInfo.EmulatorAccessEntriesContext;
-
-    deviceExtension->ServerBiosAddressSpaceInitialized = FALSE;
-
-    deviceExtension->VdmPhysicalVideoMemoryAddress =
-        miniportConfigInfo.VdmPhysicalVideoMemoryAddress;
-
-    deviceExtension->VdmPhysicalVideoMemoryLength =
-        miniportConfigInfo.VdmPhysicalVideoMemoryLength;
 
     //
     // Store the required information in the device extension for later use.
@@ -5134,6 +5052,37 @@ VideoPortZeroMemory(
 Routine Description:
 
     VideoPortZeroMemory zeroes a block of system memory of a certain
+    length (Length) located at the address specified in Destination.
+
+Arguments:
+
+    Destination - Specifies the starting address of the block of memory to be
+        zeroed.
+
+    Length - Specifies the length, in bytes, of the memory to be zeroed.
+
+ Return Value:
+
+    None.
+
+--*/
+
+{
+    RtlZeroMemory(Destination,Length);
+}
+
+
+VOID
+VideoPortZeroDeviceMemory(
+    IN PVOID Destination,
+    IN ULONG Length
+    )
+
+/*++
+
+Routine Description:
+
+    VideoPortZeroDeviceMemory zeroes a block of device memory of a certain
     length (Length) located at the address specified in Destination.
 
 Arguments:

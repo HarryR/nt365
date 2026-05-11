@@ -36,11 +36,6 @@ Revision History:
 
 VOID    (*KiUserExceptionDispatcherAddress)();
 
-VOID
-Ki386AdjustEsp0(
-    IN PKTRAP_FRAME TrapFrame
-    );
-
 BOOLEAN
 KiEm87StateToNpxFrame(
     OUT PFLOATING_SAVE_AREA NpxFrmae
@@ -77,8 +72,7 @@ Return Value:
 --*/
 
 {
-    if (((TrapFrame->SegCs & MODE_MASK) != KernelMode) ||
-      (TrapFrame->EFlags & EFLAGS_V86_MASK)) {
+    if ((TrapFrame->SegCs & MODE_MASK) != KernelMode) {
 
         //  User mode frame, real value of Esp is always in HardwareEsp.
 
@@ -133,8 +127,7 @@ Return Value:
 
     OldEsp = KiEspFromTrapFrame(TrapFrame);
 
-    if (((TrapFrame->SegCs & MODE_MASK) != KernelMode) ||
-      (TrapFrame->EFlags & EFLAGS_V86_MASK)) {
+    if ((TrapFrame->SegCs & MODE_MASK) != KernelMode) {
 
         //
         //  User mode trap frame
@@ -200,9 +193,7 @@ Return Value:
 --*/
 
 {
-    if (TrapFrame->EFlags & EFLAGS_V86_MASK){
-        return TrapFrame->HardwareSegSs;
-    } else if ((TrapFrame->SegCs & MODE_MASK) != KernelMode) {
+    if ((TrapFrame->SegCs & MODE_MASK) != KernelMode) {
 
         //
         // It's user mode.  The HardwareSegSs contains R3 data selector.
@@ -245,9 +236,7 @@ Return Value:
 {
     SegSs &= SEGMENT_MASK;  // Throw away the high order trash bits
 
-    if (TrapFrame->EFlags & EFLAGS_V86_MASK) {
-        TrapFrame->HardwareSegSs = SegSs;
-    } else if ((TrapFrame->SegCs & MODE_MASK) == UserMode) {
+    if ((TrapFrame->SegCs & MODE_MASK) == UserMode) {
 
         //
         // If user mode, we simply put SegSs to trapfram.  If the SegSs
@@ -319,8 +308,7 @@ Return Value:
         ContextFrame->Ebp = TrapFrame->Ebp;
         ContextFrame->Eip = TrapFrame->Eip;
 
-        if (((TrapFrame->SegCs & FRAME_EDITED) == 0) &&
-            ((TrapFrame->EFlags & EFLAGS_V86_MASK) == 0)) {
+        if ((TrapFrame->SegCs & FRAME_EDITED) == 0) {
             ContextFrame->SegCs = TrapFrame->TempSegCs & SEGMENT_MASK;
         } else {
             ContextFrame->SegCs = TrapFrame->SegCs & SEGMENT_MASK;
@@ -343,30 +331,22 @@ Return Value:
         // for debugging under certain conditions.  Therefore,
         // we report whatever was in the frame.
         //
-        if (TrapFrame->EFlags & EFLAGS_V86_MASK) {
-            ContextFrame->SegGs = TrapFrame->V86Gs & SEGMENT_MASK;
-            ContextFrame->SegFs = TrapFrame->V86Fs & SEGMENT_MASK;
-            ContextFrame->SegEs = TrapFrame->V86Es & SEGMENT_MASK;
-            ContextFrame->SegDs = TrapFrame->V86Ds & SEGMENT_MASK;
-        }
-        else {
-            if (TrapFrame->SegCs == KGDT_R0_CODE) {
-                //
-                // Trap frames created from R0_CODE traps do not save
-                // the following selectors.  Set them in the frame now.
-                //
+        if (TrapFrame->SegCs == KGDT_R0_CODE) {
+            //
+            // Trap frames created from R0_CODE traps do not save
+            // the following selectors.  Set them in the frame now.
+            //
 
-                TrapFrame->SegGs = 0;
-                TrapFrame->SegFs = KGDT_R0_PCR;
-                TrapFrame->SegEs = KGDT_R3_DATA | RPL_MASK;
-                TrapFrame->SegDs = KGDT_R3_DATA | RPL_MASK;
-            }
-
-            ContextFrame->SegGs = TrapFrame->SegGs & SEGMENT_MASK;
-            ContextFrame->SegFs = TrapFrame->SegFs & SEGMENT_MASK;
-            ContextFrame->SegEs = TrapFrame->SegEs & SEGMENT_MASK;
-            ContextFrame->SegDs = TrapFrame->SegDs & SEGMENT_MASK;
+            TrapFrame->SegGs = 0;
+            TrapFrame->SegFs = KGDT_R0_PCR;
+            TrapFrame->SegEs = KGDT_R3_DATA | RPL_MASK;
+            TrapFrame->SegDs = KGDT_R3_DATA | RPL_MASK;
         }
+
+        ContextFrame->SegGs = TrapFrame->SegGs & SEGMENT_MASK;
+        ContextFrame->SegFs = TrapFrame->SegFs & SEGMENT_MASK;
+        ContextFrame->SegEs = TrapFrame->SegEs & SEGMENT_MASK;
+        ContextFrame->SegDs = TrapFrame->SegDs & SEGMENT_MASK;
 
     }
 
@@ -468,8 +448,7 @@ Return Value:
         // Dr7 must be set to 0 if we get a non-active user mode frame.
         //
 
-        if ((((TrapFrame->SegCs & MODE_MASK) != KernelMode) ||
-            ((TrapFrame->EFlags & EFLAGS_V86_MASK) != 0)) &&
+        if (((TrapFrame->SegCs & MODE_MASK) != KernelMode) &&
             (KeGetCurrentThread()->DebugActive == TRUE)) {
 
             ContextFrame->Dr7 = TrapFrame->Dr7;
@@ -529,7 +508,6 @@ Return Value:
     PFLOATING_SAVE_AREA NpxFrame;
     ULONG i;
     BOOLEAN StateSaved;
-    BOOLEAN ModeChanged;
 
     UNREFERENCED_PARAMETER( ExceptionFrame );
 
@@ -539,47 +517,28 @@ Return Value:
 
     if ((ContextFlags & CONTEXT_CONTROL) == CONTEXT_CONTROL) {
 
-        if ((ContextFrame->EFlags & EFLAGS_V86_MASK) !=
-            (TrapFrame->EFlags & EFLAGS_V86_MASK)) {
-            ModeChanged = TRUE;
-        } else {
-            ModeChanged = FALSE;
-        }
-
-
         //
         // Set registers eflag, ebp, eip, cs, esp and ss.
-        // Eflags is set first, so that the auxilliary routines
-        // can check the v86 bit to determine as well as cs, to
-        // determine if the frame is kernel or user mode. (v86 mode cs
-        // can have any value)
         //
 
         TrapFrame->EFlags = SANITIZE_FLAGS(ContextFrame->EFlags, PreviousMode);
         TrapFrame->Ebp = ContextFrame->Ebp;
         TrapFrame->Eip = ContextFrame->Eip;
-        if (TrapFrame->EFlags & EFLAGS_V86_MASK) {
-            TrapFrame->SegCs = ContextFrame->SegCs;
-        } else {
-            TrapFrame->SegCs = SANITIZE_SEG(ContextFrame->SegCs, PreviousMode);
-            if (PreviousMode != KernelMode && TrapFrame->SegCs < 8) {
+        TrapFrame->SegCs = SANITIZE_SEG(ContextFrame->SegCs, PreviousMode);
+        if (PreviousMode != KernelMode && TrapFrame->SegCs < 8) {
 
-                //
-                // If user mode and the selector value is less than 8, we
-                // know it is an invalid selector.  Set it to flat user
-                // mode selector.  Another reason we need to check for this
-                // is that any cs value less than 8 causes our exit kernel
-                // macro to treat its exit trap fram as an edited frame.
-                //
+            //
+            // If user mode and the selector value is less than 8, we
+            // know it is an invalid selector.  Set it to flat user
+            // mode selector.  Another reason we need to check for this
+            // is that any cs value less than 8 causes our exit kernel
+            // macro to treat its exit trap fram as an edited frame.
+            //
 
-                TrapFrame->SegCs = KGDT_R3_CODE | RPL_MASK;
-            }
+            TrapFrame->SegCs = KGDT_R3_CODE | RPL_MASK;
         }
         KiSegSsToTrapFrame(TrapFrame, ContextFrame->SegSs);
         KiEspToTrapFrame(TrapFrame, ContextFrame->Esp);
-        if (ModeChanged) {
-            Ki386AdjustEsp0(TrapFrame);             // realign esp0 in the tss
-        }
     }
 
     //
@@ -601,16 +560,8 @@ Return Value:
         // Force GS to be 0 to deal with entry via SysCall and exit
         // via exception.
         //
-        // For V86 mode, the FS, GS, DS, and ES registers must be properly
-        // set from the supplied context.
-        //
 
-        if (TrapFrame->EFlags & EFLAGS_V86_MASK) {
-            TrapFrame->V86Fs = ContextFrame->SegFs;
-            TrapFrame->V86Es = ContextFrame->SegEs;
-            TrapFrame->V86Ds = ContextFrame->SegDs;
-            TrapFrame->V86Gs = ContextFrame->SegGs;
-        } else if (((TrapFrame->SegCs & MODE_MASK) == KernelMode)) {
+        if ((TrapFrame->SegCs & MODE_MASK) == KernelMode) {
 
             //
             // set up the standard selectors
@@ -625,7 +576,7 @@ Return Value:
             //
             // If user mode, we simply return whatever left in context frame
             // and let trap 0d handle it (if later we trap while popping the
-            // trap frame.) V86 mode also get handled here.
+            // trap frame.)
             //
 
             TrapFrame->SegFs = ContextFrame->SegFs;
@@ -697,56 +648,32 @@ Return Value:
 
             NpxFrame->Cr0NpxState &= ~(CR0_EM | CR0_MP | CR0_TS);
 
-            //
-            // Only let VDMs turn on the EM bit.  The kernel can't do
-            // anything for FLAT apps
-            //
-            if (KeGetCurrentThread()->ApcState.Process->VdmFlag & 0xf) {
-                NpxFrame->Cr0NpxState |= ContextFrame->FloatSave.Cr0NpxState &
-                                      (CR0_EM | CR0_MP);
-            }
-
             for (i = 0; i < SIZE_OF_80387_REGISTERS; i++) {
                 NpxFrame->RegisterArea[i] = ContextFrame->FloatSave.RegisterArea[i];
             }
 
         } else {
 
-            if (KeGetCurrentThread()->ApcState.Process->VdmFlag & 0xf) {
+            //
+            // The 80387 is being emulated by the R3 emulator.
+            // ** The only time the Npx state is ever obtained or set is
+            // ** for userlevel handling.  Current Irql must be 0 or 1.
+            // Go smash the floatingpoint context into the R3 emulator's
+            // data area.
+            //
+
+            StateSaved = KiNpxFrameToEm87State(&ContextFrame->FloatSave);
+            if (StateSaved) {
 
                 //
-                // BUGBUG - for beta
-                // This is a special hack to allow SetContext for VDMs to
-                // turn on/off it's CR0_EM bit.
+                // Make sure only valid floating state bits are moved to
+                // Cr0NpxState.  Since we are emulating, don't allow
+                // resetting CR0_EM.
                 //
 
-                NpxFrame->Cr0NpxState &= ~(CR0_MP | CR0_TS | CR0_EM);
+                NpxFrame->Cr0NpxState &= ~(CR0_MP | CR0_TS);
                 NpxFrame->Cr0NpxState |=
-                    ContextFrame->FloatSave.Cr0NpxState & (CR0_EM | CR0_MP);
-
-            } else {
-
-                //
-                // The 80387 is being emulated by the R3 emulator.
-                // ** The only time the Npx state is ever obtained or set is
-                // ** for userlevel handling.  Current Irql must be 0 or 1.
-                // Go smash the floatingpoint context into the R3 emulator's
-                // data area.
-                //
-
-                StateSaved = KiNpxFrameToEm87State(&ContextFrame->FloatSave);
-                if (StateSaved) {
-
-                    //
-                    // Make sure only valid floating state bits are moved to
-                    // Cr0NpxState.  Since we are emulating, don't allow
-                    // resetting CR0_EM.
-                    //
-
-                    NpxFrame->Cr0NpxState &= ~(CR0_MP | CR0_TS);
-                    NpxFrame->Cr0NpxState |=
-                        ContextFrame->FloatSave.Cr0NpxState & CR0_MP;
-                }
+                    ContextFrame->FloatSave.Cr0NpxState & CR0_MP;
             }
         }
     }
@@ -1123,15 +1050,6 @@ Return Value:
     // In this case, BreakPoint exception is fatal. Otherwise we will step
     // on the int 3 over and over again, if user does not handle it
     //
-    // if the BREAK_POINT occured in V86 mode, the debugger running in the
-    // VDM will expect CS:EIP to point after the exception (the way the
-    // processor left it.  BUGBUG this is also true for protected mode dos
-    // app debuggers.  We will need a way to detect this.
-    //
-    //
-
-//    if ((ExceptionRecord->ExceptionCode == STATUS_BREAKPOINT) &&
-//      !(ContextFrame.EFlags & EFLAGS_V86_MASK)) {
 
     switch (ExceptionRecord->ExceptionCode) {
         case STATUS_BREAKPOINT:
@@ -1142,11 +1060,6 @@ Return Value:
     //
     // Select the method of handling the exception based on the previous mode.
     //
-
-    ASSERT ((
-             !((PreviousMode == KernelMode) &&
-             (ContextFrame.EFlags & EFLAGS_V86_MASK))
-           ));
 
     if (PreviousMode == KernelMode) {
 
@@ -1285,8 +1198,7 @@ Return Value:
                 // to dispatch exception to frame based exception handler.
                 //
 
-                if (TrapFrame->HardwareSegSs != (KGDT_R3_DATA | RPL_MASK) ||
-                    TrapFrame->EFlags & EFLAGS_V86_MASK ) {
+                if (TrapFrame->HardwareSegSs != (KGDT_R3_DATA | RPL_MASK)) {
                     ExceptionRecord2.ExceptionCode = STATUS_ACCESS_VIOLATION;
                     ExceptionRecord2.ExceptionFlags = 0;
                     ExceptionRecord2.NumberParameters = 0;

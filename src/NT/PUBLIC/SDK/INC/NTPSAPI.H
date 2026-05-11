@@ -225,7 +225,6 @@ typedef struct _TEB {
     PVOID DeallocationStack;
     PVOID TlsSlots[TLS_MINIMUM_AVAILABLE];
     LIST_ENTRY TlsLinks;
-    PVOID Vdm;
     PVOID ReservedForNtRpc;
     PVOID DbgSsReserved[2];
 } TEB;

@@ -31,12 +31,10 @@ include callconv.inc                    ; calling convention macros
 include i386\kimacro.inc
 include mac386.inc
 include i386\mi.inc
-include ..\..\vdm\i386\vdm.inc
-include ..\..\vdm\i386\vdmtb.inc
         .list
 
-FAST_BOP        equ      1
-FAST_V86_TRAP   equ      1
+FAST_BOP        equ      0
+FAST_V86_TRAP   equ      0
 
 
         page ,132
@@ -50,7 +48,6 @@ FAST_V86_TRAP   equ      1
         extrn   _KiHardwareTrigger:dword
         extrn   _KiBugCheckData:dword
         extrn   _KdpOweBreakpoint:dword
-        extrn   Ki386BiosCallReturnAddress:near
         EXTRNP  _KiDeliverApc,3
         EXTRNP  KfRaiseIrql,1,IMPORT,FASTCALL
         EXTRNP  KfLowerIrql,1,IMPORT,FASTCALL
@@ -71,11 +68,6 @@ endif
         EXTRNP  _KeTestAlertThread,1
         EXTRNP  _KiContinue,3
         EXTRNP  _KiRaiseException,5
-        EXTRNP  _Ki386DispatchOpcode,0
-        EXTRNP  _Ki386DispatchOpcodeV86,0
-        EXTRNP  _VdmDispatchPageFault,3
-        EXTRNP  _Ki386VdmReflectException,1
-        EXTRNP  _Ki386VdmSegmentNotPresent,0
         extrn   _DbgPrint:proc
         EXTRNP  _KdSetOwedBreakpoints
         extrn   _KiFreezeFlag:dword
@@ -85,15 +77,9 @@ if DBG
         extrn   _KeServiceCountTable:dword
 endif
         extrn   SwapContext:near
-        EXTRNP  _VdmDispatchIRQ13, 1
 
         EXTRNP  _KiSetServerWaitClientEvent,3
-        extrn   VdmDispatchBop:near
-        extrn   _KeI386VdmIoplAllowed:dword
-        extrn   _KeI386VirtualIntExtensions:dword
-        EXTRNP  _NTFastDOSIO,2
         EXTRNP  _NtSetLdtEntries,6
-        extrn   OpcodeIndex:byte
 
 ;
 ; Equates for exceptions which cause system fatal error
@@ -413,23 +399,6 @@ IOInstructionTable      label byte
 
 IO_INSTRUCTION_TABLE_LENGTH     EQU     14
 
-if FAST_V86_TRAP
-
-ALIGN 4
-;       V86DispatchTable - table of routines used to emulate instructions
-;                          in v86 mode.
-
-dtBEGIN V86DispatchTable,V86PassThrough
-        dtS    VDM_INDEX_PUSHF           , V86Pushf
-        dtS    VDM_INDEX_POPF            , V86Popf
-        dtS    VDM_INDEX_INTnn           , V86Intnn
-        dtS    VDM_INDEX_IRET            , V86Iret
-        dtS    VDM_INDEX_CLI             , V86Cli
-        dtS    VDM_INDEX_STI             , V86Sti
-dtEND   MAX_VDM_INDEX
-
-endif   ; FAST_V86_TRAP
-
 ;
 ; definition for  floating status word error mask
 ;
@@ -450,586 +419,12 @@ _DATA   ENDS
 _TEXT$00   SEGMENT
         ASSUME  DS:NOTHING, ES:NOTHING, SS:FLAT, FS:NOTHING, GS:NOTHING
 
-        page , 132
-        subttl "Macro to Handle v86 trap d"
-;++
 ;
-; Macro Description:
-;
-;    This macro is a fast way to handle v86 bop instructions.
-;    Note, all the memory write operations in this macro are done in such a
-;    way that if a page fault occurs the memory will still be in a consistent
-;    state.
-;
-;    That is, we must process the trapped instruction in the following order:
-;
-;    1. Read and Write user memory
-;    2. Update VDM state flags
-;    3. Update trap frame
-;
-; Arguments:
-;
-;    interrupts disabled
-;
-; Return Value:
-;
-;--
-
-FAST_V86_TRAP_6  MACRO
-
-local   DoFastIo, a, b
-
-BOP_FOR_FASTWRITE       EQU     4350C4C4H
-BOP_FOR_FASTREAD        EQU     4250C4C4H
-TRAP6_IP                EQU     32              ; 8 * 4
-TRAP6_CS                EQU     36              ; 8 * 4 + 4
-TRAP6_FLAGS             EQU     40              ; 8 * 4 + 8
-TRAP6_SP                EQU     44              ; 8 * 4 + 12
-TRAP6_SS                EQU     48              ; 8 * 4 + 16
-TRAP6_ES                EQU     52
-TRAP6_DS                EQU     56
-TRAP6_FS                EQU     60
-TRAP6_GS                EQU     64
-TRAP6_EAX               EQU     28
-TRAP6_EDX               EQU     20
-
-        pushad          ;eax, ecx, edx, ebx, old esp, ebp, esi, edi
-        mov     eax, KGDT_R3_DATA OR RPL_MASK
-        mov     ds, ax
-        mov     es, ax
-
-ifdef NT_UP
-else
-        mov     eax, KGDT_R0_PCR
-        mov     fs, ax
-endif
-        mov     byte ptr PCR[PcVdmAlert], 6
-
-        mov     ax, word ptr [esp+TRAP6_CS] ; [eax] = v86 user cs
-        shl     eax, 4
-        add     eax, [esp+TRAP6_IP]      ; [eax] = addr of BOP
-        mov     edx, [eax]      ; [edx] = xxxxc4c4  bop + maj bop # + mi #
-        cmp     edx, BOP_FOR_FASTREAD
-        je      DoFastIo
-
-        cmp     edx, BOP_FOR_FASTWRITE
-        je      DoFastIo
-
-        cmp     dx, 0c4c4h      ; Is it a bop?
-        jne     V86Trap6PassThrough ; It's an error condition
-ifdef NT_UP
-        mov     eax, KGDT_R3_TEB OR RPL_MASK ; (fs)-> USER mode TEB! (Not R0 PCR)
-        shr     edx, 16
-        mov     fs, ax
-        mov     eax, fs:[TbVdm]
-else
-        mov     eax, PCR[PcTeb]              ; (fs)->PCR
-        shr     edx, 16
-        mov     eax, [eax].TbVdm             ; get pointer to VdmTib
-endif
-        and     edx, 0ffh
-        mov     dword ptr [eax].VtEIEvent, VdmBop
-        mov     dword ptr [eax].VtEIBopNumber, edx
-        mov     dword ptr [eax].VtEIInstSize, 3
-        lea     eax, [eax].VtVdmContext
-
-;
-;       Save V86 state to Vdm structure
-;
-        mov     edx, [esp+TRAP6_EDX]  ; get edx
-        mov     [eax].CsEcx, ecx
-        mov     [eax].CsEbx, ebx      ; Save non-volatile registers
-        mov     [eax].CsEsi, esi
-        mov     [eax].CsEdi, edi
-        mov     ecx, [esp+TRAP6_EAX]  ; Get eax
-        mov     [eax].CsEbp, ebp
-        mov     [eax].CsEdx, edx
-        mov     [eax].CsEax, ecx
-
-        mov     ebx, [esp]+TRAP6_IP   ; (ebx) = iser ip
-        mov     ecx, [esp]+TRAP6_CS   ; (ecx) = user cs
-        mov     esi, [esp]+TRAP6_SP   ; (esi) = user esp
-        mov     edi, [esp]+TRAP6_SS   ; (edi) = user ss
-        mov     edx, [esp]+TRAP6_FLAGS; (edx) = user eflags
-        mov     [eax].CsEip, ebx
-        mov     [eax].CsSegCs, ecx
-        mov     [eax].CsEsp, esi
-        mov     [eax].CsSegSs, edi
-        test    _KeI386VirtualIntExtensions, V86_VIRTUAL_INT_EXTENSIONS
-        jz      short @f
-
-        test    edx, EFLAGS_VIF
-        jnz     short a
-
-        and     edx, NOT EFLAGS_INTERRUPT_MASK
-        jmp     short a
-
-@@:     test    _KeI386VdmIoplAllowed, 0ffffffffh
-        jnz     short a
-
-        test    ds:[FIXED_NTVDMSTATE_LINEAR], VDM_VIRTUAL_INTERRUPTS
-        jnz     short a
-
-        and     edx, NOT EFLAGS_INTERRUPT_MASK
-a:
-        mov     [eax].CsEFlags, edx
-        mov     ebx, [esp]+TRAP6_DS   ; (ebx) = user ds
-        mov     ecx, [esp]+TRAP6_ES   ; (ecx) = user es
-        mov     edx, [esp]+TRAP6_FS   ; (edx) = user fs
-        mov     esi, [esp]+TRAP6_GS   ; (esi) = user gs
-        mov     [eax].CsSegDs, ebx
-        mov     [eax].CsSegEs, ecx
-        mov     [eax].CsSegFs, edx
-        mov     [eax].CsSegGs, esi
-
-;
-;       Load Monitor context
+; Removed FAST_V86_TRAP_6 / FAST_V86_TRAP_D macro definitions — V86 mode
+; (and the NTVDM subsystem) was ripped out of this kernel.  The macros
+; were never expanded once FAST_BOP / FAST_V86_TRAP equates flipped to 0.
 ;
 
-        add     eax, VtMonitorContext - VtVdmContext ; (eax)->monitor context
-        mov     ebx, [eax].CsSegSs
-        mov     esi, [eax].CsEsp
-        mov     edi, [eax].CsEFlags
-        mov     edx, [eax].CsSegCs
-        mov     ecx, [eax].CsEip
-        mov     [esp - 4], ebx   ; Build Iret frame (can not single step!)
-        mov     [esp - 8], esi
-        mov     [esp - 12], edi
-        mov     [esp - 16], edx
-        mov     [esp - 20], ecx
-        mov     ebx, [eax].CsEbx ; We don't need to load volatile registers.
-        mov     esi, [eax].CsEsi ; because monitor uses SystemCall to return
-        mov     edi, [eax].CsEdi ; back to v86.  C compiler knows that
-        mov     ebp, [eax].CsEbp ; SystemCall does not preserve volatile
-                                 ; registers.
-                                 ; fs, ds are set up already.
-        sub     esp, 20
-
-;
-; Adjust Tss esp0 value and set return value to SUCCESS
-;
-        mov     ecx, PCR[PcPrcbData+PbCurrentThread]
-        mov     ecx, [ecx].thInitialStack
-        mov     edx, PCR[PcTss]
-        sub     ecx, NPX_FRAME_LENGTH + TsV86Gs - TsHardwareSegSs
-        xor     eax, eax         ; ret status = SUCCESS
-        mov     [edx].TssEsp0, ecx
-        mov     byte ptr PCR[PcVdmAlert], al
-ifdef NT_UP
-else
-        mov     edx, KGDT_R3_TEB OR RPL_MASK
-        mov     fs, dx
-endif
-        iretd
-
-DoFastIo:
-        xor     eax, eax
-        mov     edx, [esp]+TRAP6_EDX    ; Restore edx
-        add     esp, 7 * 4              ; leave eax in the TsErrCode
-        xchg    [esp], eax              ; Restore eax, sore a zero errcode
-        sub     esp, TsErrcode          ; build a trap frame
-        mov     [esp].TsEbx, ebx
-        mov     [esp].TsEax, eax
-        mov     [esp].TsEbp, ebp
-        mov     [esp].TsEsi, esi
-        mov     [esp].TsEdi, edi
-        mov     [esp].TsEcx, ecx
-        mov     [esp].TsEdx, edx
-if DBG
-        mov     [esp].TsPreviousPreviousMode, -1
-        mov     [esp]+TsDbgArgMark, 0BADB0D00h
-endif
-ifdef NT_UP
-        mov     ebx, KGDT_R0_PCR
-        mov     fs, bx
-endif
-        mov     byte ptr PCR[PcVdmAlert], 0
-        mov     ebp, esp
-        cld
-        test    byte ptr PCR[PcDebugActive], -1
-        jz      short @f
-
-        mov     ebx,dr0
-        mov     esi,dr1
-        mov     edi,dr2
-        mov     [ebp]+TsDr0,ebx
-        mov     [ebp]+TsDr1,esi
-        mov     [ebp]+TsDr2,edi
-        mov     ebx,dr3
-        mov     esi,dr6
-        mov     edi,dr7
-        mov     [ebp]+TsDr3,ebx
-        mov     [ebp]+TsDr6,esi
-        mov     [ebp]+TsDr7,edi
-        ;
-        ; Load KernelDr* into processor
-        ;
-        mov     edi,dword ptr fs:[PcPrcb]
-        mov     ebx,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr0
-        mov     esi,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr1
-        mov     dr0,ebx
-        mov     dr1,esi
-        mov     ebx,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr2
-        mov     esi,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr3
-        mov     dr2,ebx
-        mov     dr3,esi
-        mov     ebx,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr6
-        mov     esi,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr7
-        mov     dr6,ebx
-        mov     dr7,esi
-@@:
-        ; Raise Irql to APC level before enabling interrupts
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                     ; Save OldIrql
-        sti
-
-        xor     edx, edx
-        mov     dx, word ptr [ebp].TsSegCs
-        shl     edx, 4
-        xor     ebx, ebx
-        add     edx, [ebp].TsEip
-        mov     bl, [edx+3]             ; [bl] = minor BOP code
-        push    ebx
-        push    ebp                     ; (ebp)->TrapFrame
-        call    _NTFastDOSIO@8
-        jmp     Kt061i
-
-V86Trap6PassThrough:
-        mov     byte ptr PCR[PcVdmAlert], 0
-V86Trap6Recovery:
-        popad
-        jmp     Kt6SlowBop              ; Fall through
-
-endm
-        page , 132
-        subttl "Macro to Handle v86 trap d"
-;++
-;
-; Macro Description:
-;
-;    This macro is a fast way to handle SOME v86 mode sensitive instructions.
-;    Note, all the memory write operations in this macro are done in such a
-;    way that if a page fault occurs the memory will still be in a consistent
-;    state.
-;
-;    That is, we must process the trapped instruction in the following order:
-;
-;    1. Write user memory (prefer do read here)
-;    2. Update VDM state flags
-;    3. Update trap frame
-;
-; Arguments:
-;
-;    interrupts disabled
-;
-; Return Value:
-;
-;--
-
-FAST_V86_TRAP_D  MACRO
-
-local   V86Exit, V86Exit_1, IntnnExit
-
-        sub     esp, TsErrCode
-        mov     [esp].TsEdx, edx
-        mov     [esp].TsEcx, ecx
-        mov     [esp].TsEax, eax
-ifdef NT_UP
-        mov     byte ptr SS:[P0PCRADDRESS][PcVdmAlert], 0dh
-else
-        mov     eax, KGDT_R0_PCR
-        mov     fs, ax
-        mov     byte ptr PCR[PcVdmAlert], 0dh
-endif
-        mov     eax, [esp].TsSegCs      ; (eax) = H/W Cs
-        shl     eax,4
-        add     eax,[esp].TsEip         ; (eax) -> flat faulted addr
-        xor     edx, edx
-        mov     ecx, ss:[eax]           ; (ecx) = faulted instruction
-        mov     dl, cl
-        mov     dl, ss:OpcodeIndex[edx]    ; (edx) =  opcode index
-        jmp     ss:V86DispatchTable[edx * type V86DispatchTable]
-
-;
-; (ecx) = faulted instructions
-; (eax) = Flat faulted addr
-; (edx) = Opcode Index
-;
-
-ALIGN 4
-V86Pushf:
-        mov     eax, ss:[FIXED_NTVDMSTATE_LINEAR]
-        mov     edx, dword ptr [esp].TsEflags ; (edx) = Hardware Eflags
-        and     eax,VDM_VIRTUAL_INTERRUPTS OR VDM_VIRTUAL_AC OR VDM_VIRTUAL_NT
-        or      eax,EFLAGS_IOPL_MASK
-        and     edx,NOT EFLAGS_INTERRUPT_MASK
-        mov     [esp].TsSegDs, ecx      ; save ecx
-        or      eax,edx                 ; (ax) = client flags
-        xor     ecx, ecx
-        mov     cx, word ptr [esp].TsHardwareSegSs ; (edx)= hardware SS
-        xor     edx, edx
-        shl     ecx,4
-        mov     dx, word ptr [esp].TsHardwareEsp ; (edx)= Hardware sp
-        sub     edx, 2
-        mov     ss:[ecx + edx],ax
-        mov     ecx, [esp].TsSegDs      ; restore ecx
-;
-; Usually, pushf is followed by cli.  So, here we check for this case.
-; If yes, we will handle the cli to save a round trip.
-; It is very important that we first update user stack, Fixed VDM state and
-; finally hardware esp.
-;
-
-        cmp     cx, (CLI_OP SHL 8) OR PUSHF_OP ; Is there a cli following pushf?
-        jnz     short @f
-
-        MPLOCK and dword ptr ss:[FIXED_NTVDMSTATE_LINEAR],NOT VDM_VIRTUAL_INTERRUPTS
-        inc     dword ptr [esp].TsEip ; skip cli
-@@:
-        mov     word ptr [esp].TsHardwareEsp, dx ; update client esp
-V86Exit:
-        inc     dword ptr [esp].TsEip          ; skip pushf
-V86Exit_1:
-        mov     ecx, [esp].TsEcx
-        mov     eax, [esp].TsEax
-        mov     edx, [esp].TsEdx
-        add     esp, TsEip
-ifdef NT_UP
-        mov     byte ptr SS:[P0PCRADDRESS][PcVdmAlert], 0
-else
-        mov     byte ptr PCR[PcVdmAlert], 0
-endif
-        iretd
-
-ALIGN 4
-V86Cli:
-        MPLOCK and dword ptr ss:[FIXED_NTVDMSTATE_LINEAR],NOT VDM_VIRTUAL_INTERRUPTS
-        jmp     short V86Exit
-
-ALIGN 4
-V86Sti:
-        test    ss:[FIXED_NTVDMSTATE_LINEAR], VDM_INTERRUPT_PENDING
-                                          ; Can we handle it in fast way?
-        jnz     V86PassThrough            ; if nz, no, we need to dispatch int
-
-        MPLOCK or dword ptr ss:[FIXED_NTVDMSTATE_LINEAR], EFLAGS_INTERRUPT_MASK
-        jmp     short V86Exit
-
-ALIGN 4
-V86Popf:
-        test    ss:[FIXED_NTVDMSTATE_LINEAR], VDM_INTERRUPT_PENDING
-                                          ; Can we handle it in fast way?
-        jnz     V86PassThrough
-
-        xor     edx, edx
-        mov     dx, word ptr [esp].TsHardwareSegSs ; (edx)= hardware SS
-        xor     eax, eax
-        shl     edx,4
-        mov     ax, word ptr [esp].TsHardwareEsp ; (ecx)= Hardware sp
-        mov     edx, ss:[edx + eax]       ; (edx) = Client flags
-        add     ax, 2                     ; (ax) = Client sp
-        and     edx, 0FFFFH AND (NOT EFLAGS_IOPL_MASK)
-        MPLOCK and ss:[FIXED_NTVDMSTATE_LINEAR],NOT (EFLAGS_INTERRUPT_MASK OR EFLAGS_ALIGN_CHECK OR EFLAGS_NT_MASK)
-        mov     ecx, edx
-        and     edx, (EFLAGS_INTERRUPT_MASK OR EFLAGS_ALIGN_CHECK OR EFLAGS_NT_MASK)
-        and     ecx, NOT EFLAGS_NT_MASK
-        MPLOCK or ss:[FIXED_NTVDMSTATE_LINEAR],edx
-        or      ecx, (EFLAGS_INTERRUPT_MASK OR EFLAGS_V86_MASK)
-        mov     [esp].TsEflags,ecx
-        mov     [esp].TsHardwareEsp, eax  ; update client esp
-        jmp     V86Exit
-
-ALIGN 4
-V86Intnn:
-        shr     ecx, 8
-        xor     eax, eax
-        and     ecx, 0FFH                   ; ecx is int#
-        mov     ecx, ss:[ecx*4]             ; (ecx) = Int nn handler
-        xor     edx, edx
-        mov     [esp].TsSegDs, ecx          ; [esp].Ds = intnn handler
-        mov     ax, word ptr [esp].TsHardwareSegSs ; (eax)= hardware SS
-        shl     eax,4
-        mov     dx, word ptr [esp].TsHardwareEsp ; (edx)= Hardware sp
-        sub     dx, 6
-        add     eax, edx                    ; (eax) = User stack
-        mov     ecx, [esp].TsEflags
-        test    ss:_KeI386VdmIoplAllowed,1
-        jnz     short @f
-
-        mov     edx, ss:[FIXED_NTVDMSTATE_LINEAR]
-        and     ecx, NOT EFLAGS_INTERRUPT_MASK
-        and     edx,VDM_VIRTUAL_INTERRUPTS OR VDM_VIRTUAL_AC
-        or      ecx, edx
-        or      ecx, IOPL_MASK
-        mov     word ptr ss:[eax+4], cx     ; push flags
-        mov     ecx, [esp].TsSegCs
-        mov     edx,  [esp].TsEip
-        mov     word ptr ss:[eax+2], cx     ; push cs
-        add     dx, 2
-        MPLOCK and ss:[FIXED_NTVDMSTATE_LINEAR], NOT VDM_VIRTUAL_INTERRUPTS
-        mov     word ptr ss:[eax], dx       ; push ip (skip int nn)
-        and     [esp].TsEflags, NOT (EFLAGS_NT_MASK OR EFLAGS_TF_MASK)
-IntnnExit:
-        mov     ecx, [esp].TsSegDs          ; (ecx) = V86 intnn handler
-        sub     word ptr [esp].TsHardwareEsp, 6
-        mov     [esp].TsEip, ecx
-        shr     ecx,16
-        mov     [esp].TsSegCs, cx           ; cs:ip on trap frame is updated
-        jmp     V86Exit_1
-
-@@:
-        or      ecx, IOPL_MASK
-        mov     word ptr ss:[eax+4], cx     ; push flags
-        mov     ecx, [esp].TsSegCs
-        mov     edx, [esp].TsEip
-        mov     word ptr ss:[eax+2], cx     ; push cs
-        add     dx, 2
-        mov     word ptr ss:[eax], dx       ; push ip (skip int nn)
-        and     [esp].TsEflags, NOT (EFLAGS_INTERRUPT_MASK OR EFLAGS_NT_MASK OR EFLAGS_TF_MASK)
-        jmp     short IntnnExit
-
-ALIGN 4
-V86Iret:
-        test    ss:[FIXED_NTVDMSTATE_LINEAR], VDM_INTERRUPT_PENDING
-        jnz     V86PassThrough
-
-        xor     ecx, ecx
-        mov     cx,word ptr [esp].TsHardwareSegSS
-        xor     edx, edx
-        shl     ecx,4
-        mov     dx,word ptr [esp].TsHardwareEsp
-        add     ecx,edx                            ; (ecx) -> User stack
-        mov     dx,word ptr ss:[ecx+4]             ; get flag value
-        mov     ecx, ss:[ecx]                      ; (ecx) = ret cs:ip
-
-        and     edx, NOT (EFLAGS_IOPL_MASK OR EFLAGS_NT_MASK)
-        mov     eax,edx
-        or      edx, (EFLAGS_V86_MASK OR EFLAGS_INTERRUPT_MASK)
-        and     eax, EFLAGS_INTERRUPT_MASK
-        MPLOCK and ss:[FIXED_NTVDMSTATE_LINEAR],NOT VDM_VIRTUAL_INTERRUPTS
-        MPLOCK or ss:[FIXED_NTVDMSTATE_LINEAR],eax
-        mov     [esp].TsEFlags,edx                 ; update flags in trap frame
-        mov     eax, ecx
-        shr     ecx, 16
-        and     eax, 0ffffh
-        add     word ptr [esp].TsHardwareEsp, 6    ; update sp on trap frame
-        mov     [esp].TsSegCs,ecx                  ; update cs
-        mov     [esp].TsEip, eax                   ; update ip
-
-        ; at this point cx:ax is the addr of the ip where v86 mode
-        ; will return. Now we will check if this returning instruction
-        ; is a bop. if so we will directly dispatch the bop from here
-        ; saving a full round trip. This will be really helpful to
-        ; com apps.
-ifdef NT_UP
-        mov     byte ptr SS:[P0PCRADDRESS][PcVdmAlert], 10h
-else
-        mov     byte ptr PCR[PcVdmAlert], 010h
-endif
-        shl     ecx, 4
-        mov     ax, ss:[ecx+eax]                ; Could fault
-        cmp     ax, 0c4c4h
-        jne     V86Exit_1
-
-        mov     ecx, [esp].TsEcx
-        mov     eax, [esp].TsEax
-        mov     edx, [esp].TsEdx
-        add     esp, TsEip
-if FAST_BOP eq 0
-ifdef NT_UP
-        mov     byte ptr SS:[P0PCRADDRESS][PcVdmAlert], 0
-else
-        mov     byte ptr PCR[PcVdmAlert], 0
-endif
-endif
-        jmp     _KiTrap06
-
-V86Trap10Recovery:
-        jmp     V86Exit_1
-
-;
-; If we come here, it means we hit some kind of trap while processing the
-; V86 trap in a fast way.  We need to process the instruction in a normal
-; way.  For this case, we simply abort the current processing and restart
-; it via reguar v86 trap processing. (This is a very rare case.)
-;
-;;        public  V86TrapDRecovery
-V86TrapDRecovery:
-        mov     ecx, [esp].TsEcx
-        mov     eax, [esp].TsEax
-        mov     edx, [esp].TsEdx
-        add     esp, TsErrCode
-        jmp     KtdV86Slow
-
-;
-; If we come here, it means we can not process the trapped instruction.
-; We will build a trap frame and use regular way to process the instruction.
-; Since this could happen if interrupt is pending or the instruction trapped
-; is not in the list of instructions which we handle.  We need to "continue"
-; the processing instead of abort it.
-;
-
-ALIGN 4
-V86PassThrough:
-ifdef NT_UP
-        mov     byte ptr SS:[P0PCRADDRESS][PcVdmAlert], 0
-else
-        mov     byte ptr PCR[PcVdmAlert], 0
-endif
-        ;
-        ; eax, ecx, edx have been saved already
-        ; Note, we don't want to destroy ecx, and edx
-        ;
-        mov     [esp].TsEbx, ebx
-        mov     [esp].TsEbp, ebp
-        mov     [esp].TsEsi, esi
-        mov     [esp].TsEdi, edi
-        mov     ebx, KGDT_R0_PCR
-        mov     esi, KGDT_R3_DATA OR RPL_MASK
-if DBG
-        mov     [esp].TsPreviousPreviousMode, -1
-        mov     [esp]+TsDbgArgMark, 0BADB0D00h
-endif
-        mov     fs, bx
-        mov     ds, esi
-        mov     es, esi
-        mov     ebp, esp
-        cld
-        test    byte ptr PCR[PcDebugActive], -1
-        jz      short @f
-
-        mov     ebx,dr0
-        mov     esi,dr1
-        mov     edi,dr2
-        mov     [ebp]+TsDr0,ebx
-        mov     [ebp]+TsDr1,esi
-        mov     [ebp]+TsDr2,edi
-        mov     ebx,dr3
-        mov     esi,dr6
-        mov     edi,dr7
-        mov     [ebp]+TsDr3,ebx
-        mov     [ebp]+TsDr6,esi
-        mov     [ebp]+TsDr7,edi
-        ;
-        ; Load KernelDr* into processor
-        ;
-        mov     edi,dword ptr fs:[PcPrcb]
-        mov     ebx,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr0
-        mov     esi,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr1
-        mov     dr0,ebx
-        mov     dr1,esi
-        mov     ebx,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr2
-        mov     esi,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr3
-        mov     dr2,ebx
-        mov     dr3,esi
-        mov     ebx,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr6
-        mov     esi,[edi].PbProcessorState.PsSpecialRegisters.SrKernelDr7
-        mov     dr6,ebx
-        mov     dr7,esi
-@@:
-        jmp     KtdV86Slow2
-endm
 
         page , 132
         subttl "Macro to dispatch user APC"
@@ -1052,9 +447,6 @@ endm
 
 DISPATCH_USER_APC   macro   TFrame, ReturnCurrentEax
 local   a, b
-; BUGBUG kenr 20mar92 - fix this jump to be shorter
-        test    dword ptr [TFrame]+TsEflags, EFLAGS_V86_MASK ; is previous mode v86?
-        jnz     short b                             ; if nz, yes, go check for APC
         test    byte ptr [TFrame]+TsSegCs,MODE_MASK ; is previous mode user mode?
         jz      short a                             ; No, previousmode=Kernel, jump out
 b:      mov     ebx, PCR[PcPrcbData+PbCurrentThread]; get addr of current thread
@@ -1215,8 +607,6 @@ Kss_ExceptionHandler:
 
         add     esp, 4
         pop     ebp
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     kss60           ; v86 mode => usermode
 
         test    dword ptr [ebp].TsSegCs, MODE_MASK ; if premode=kernl
         jnz     kss60                   ; nz, prevmode=user, go return
@@ -1451,7 +841,7 @@ _KiServiceExit:
         jne     short kss_slow_exit
         cmp     word ptr [ebp]+TsHardwareSegSs, KGDT_R3_DATA OR RPL_MASK
         jne     short kss_slow_exit
-        test    dword ptr [ebp]+TsEflags, 0100h OR EFLAGS_V86_MASK
+        test    dword ptr [ebp]+TsEflags, 0100h
         jnz     short kss_slow_exit
         mov     esi, fs:[PcPrcbData+PbCurrentThread]
         test    byte ptr [esi]+ThDebugActive, 0FFh
@@ -1565,13 +955,6 @@ Kgtc00:
 
         iretd
 @@:
-        ;
-        ; if v86 mode, we dont handle it
-        ;
-
-        test    dword ptr [esp+8], EFLAGS_V86_MASK
-        jnz     ktgc20
-
         ;
         ; if kernel mode, must be get tick count
         ;
@@ -1897,7 +1280,6 @@ _KiUnexpectedInterruptTail  endp
 
 DISPATCH_EXCEPTION macro ExceptCode, ExceptFlags, ExceptRecord, ExceptAddress,\
                          NumParms, ParameterList
-        local de10, de20
 
 .FPO ( ExceptionRecordSize/4+NumParms, 0, 0, 0, 0, FPO_TRAPFRAME )
 
@@ -1924,14 +1306,8 @@ DISPATCH_EXCEPTION macro ExceptCode, ExceptFlags, ExceptRecord, ExceptAddress,\
 
         mov     ecx, esp                ; (ecx)->exception record
 
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jz      de10
-
-        mov     eax,0FFFFh
-        jmp     de20
-
-de10:   mov     eax,[ebp]+TsSegCs
-de20:   and     eax,MODE_MASK
+        mov     eax,[ebp]+TsSegCs
+        and     eax,MODE_MASK
 
 ; 1 - first chance TRUE
 ; eax - PreviousMode
@@ -2017,14 +1393,8 @@ de00:
 ;
 
         mov     ecx, esp                ; (ecx)->exception record
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jz      short de10
-
-        mov     eax,0FFFFh
-        jmp     short de20
-
-de10:   mov     eax,[ebp]+TsSegCs
-de20:   and     eax,MODE_MASK
+        mov     eax,[ebp]+TsSegCs
+        and     eax,MODE_MASK
 
 ; 1 - first chance TRUE
 ; eax - PreviousMode
@@ -2306,16 +1676,13 @@ _KiTrap00       proc
         push    0                       ; push dummy error code
         ENTER_TRAP      kit0_a, kit0_t
 
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     Kt0040            ; trap occured in V86 mode
-
         test    byte ptr [ebp]+TsSegCs, MODE_MASK  ; Is previous mode = USER
         jnz     short Kt0000            ; if nz, previous mode = user
         mov     eax, EXCEPTION_DIVIDED_BY_ZERO ; (eax) = exception type
         jmp     _KiSystemFatalException ; go terminate the system
 
 Kt0000: cmp     word ptr [ebp]+TsSegCs,KGDT_R3_CODE OR RPL_MASK
-        jne     Kt0020
+        jne     Kt0010
 ;
 ; Set up exception record for raising Integer_Divided_by_zero exception
 ; and call _KiDispatchException
@@ -2343,20 +1710,6 @@ Kt0010:
         mov     eax, STATUS_INTEGER_DIVIDE_BY_ZERO
         mov     ecx, 0
         call    CommonDispatchException ; never return
-
-Kt0020:
-; Check to see if this process is a vdm
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      Kt0010
-
-Kt0040:
-        stdCall _Ki386VdmReflectException_A, <0>
-
-        or      al,al
-        jz      short Kt0010             ; couldn't reflect, gen exception
-        jmp     _KiExceptionExit
 
 _KiTrap00       endp
 
@@ -2412,15 +1765,8 @@ _KiTrap01       proc
 ;
 ;
 
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     kit01_30                ; fault occured in V86 mode => Usermode
-
         test    word ptr [ebp]+TsSegCs,MODE_MASK
         jz      kit01_10
-
-        cmp     word ptr [ebp]+TsSegCs,KGDT_R3_CODE OR RPL_MASK
-        jne     kit01_30
-kit01_05:
         sti
 kit01_10:
 
@@ -2429,27 +1775,11 @@ kit01_10:
 ; and call _KiDispatchException
 ;
 
-kit01_20:
         and     dword ptr [ebp]+TsEflags, not EFLAGS_TF_BIT
         mov     ebx, [ebp]+TsEip                ; (ebx)-> faulting instruction
         mov     eax, STATUS_SINGLE_STEP
         mov     ecx, 0
         call    CommonDispatchException         ; Never return
-
-kit01_30:
-
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      kit01_05
-
-        stdCall _Ki386VdmReflectException_A, <01h>
-        test    ax,0FFFFh
-        jz      Kit01_20
-
-        jmp     _KiExceptionExit
 
 _KiTrap01       endp
 
@@ -2635,16 +1965,8 @@ KiTrap03DebugService:
 ;     ecx - Arg1 - generic first argument
 ;     edx - Arg2 - generic second argument
 
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     kit03_30                ; fault occured in V86 mode => Usermode
-
         test    word ptr [ebp]+TsSegCs,MODE_MASK
         jz      kit03_10
-
-        cmp     word ptr [ebp]+TsSegCs,KGDT_R3_CODE OR RPL_MASK
-        jne     kit03_30
-
-kit03_05:
         sti
 kit03_10:
 
@@ -2662,21 +1984,6 @@ kit03_10:
         mov     ecx, 3
         mov     eax, STATUS_BREAKPOINT
         call    CommonDispatchException ; Never return
-
-kit03_30:
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      kit03_05
-
-
-        stdCall _Ki386VdmReflectException_A, <03h>
-        test    ax,0FFFFh
-        jz      Kit03_10
-
-        jmp     _KiExceptionExit
 
 _KiTrap03       endp
 
@@ -2716,14 +2023,8 @@ _KiTrap04       proc
         push    0                       ; push dummy error code
         ENTER_TRAP      kit4_a, kit4_t
 
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     short Kt0430            ; in a vdm, reflect to vdm
-
         test    byte ptr [ebp]+TsSegCs,MODE_MASK
         jz      short Kt0410            ; in kernel mode, gen exception
-
-        cmp     word ptr [ebp]+TsSegCs,KGDT_R3_CODE OR RPL_MASK
-        jne     short Kt0420            ; maybe in a vdm
 
 ; Set up exception record and arguments for raising exception
 
@@ -2733,21 +2034,6 @@ Kt0410: sti
         mov     eax, STATUS_INTEGER_OVERFLOW
         mov     ecx, 0
         call    CommonDispatchException ; Never return
-
-Kt0430:
-        stdCall _Ki386VdmReflectException_A, <04h>
-        test    al,0fh
-        jz      Kt0410                  ; couldn't reflect, gen exception
-        jmp     _KiExceptionExit
-
-Kt0420:
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      Kt0410
-        jmp     Kt0430
 
 _KiTrap04       endp
 
@@ -2786,40 +2072,21 @@ _KiTrap05       proc
         push    0                       ; push dummy error code
         ENTER_TRAP      kit5_a, kit5_t
 
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     Kt0530                  ; fault in V86 mode
-
         test    byte ptr [ebp]+TsSegCs, MODE_MASK  ; Is previous mode = USER
         jnz     short Kt0500            ; if nz, previous mode = user
         mov     eax, EXCEPTION_BOUND_CHECK ; (eax) = exception type
         jmp     _KiSystemFatalException ; go terminate the system
 
 
-kt0500: cmp     word ptr [ebp]+TsSegCs,KGDT_R3_CODE OR RPL_MASK
-        jne     short Kt0520            ; maybe in a vdm
+Kt0500:
 ;
 ; set exception record and arguments and call _KiDispatchException
 ;
-Kt0510: sti
+        sti
         mov     ebx, [ebp]+TsEip        ; (ebx)->BOUND instruction
         mov     eax, STATUS_ARRAY_BOUNDS_EXCEEDED
         mov     ecx, 0
         call    CommonDispatchException ; Won't return
-
-Kt0520:
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      Kt0510
-
-Kt0530:
-
-        stdCall _Ki386VdmReflectException_A, <05h>
-        test    al,0fh
-        jz      Kt0510            ; couldn't reflect, gen exception
-        jmp     _KiExceptionExit
 
 _KiTrap05       endp
 
@@ -2857,61 +2124,12 @@ _KiTrap05       endp
 ;--
         ASSUME  DS:FLAT, SS:NOTHING, ES:NOTHING
 
-        ENTER_DR_ASSIST kit6_a, kit6_t, NoAbiosAssist,, kit6_v
+        ENTER_DR_ASSIST kit6_a, kit6_t, NoAbiosAssist
 align dword
         public  _KiTrap06
 _KiTrap06       proc
 
 
-; sudeepb 08-Dec-1992 KiTrap06 is performance critical for VDMs,
-; while it hardly ever gets executed in native mode. So this whole
-; code is tuned for VDMs.
-
-        test    dword ptr [esp]+8h,EFLAGS_V86_MASK
-        jz      Kt060i
-
-if FAST_BOP
-
-        FAST_V86_TRAP_6
-endif
-
-Kt6SlowBop:
-        push    0                       ; push dummy error code
-        ENTER_TRAPV86 kit6_a, kit6_v
-
-        ; Raise Irql to APC level before enabling interrupts
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                     ; Save OldIrql
-        sti
-
-        call    VdmDispatchBop
-        test    al,0fh
-        jnz     short Kt061i
-
-        stdCall   _Ki386VdmReflectException,<6>
-        test    al,0fh
-        jnz     Kt061i
-        pop     ecx                     ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     Kt0635
-Kt061i:
-        pop     ecx                     ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        cli
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jz      Kt062i
-
-        EXIT_TRAPV86
-        ;
-        ; EXIT_TRAPv86 does not exit if a user mode apc has switched
-        ; the context from V86 mode to flat mode (VDM monitor context)
-        ;
-
-Kt062i:
-        jmp     _KiExceptionExit
-
-Kt060i:
         push    0                       ; Push dummy error code
         ENTER_TRAP      kit6_a, kit6_t
 
@@ -2920,28 +2138,12 @@ Kt060i:
         mov     eax, EXCEPTION_INVALID_OPCODE ; (eax) = exception type
         jmp     _KiSystemFatalException ; go terminate the system
 
-Kt0600:
-
-;
-;       did the fault happen in a vdm running in protected mode?
-;
-
-        cmp     word ptr [ebp]+TsSegCs, KGDT_R3_CODE OR RPL_MASK
-        jz      short kt0605
-
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jnz     Kt0650
-
 ;
 ; Invalid Opcode exception could be either INVALID_LOCK_SEQUENCE or
 ; ILLEGAL_INSTRUCTION.
 ;
 
-kt0605: sti
+Kt0600: sti
         mov     eax, [ebp]+TsSegCs
         push    ds
         mov     ds, ax
@@ -2957,8 +2159,8 @@ Kt0610:
 ; Set up exception record for raising Illegal instruction exception
 ;
 
-Kt0630: pop     ds
-Kt0635: mov     ebx, [ebp]+TsEip        ; (ebx)-> invalid instruction
+        pop     ds
+Kt0630: mov     ebx, [ebp]+TsEip        ; (ebx)-> invalid instruction
         mov     eax, STATUS_ILLEGAL_INSTRUCTION
         mov     ecx, 0
         call    CommonDispatchException ; Won't return
@@ -2972,29 +2174,6 @@ Kt0640: pop     ds
         mov     eax, STATUS_INVALID_LOCK_SEQUENCE
         mov     ecx, 0
         call    CommonDispatchException ; Won't return
-
-Kt0650:
-
-        ; Raise Irql to APC level before enabling interrupts
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                                 ; SaveOldIrql
-        sti
-        call    VdmDispatchBop
-        test    al,0fh
-        jnz     short Kt0660
-
-        stdCall   _Ki386VdmReflectException,<6>
-        test    al,0fh
-        jnz      Kt0660
-        pop     ecx                         ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp      short Kt0635
-
-Kt0660:
-        pop     ecx                         ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     _KiExceptionExit
 
 _KiTrap06       endp
 
@@ -3048,8 +2227,6 @@ Kt0700:
         mov     eax, PCR[PcPrcbData+PbCurrentThread]
         mov     ecx, PCR[PcInitialStack] ; (ecx) -> top of kernel stack
         cli                             ; don't context switch
-        test    dword ptr [ecx].FpCr0NpxState,CR0_EM
-        jnz     Kt07140
 
 Kt0701: cmp     byte ptr [eax].ThNpxState, NPX_STATE_LOADED
         je      Kt0715
@@ -3208,14 +2385,11 @@ Kt0710:
         mov     ecx, PCR[PcInitialStack] ; (ecx) -> top of kernel stack
 
 Kt0715:
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     Kt07130                 ; v86 mode
-
         test    byte ptr [ebp]+TsSegCs, MODE_MASK ; Is previousMode=USER?
         jz      Kt0705                  ; if z, previousmode=SYSTEM
 
         cmp     word ptr [ebp]+TsSegCs,KGDT_R3_CODE OR RPL_MASK
-        jne     Kt07110
+        jne     Kt0720
 
 ;
 ; We are about to dispatch a floating point exception to user mode.
@@ -3386,73 +2560,6 @@ Kt07100:
 ; stop the system
         stdCall   _KeBugCheck, <TRAP_CAUSE_UNKNOWN>
 
-Kt07110:
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      Kt0720                  ; no, dispatch exception
-
-Kt07130:
-; Turn off TS
-        mov     ebx,CR0
-        and     ebx,NOT CR0_TS
-        mov     CR0,ebx
-        and     dword ptr [ecx]+FpCr0NpxState,NOT CR0_TS
-
-
-; Reflect the exception to the vdm, the VdmHandler enables interrupts
-
-        ; Raise Irql to APC level before enabling interrupts
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                         ; Save OldIrql
-        sti
-
-        stdCall   _VdmDispatchIRQ13, <ebp> ; ebp - Trapframe
-        test    al,0fh
-        jnz     Kt07135
-        pop     ecx                         ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     Kt0720            ; could not reflect, gen exception
-
-Kt07135:
-        pop     ecx                         ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     _KiExceptionExit
-
-Kt07140:
-
-;
-; Insure that this is not an NPX instruction in the kernel. (If
-; an app, such as C7, sets the EM bit after executing NPX instructions,
-; the fsave in SwapContext will catch an NPX exception
-;
-        cmp     [ebp].TsSegCS, word ptr KGDT_R0_CODE
-        je      Kt0701
-
-;
-; Check to see if it really is a VDM
-;
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      Kt07100
-
-; A vdm is emulating NPX instructions on a machine with an NPX.
-
-        stdCall _Ki386VdmReflectException_A, <07h>
-        test    al,0fh
-        jnz     _KiExceptionExit
-
-        mov     ebx, [ebp]+TsEip        ; (ebx)->faulting instruction
-        mov     eax, STATUS_ACCESS_VIOLATION
-        mov     ecx, 2
-        mov     edx, 0
-        mov     esi, -1
-        call    CommonDispatchException ; Won't return
-
 _KiTrap07       endp
 
 
@@ -3618,13 +2725,9 @@ _KiTrap0A       proc
 ;   Any other causes of Invalid TSS cause system to be shutdown.
 ;
 
-        test    dword ptr [ebp]+TsEFlags, EFLAGS_V86_MASK
-        jnz     short Kt0a10
-
         test    byte ptr [ebp]+TsSegCs, MODE_MASK  ; Is previous mode = USER
         jz      short Kt0a20
 
-Kt0a10:
         test    dword ptr [ebp]+TsEFlags, EFLAGS_OF_BIT
         sti
         jz      short Kt0a20
@@ -3679,45 +2782,11 @@ _KiTrap0B       proc
 
         ENTER_TRAP      kitb_a, kitb_t
 
-;
-;   Did the trap occur in a VDM?
-;
-
         test    byte ptr [ebp]+TsSegCs, MODE_MASK  ; Is previous mode = USER
         jz      Kt0b30
 
-        cmp     word ptr [ebp]+TsSegCs,KGDT_R3_CODE OR RPL_MASK
-        je      Kt0b20
-
-Kt0b10:
-
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      short Kt0b20
-
-        ; Raise Irql to APC level before enabling interrupts
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                             ; Save OldIrql
-        sti
-
-        stdCall   _Ki386VdmSegmentNotPresent
-        test    eax, 0ffffh
-        jz      short Kt0b15
-
-        pop     ecx                                ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     _KiExceptionExit
-
-Kt0b15:
-        pop     ecx                                ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-
         ; bugbug pass correct info to indicate seg fault
-Kt0b20: sti
+        sti
         mov     ebx, [ebp]+TsEip        ; (ebx)->faulting instruction
         xor     edx, edx
         mov     esi, [ebp]+TsErrCode
@@ -3787,7 +2856,15 @@ Kt0b40:
 
         add     esp, 12                 ; adjust esp and ebp
         add     ebp, 12
-        jmp     Kt0b10
+        sti
+        mov     ebx, [ebp]+TsEip        ; (ebx)->faulting instruction
+        xor     edx, edx
+        mov     esi, [ebp]+TsErrCode
+        and     esi, 0FFFFh
+        or      esi, RPL_MASK
+        mov     ecx, 2
+        mov     eax, STATUS_ACCESS_VIOLATION
+        call    CommonDispatchException ; Won't return
 
 ;        mov     ebx, [ebp]+TsEip        ; (ebx)->faulting instruction
 ;        xor     edx, edx
@@ -3855,16 +2932,10 @@ _KiTrap0C       proc
 
         ENTER_TRAP kitc_a, kitc_t
 
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     Kt0c30
-
         test    byte ptr [ebp]+TsSegCs, MODE_MASK  ; Is previous mode = USER
         jz      Kt0c10
 
-        cmp     word ptr [ebp]+TsSegCs, KGDT_R3_CODE OR RPL_MASK
-        jne     Kt0c20                  ; maybe in a vdm
-
-Kt0c00: sti
+        sti
         mov     ebx, [ebp]+TsEip        ; (ebx)->faulting instruction
         mov     edx, EXCEPT_LIMIT_ACCESS; assume it is limit violation
         mov     esi, [ebp]+TsHardwareEsp; (ecx) = User Stack pointer
@@ -3950,20 +3021,6 @@ Kt0c15:
         mov     eax, EXCEPTION_STACK_FAULT      ; (eax) = trap type
         jmp     _KiSystemFatalException
 
-Kt0c20:
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      Kt0c00
-
-Kt0c30:
-        stdCall _Ki386VdmReflectException_A,<0ch>
-        test    al,0fh
-        jz      Kt0c00
-        jmp     _KiExceptionExit
-
 _KiTrap0C       endp
 
 
@@ -4030,67 +3087,13 @@ Ktd_ExceptionHandler:
 ; raise bugcheck if prevmode=kernel
         stdCall   _KeBugCheck, <KMODE_EXCEPTION_NOT_HANDLED>
 
-        ENTER_DR_ASSIST kitd_a, kitd_t, NoAbiosAssist,, kitd_v
+        ENTER_DR_ASSIST kitd_a, kitd_t, NoAbiosAssist
 align dword
         public  _KiTrap0D
 _KiTrap0D       proc
 
 
 
-;
-; Did the trap occur in a VDM in V86 mode? Trap0d is not critical from
-; performance point of view to native NT, but its super critical to
-; VDMs. So here we are doing every thing to make v86 mode most efficient.
-;
-        test    dword ptr [esp]+0ch,EFLAGS_V86_MASK
-        jz      Ktdi
-
-
-if FAST_V86_TRAP
-
-        FAST_V86_TRAP_D
-endif
-
-
-KtdV86Slow:
-        ENTER_TRAPV86 kitd_a, kitd_v
-
-KtdV86Slow2:
-
-        ; Raise Irql to APC level, before enabling interrupts
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                             ; Save OldIrql
-        sti
-
-        stdCall   _Ki386DispatchOpcodeV86
-KtdV86Exit:
-        test    al,0FFh
-        jnz     short Ktdi2
-
-        stdCall   _Ki386VdmReflectException,<0dh>
-        test    al,0fh
-        jnz     short Ktdi2
-        pop     ecx                                ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     Kt0d105
-Ktdi2:
-        pop     ecx                                ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        cli
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jz      Ktdi3
-
-        EXIT_TRAPV86
-        ;
-        ; EXIT_TRAPv86 does not exit if a user mode apc has switched
-        ; the context from V86 mode to flat mode (VDM monitor context)
-        ;
-
-Ktdi3:
-        jmp     _KiExceptionExit
-
-Ktdi:
         ENTER_TRAP kitd_a, kitd_t
 
 ;
@@ -4183,32 +3186,6 @@ Kt0d000:
         cmp     cx, ax                  ; is it faulted in CS?
         jne     short Kt0d0008          ; No
 
-;
-; Check if this is the code which we use to return to Ki386CallBios
-; (see biosa.asm):
-;    cs should be KGDT_R0_CODE OR RPL_MASK
-;    eip should be Ki386BiosCallReturnAddress
-;    esi should be the esp of function Ki386SetUpAndExitToV86Code
-; (edx) -> trapped iret frame
-;
-
-        mov     eax, OFFSET FLAT:Ki386BiosCallReturnAddress
-        cmp     eax, [edx]              ; [edx]= trapped eip
-                                        ; Is eip what we're expecting?
-        jne     short Kt0d0005          ; No, continue
-
-        mov     eax, [edx]+4            ; (eax) = trapped cs
-        cmp     ax, KGDT_R0_CODE OR RPL_MASK ; Is Cs what we're exptecting?
-        jne     short Kt0d0005          ; No
-
-;       add     edx, 5 * 4 + NPX_FRAME_LENGTH + (TsV86Gs - TsHardwareSegSs)
-;       cmp     [ebp]+TsEsi, edx        ; esi should be the esp of
-                                        ;   Ki386SetupAndExitToV86Code
-        mov     edx, [ebp].TsEsi
-;       jne     short Kt0d0005
-        mov     esp, edx
-        jmp     Ki386BiosCallReturnAddress ; with interrupts off
-
 Kt0d0005:
 ;
 ; Since the CS is bogus, we can not tell if we are going back
@@ -4290,20 +3267,6 @@ Kt0d01:
 Kt0d02: mov     eax, EXCEPTION_GP_FAULT ; (eax) = trap type
         test    byte ptr [ebp]+TsSegCs, MODE_MASK ; Is prevmode=User?
         jz      _KiSystemFatalException ; If z, prevmode=kernel, stop...
-
-;
-;       did the fault happen in a vdm running in protected mode?
-;
-
-        cmp     word ptr [ebp]+TsSegCs, KGDT_R3_CODE OR RPL_MASK
-        jz      kt0d03
-
-; Check to see if this process is a vdm
-
-        mov     ebx,PCR[PcPrcbData+PbCurrentThread]
-        mov     ebx,[ebx]+ThApcState+AsProcess
-        test    byte ptr [ebx]+PrVdmFlag,0fh ; is this a vdm process?
-        jnz     Kt0d110
 
         sti
         test    word ptr [ebp]+TsErrCode, 0 ; if errcode<>0, raise access
@@ -4447,29 +3410,6 @@ Kt0d105:
         mov     ecx, 2
         mov     eax, STATUS_ACCESS_VIOLATION
         call    CommonDispatchException ; Won't return
-
-Kt0d110:
-        ; Raise Irql to APC level, before enabling interrupts
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                             ; Save OldIrql
-        sti
-
-        stdCall   _Ki386DispatchOpcode
-        test    eax,0FFFFh
-        jnz     short Kt0d120
-
-        stdCall   _Ki386VdmReflectException,<0dh>
-        test    al,0fh
-        jnz     short Kt0d120
-        pop     ecx                             ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     short Kt0d105
-
-Kt0d120:
-        pop     ecx                                ; (TOS) = OldIrql
-        fstCall KfLowerIrql
-        jmp     _KiExceptionExit
 
 _KiTrap0D       endp
 
@@ -4625,65 +3565,6 @@ Kt0e05:
         and     ecx, ERR_0E_STORE       ; (ecx) = 0 if fault caused by read
                                         ;         2 if fault caused by write
         shr     ecx,1                   ; (ecx) = load/store indicator
-;
-;   Did the fault occur in a VDM?
-;
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     Kt0e7
-
-;
-;   Did the fault occur in a VDM while running in protected mode?
-;
-
-        mov     esi,PCR[PcPrcbData+PbCurrentThread]
-        mov     esi,[esi]+ThApcState+AsProcess
-        test    byte ptr [esi]+PrVdmFlag,0fh ; is this a vdm process?
-        jz      short Kt0e9             ; z -> not vdm
-
-        test    dword ptr [ebp]+TsSegCs, MODE_MASK
-        jz      short kt0e8
-
-        cmp     word ptr [ebp]+TsSegCs, KGDT_R3_CODE OR RPL_MASK
-        jz      kt0e9                   ; z -> not vdm
-
-Kt0e7:  mov     esi, eax
-        stdCall _VdmDispatchPageFault, <ebp,ecx,edi>
-        test    al,0fh                  ; returns TRUE, if success
-        jnz     Kt0e11                  ; Exit,No need to call the debugger
-
-        mov     eax, esi
-        jmp     short Kt0e9
-
-Kt0e8:
-;
-;   Did the fault occur in our kernel VDM support code?
-;   At this point, we know:
-;      . Current process is VDM process
-;      . this is a unresolvable pagefault
-;      . the fault occurred in kernel mode.
-;
-
-;
-;   First make sure this is not pagefault at irql > 1
-;   which should be bugchecked.
-;
-
-        cmp     eax, STATUS_IN_PAGE_ERROR or 10000000h
-        je      Kt0e12
-
-        cmp     word ptr [ebp]+TsSegCs, KGDT_R0_CODE ; Did fault occur in kernel?
-        jnz     short Kt0e9             ; if nz, no, not ours
-
-        cmp     PCR[PcExceptionList], EXCEPTION_CHAIN_END
-        jnz     short Kt0e9             ; there is at least a handler to
-                                        ; handle this exception
-
-        mov     ebp, PCR[PcInitialStack]
-        mov     ecx, 0                  ; set to fault-at-read
-        sub     ebp, KTRAP_FRAME_LENGTH
-        mov     esp, ebp                ; clear stack (ebp)=(esp)->User trap frame
-        mov     esi, [ebp]+TsEip        ; (esi)-> faulting instruction
-        jmp     Kt0e9b                  ; go dispatching the exception to user
 
 Kt0e9:
 ; Set up exception record and arguments and call _KiDispatchException
@@ -4761,16 +3642,6 @@ Kt0e12a:
         stdCall _KeBugCheckEx,<IRQL_NOT_LESS_OR_EQUAL,edi,eax,ecx,esi>
 
 Kt0e12b:
-        ; In V86 mode with iopl allowed it is OK to handle
-        ; a page fault with interrupts disabled
-
-        test    dword ptr [ebp]+TsEFlags, EFLAGS_V86_MASK
-        jz      short Kt0e12c
-
-        cmp     _KeI386VdmIoplAllowed, 0
-        jnz     Kt0e01
-
-Kt0e12c:
         cmp     _KiFreezeFlag,0         ; during boot we can take
         jnz     Kt0e01                  ; 'transistion failts' on the
                                         ; debugger before it's been locked
@@ -4863,9 +3734,6 @@ _KiTrap0F       proc
         sti
 
         mov     eax, EXCEPTION_RESERVED_TRAP ; (eax) = trap type
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     _KiProcessFatalException ; v86 mode => Usermode
-
         test    byte ptr [ebp]+TsSegCs, MODE_MASK ; Is PrevMode=USER?
         jnz     _KiProcessFatalException ; go terminate the process
         jmp     _KiSystemFatalException ; go terminate the system
@@ -4960,9 +3828,6 @@ _KiTrap11       proc
 
         ENTER_TRAP kit11_a, kit11_t
         sti
-
-        test    dword ptr [ebp]+TsEFlags,EFLAGS_V86_MASK
-        jnz     Kt11_01                 ; v86 mode => usermode
 
         test    byte ptr [ebp]+TsSegCs, MODE_MASK  ; Is previous mode = USER
         jz      Kt11_10
@@ -5364,45 +4229,6 @@ cPublicProc _NtRaiseException ,3
 
 stdENDP _NtRaiseException
 
-
-
-        page
-        subttl "Reflect Exception to a Vdm"
-;++
-;
-;   Routine Description:
-;       Local stub which reflects an exception to a VDM using
-;       Ki386VdmReflectException,
-;
-;   Arguments:
-;
-;       ebp -> Trap frame
-;       ss:esp + 4 = trap number
-;
-;   Returns
-;       ret value from Ki386VdmReflectException
-;       interrupts are disabled uppon return
-;
-cPublicProc _Ki386VdmReflectException_A, 1
-
-
-        mov     ecx, APC_LEVEL
-        fstCall KfRaiseIrql
-        push    eax                         ; Save OldIrql
-        sti
-
-        mov     eax, [esp+8]
-        stdCall   _Ki386VdmReflectException,<eax>
-
-        pop     ecx                         ; (ecx) = OldIrql
-        push    eax                         ; save ret code
-
-        fstCall KfLowerIrql
-
-        pop     eax
-        ret     4
-
-stdENDP _Ki386VdmReflectException_A
 
 
 _TEXT$00   ends

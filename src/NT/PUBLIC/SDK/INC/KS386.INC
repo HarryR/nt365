@@ -231,7 +231,6 @@ TbThreadLocalStoragePointer equ 02CH
 TbCountOfOwnedCriticalSections equ 038H
 TbSystemReserved1 equ 0CCH
 TbSystemReserved2 equ 01D4H
-TbVdm equ 0F16H
 TbCsrQlpcStack equ 044H
 TbGdiClientPID equ 06F4H
 TbGdiClientTID equ 06F8H
@@ -820,56 +819,3 @@ LpbConfigurationRoot equ 030H
 LpbArcBootDeviceName equ 034H
 LpbArcHalDeviceName equ 038H
 PAGE_SIZE equ 01000H
-
-;
-;  VDM equates.
-;
-
-VDM_INDEX_Invalid equ 00H
-VDM_INDEX_0F equ 01H
-VDM_INDEX_ESPrefix equ 02H
-VDM_INDEX_CSPrefix equ 03H
-VDM_INDEX_SSPrefix equ 04H
-VDM_INDEX_DSPrefix equ 05H
-VDM_INDEX_FSPrefix equ 06H
-VDM_INDEX_GSPrefix equ 07H
-VDM_INDEX_OPER32Prefix equ 08H
-VDM_INDEX_ADDR32Prefix equ 09H
-VDM_INDEX_INSB equ 0AH
-VDM_INDEX_INSW equ 0BH
-VDM_INDEX_OUTSB equ 0CH
-VDM_INDEX_OUTSW equ 0DH
-VDM_INDEX_PUSHF equ 0EH
-VDM_INDEX_POPF equ 0FH
-VDM_INDEX_INTnn equ 010H
-VDM_INDEX_INTO equ 011H
-VDM_INDEX_IRET equ 012H
-VDM_INDEX_NPX equ 013H
-VDM_INDEX_INBimm equ 014H
-VDM_INDEX_INWimm equ 015H
-VDM_INDEX_OUTBimm equ 016H
-VDM_INDEX_OUTWimm equ 017H
-VDM_INDEX_INB equ 018H
-VDM_INDEX_INW equ 019H
-VDM_INDEX_OUTB equ 01AH
-VDM_INDEX_OUTW equ 01BH
-VDM_INDEX_LOCKPrefix equ 01CH
-VDM_INDEX_REPNEPrefix equ 01DH
-VDM_INDEX_REPPrefix equ 01EH
-VDM_INDEX_CLI equ 01FH
-VDM_INDEX_STI equ 020H
-VDM_INDEX_HLT equ 021H
-MAX_VDM_INDEX equ 022H
-
-;
-;  VDM feature bits.
-;
-
-V86_VIRTUAL_INT_EXTENSIONS equ 01H
-PM_VIRTUAL_INT_EXTENSIONS equ 02H
-
-;
-;  Selector types.
-;
-
-SEL_TYPE_NP equ 040H

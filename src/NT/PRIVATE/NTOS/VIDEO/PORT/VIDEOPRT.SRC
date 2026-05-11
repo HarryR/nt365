@@ -15,14 +15,12 @@ EXPORTS
     VideoPortGetDeviceData
     VideoPortGetRegistryParameters
     VideoPortInitialize
-    VideoPortInt10
     VideoPortLogError
     VideoPortMapMemory
 //    VideoPortMoveMemory = NTOSKRNL.RtlMoveMemory
     VideoPortMoveMemory
     VideoPortScanRom
     VideoPortSetBusData
-    VideoPortSetTrappedEmulatorPorts
     VideoPortSetRegistryParameters
 //    VideoPortStallExecution = NTOSKRNL.KeStallExecutionProcessor
     VideoPortStallExecution

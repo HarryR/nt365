@@ -302,12 +302,6 @@ _HalpApcInterrupt2ndEntry:
         mov     eax, [ebp]+TsSegCs      ; get interrupted code's CS
         and     eax, MODE_MASK          ; extract the mode
 
-        test    dword ptr [ebp]+TsEFlags, EFLAGS_V86_MASK
-        jz      short @f
-
-        or      eax, MODE_MASK          ; If v86 frame, then set user_mode
-@@:
-
 ;
 ; call APC deliver routine
 ;       Previous mode

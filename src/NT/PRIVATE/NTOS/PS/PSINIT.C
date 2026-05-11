@@ -454,14 +454,6 @@ Return Value:
         return FALSE;
     }
 
-    //
-    // Vdm support Initialization
-    //
-
-    if ( !NT_SUCCESS(PspVdmInitialize()) ) {
-        return FALSE;
-    }
-
 #endif
 
     //

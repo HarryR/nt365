@@ -1087,9 +1087,7 @@ typedef KPCR *PKPCR;
 #define SANITIZE_FLAGS(eFlags, mode) (\
     ((mode) == KernelMode ? \
         ((0x00000000L) | ((eFlags) & 0x001e0fd7)) : \
-        ((((eFlags) & EFLAGS_V86_MASK) && KeI386VdmIoplAllowed) ? \
-        (((eFlags) & KeI386EFlagsAndMaskV86) | KeI386EFlagsOrMaskV86) : \
-        ((EFLAGS_INTERRUPT_MASK) | ((eFlags) & EFLAGS_USER_SANITIZE)))))
+        ((EFLAGS_INTERRUPT_MASK) | ((eFlags) & EFLAGS_USER_SANITIZE))))
 
 //
 // Masks for Dr7 and sanitize macros for various Dr registers.
@@ -2185,12 +2183,6 @@ Ke386SetIOPL(
     struct _KPROCESS    *Process
     );
 
-NTSTATUS
-Ke386CallBios (
-    IN ULONG BiosCommand,
-    IN OUT PCONTEXT BiosArguments
-    );
-
 VOID
 KiEditIopmDpc (
     IN struct _KDPC *Dpc,
@@ -2280,21 +2272,6 @@ Ke386VdmInsertQueueApc (
     IN PVOID             SystemArgument2 OPTIONAL,
     IN KPRIORITY         Increment
     );
-
-
-VOID
-KeI386VdmInitialize (
-    VOID
-    );
-
-
-//
-// i386 Vdm specific data
-//
-extern ULONG KeI386EFlagsAndMaskV86;
-extern ULONG KeI386EFlagsOrMaskV86;
-extern BOOLEAN KeI386VdmIoplAllowed;
-extern ULONG KeI386VirtualIntExtensions;
 
 
 extern ULONG KeI386CpuType;

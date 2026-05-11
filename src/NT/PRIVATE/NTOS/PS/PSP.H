@@ -349,15 +349,6 @@ PspLdtInitialize(
     );
 #endif
 
-//
-// Vdm support Routines
-
-#ifdef i386
-NTSTATUS
-PspVdmInitialize(
-    );
-#endif
-
 NTSTATUS
 PspQueryLdtInformation(
     IN PEPROCESS Process,
@@ -382,23 +373,6 @@ PspSetLdtSize(
 
 VOID
 PspDeleteLdt(
-    IN PEPROCESS Process
-    );
-
-//
-// Io handling support routines
-//
-
-
-NTSTATUS
-PspSetProcessIoHandlers(
-    IN PEPROCESS Process,
-    IN PVOID IoHandlerInformation,
-    IN ULONG IoHandlerLength
-    );
-
-VOID
-PspDeleteVdmObjects(
     IN PEPROCESS Process
     );
 

@@ -564,9 +564,8 @@ MiProtectVirtualMemory@20
 NtCreateEvent@20                          
 NtQueryObject@20                          
 RtlCreateAcl@12                           
-FsRtlAddMcbEntry@16                       
-Ki386AdjustEsp0@4                         
-RtlLengthSecurityDescriptor@4             
+FsRtlAddMcbEntry@16
+RtlLengthSecurityDescriptor@4
 FsRtlPrivateInitializeFileLock@8          
 IoAcquireCancelSpinLock@4                 
 MiWriteComplete@12                        

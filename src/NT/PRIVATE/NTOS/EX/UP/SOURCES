@@ -53,6 +53,7 @@ SOURCES=..\callperf.c  \
         ..\sysenv.c    \
         ..\sysinfo.c   \
         ..\systime.c   \
+        ..\vdmstub.c   \
         ..\timer.c     \
         ..\worker.c    \
         ..\zone.c      \

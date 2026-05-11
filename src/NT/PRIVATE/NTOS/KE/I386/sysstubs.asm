@@ -396,15 +396,6 @@ kkd_with_trap_frame:
         mov     dword ptr [esp]+TsErrCode, 0
         mov     dword ptr [esp]+TsSegCs, KGDT_R0_CODE
         mov     dword ptr [esp]+TsHardwareSegSs, KGDT_R0_DATA
-;
-; Pre-clear TsEflags so KeContextToKframes' V86-mismatch check
-; (EXCEPTN.C:542) doesn't see stack-garbage V86 bits and spuriously
-; trigger Ki386AdjustEsp0.  The field is overwritten with CONTEXT
-; EFLAGS at EXCEPTN.C:558 anyway; this is just for the pre-overwrite
-; comparison.  DISPATCH_USER_APC also reads V86 bit before overwrite,
-; for the same reason.
-;
-        mov     dword ptr [esp]+TsEflags, 0
 if DBG
         mov     dword ptr [esp]+TsDbgArgMark, 0BADB0D00h
 endif

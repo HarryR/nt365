@@ -68,7 +68,6 @@
     KeI386FlatToGdtSelector
     KeI386GetLid
     KeI386ReleaseLid
-    Ke386CallBios
     _abnormal_termination
     _except_handler2
     _global_unwind2

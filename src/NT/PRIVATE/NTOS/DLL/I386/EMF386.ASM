@@ -179,8 +179,6 @@ Around:
 
         mov     ax,KGDT_R3_TEB OR RPL_MASK
         mov     fs,ax
-        cmp     dword ptr fs:[TbVdm],0
-        jne     DoVdmFault
 
         mov     ecx,esp                         ; (ecx) -> context record
         lea     edx,[esp]+ContextFrameLength    ; (edx) -> exception record
@@ -207,14 +205,6 @@ Forever:
         int     3
         jmp     short Forever
 
-
-DoVdmFault:
-; jump to the dos extender NPX exception handler
-
-;       jmp     far ptr 013fh:0
-        db      0eah
-        dd      0
-        dw      013fh
 
 OK_Segment:
 endif

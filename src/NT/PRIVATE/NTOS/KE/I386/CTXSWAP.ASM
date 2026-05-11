@@ -721,35 +721,18 @@ endif
         jnz     sc_reloadcr0                    ; no go reload it
 sc06:
 
-; N.B!!!
-;       It is important that the following adjustment NOT be applied to
-;       the initial stack value in the PCR.  If it is, it will cause the
-;       location in memory that the processor pushes the V86 mode seg regs
-;       and the first 4 ULONGs in the FLOATING_SAVE_AREA to occupy the
-;       same memory locations, which could result in either trashed seg
-;       regs in V86 mode, or a trashed NPX state.
 ;
-;       adjust ESP0 so that V86 mode threads and 32 bit threads can
-;       share a trapframe structure, and the NPX save area will be accessible
-;       in the same manner on all threads
+; (eax)->New initial stack base, less NPX frame.  Programs ESP0 in the
+; current TSS so the next user-mode trap pushes onto this thread's stack.
 ;
-        ; this test will check the user mode flags.  On threads with no
-        ; user mode context, the value of esp0 does not matter (we will never
-        ; run in user mode without a usermode context, and if we don't run
-        ; in user mode the processor will never use the esp0 value.
-
+; KTRAP_FRAME still has the V86Es/Ds/Fs/Gs slots (kept so KIMACRO.INC's
+; dead V86 branches assemble), so even though V86 mode is purged, ESP0
+; must be biased down by the size of that slot region — the CPU only
+; pushes the 5 standard dwords for protected-mode traps, so it would
+; otherwise drop them into the V86 slots instead of HardwareSegSs/Esp.
 ;
-; (eax)->Old thread
-; (edx)->New thread
-; (esi)->Old process
-; (edi)->New process
-; (ebx)->PCR
-;
-        test    dword ptr [eax] - KTRAP_FRAME_LENGTH + TsEFlags, EFLAGS_V86_MASK
-        jnz     short sc07                  ; V86 frame, no additional adjust
-
-        sub     eax,TsV86Gs - TsHardwareSegSs ; bias for missing fields
-sc07:   mov     ecx,[ebx]+PcTss
+        sub     eax,TsV86Gs - TsHardwareSegSs
+        mov     ecx,[ebx]+PcTss
         mov     [ecx]+TssEsp0,eax
 
 ;
@@ -874,20 +857,6 @@ sc10:
         mov     eax,[edi+PrLdtDescriptor+4]
         mov     [esi+KGDT_LDT+4],eax
         mov     eax,KGDT_LDT
-
-;
-;   Set up int 21 descriptor of IDT.  If the process does not have Ldt, it
-;   should never make any int 21 call.  If it does, an exception is generated.
-;   If the process has Ldt, we need to update int21 entry of LDT for the process.
-;   Note the Int21Descriptor of the process may simply indicate an invalid
-;   entry.  In which case, the int 21 will be trpped to kernel.
-;
-
-        mov     esi, [ebx]+PcIdt
-        mov     ecx, [edi+PrInt21Descriptor]
-        mov     [esi+21h*8], ecx
-        mov     ecx, [edi+PrInt21Descriptor+4]
-        mov     [esi+21h*8+4], ecx
 
     align 4
 sc21:   lldt    ax
@@ -1173,20 +1142,6 @@ endif
         mov     eax,[edx+PrLdtDescriptor+4]
         mov     [ecx+KGDT_LDT+4],eax
 
-;
-;   Set up int 21 descriptor of IDT.  If the process does not have Ldt, it
-;   should never make any int 21 call.  If it does, an exception is generated.
-;   If the process has Ldt, we need to update int21 entry of LDT for the process.
-;   Note the Int21Descriptor of the process may simply indicate an invalid
-;   entry.  In which case, the int 21 will be trpped to kernel.
-;
-
-        mov     ecx, PCR[PcIdt]
-        mov     eax, [edx+PrInt21Descriptor]
-        mov     [ecx+21h*8], eax
-        mov     eax, [edx+PrInt21Descriptor+4]
-        mov     [ecx+21h*8+4], eax
-
         mov     eax,KGDT_LDT                    ;@@32-bit op to avoid prefix
 
 ;
@@ -1204,69 +1159,6 @@ endif
 
 
 stdENDP _KiSwapProcess
-
-        page , 132
-        subttl "Adjust TSS ESP0 value"
-;++
-;
-; VOID
-; KiAdjustEsp0 (
-;     IN PKTRAP_FRAME TrapFrame
-;     )
-;
-; Routine Description:
-;
-;     This routine puts the apropriate ESP0 value in the esp0 field of the
-;     TSS.  This allows protect mode and V86 mode to use the same stack
-;     frame.  The ESP0 value for protected mode is 16 bytes lower than
-;     for V86 mode to compensate for the missing segement registers.
-;
-; Arguments:
-;
-;     TrapFrame - Supplies a pointer to the TrapFrame
-;
-; Return Value:
-;
-;     None.
-;
-;--
-cPublicProc _Ki386AdjustEsp0 ,1
-
-        stdCall _KeGetCurrentThread
-
-        mov     edx,[esp + 4]                   ; edx -> trap frame
-        mov     eax,[eax]+thInitialStack        ; eax = base of stack
-        test    dword ptr [edx]+TsEFlags,EFLAGS_V86_MASK  ; is this a V86 frame?
-        jnz     short ae10
-
-        sub     eax,TsV86Gs - TsHardwareSegSS   ; compensate for missing regs
-ae10:   sub     eax,NPX_FRAME_LENGTH
-        pushfd                                  ; Make sure we don't move
-        cli                                     ; processors while we do this
-        mov     edx,PCR[PcTss]
-        mov     [edx]+TssEsp0,eax               ; set Esp0 value
-
-;
-; Mirror Esp0 into IA32_SYSENTER_ESP (MSR 0x175) so the next user-mode
-; SYSENTER from this thread lands on the correct kernel stack. SYSENTER
-; doesn't consult the TSS — it loads ESP directly from the MSR — so the
-; TSS write above is necessary (for HW interrupt entries that DO consult
-; TSS) but not sufficient. We do both.
-;
-; ML 6.11d predates Pentium WRMSR; emit the opcode (0F 30) raw.
-;
-        push    eax
-        push    edx
-        mov     ecx,0175H                       ; IA32_SYSENTER_ESP
-        xor     edx,edx
-        db      0Fh, 30h                        ; WRMSR
-        pop     edx
-        pop     eax
-
-        popfd
-        stdRET    _Ki386AdjustEsp0
-
-stdENDP _Ki386AdjustEsp0
 
 ;++
 ;

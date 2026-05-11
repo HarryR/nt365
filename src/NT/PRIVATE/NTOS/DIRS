@@ -36,7 +36,6 @@ DIRS=rtl        \
      dbgk       \
      raw        \
      fsrtl      \
-     vdm        \
      init       \
      boot       \
      nthals     \
