@@ -862,38 +862,111 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
 }
 
 //
-// NvmeShutdownController - Perform clean shutdown of NVMe controller
-// Deletes I/O queues, issues shutdown notification, and disables controller
-// Robust version that handles partially initialized or unknown controller state
+// NvmeShutdownController - NVMe-spec-compliant clean shutdown
+//
+// Implements NVM Express 1.4c § 7.6.2 (Normal Shutdown) verbatim:
+//
+//   1. Stop submitting new I/O commands and allow outstanding
+//      commands to complete.
+//   2. Delete all I/O Submission Queues using the Delete I/O
+//      Submission Queue admin command (this aborts any commands
+//      remaining in the SQ; abort completions land in the I/O CQ).
+//   3. Delete all I/O Completion Queues.
+//   4. Set CC.SHN = 01b and wait for CSTS.SHST = 10b.
+//
+// Notes on what the spec does NOT say to do here:
+//
+//   - It never directs the host to mask interrupts.  Throughout the
+//     sequence the controller continues to write CQ entries that
+//     the host MUST observe (abort completions produced by
+//     Delete-SQ; "Commands Aborted due to Power Loss Notification"
+//     completions during the CC.SHN window).  Masking INTMS before
+//     step 4 — as the earlier version of this routine did — strands
+//     those CQ entries and races the SCSI port's tag retirement.
+//     We instead poll CQs directly, which is functionally equivalent
+//     and side-steps the FallbackTimer / ISR concurrency entirely.
+//
+//   - It explicitly recommends NOT clearing CC.EN until after the
+//     shutdown notification completes (CC.EN=0 forces a Controller
+//     Reset, which can extend shutdown time).  We honour that.
+//
+// ScsiStopAdapter context: the SCSI port has already stopped
+// dispatching new SRBs by the time we are called, so step 1's "stop
+// submitting new I/O" precondition is already satisfied at the OS
+// level.  We give in-flight commands a bounded window to complete
+// naturally before issuing Delete-SQ, so they retire via the normal
+// completion path instead of via the spec's abort path.
 //
 VOID NvmeShutdownController(IN PHW_DEVICE_EXTENSION DevExt)
 {
     ULONG cc, csts;
-    ULONG timeoutMs = 5000;  // 5 second timeout
-    ULONG elapsed = 0;
+    ULONG timeoutMs;
+    ULONG elapsed;
     ULONG shutdownStatus;
+    ULONG quietPolls;
 
 #ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: NvmeShutdownController - starting shutdown sequence\n");
+    ScsiDebugPrint(0, "nvme2k: NvmeShutdownController - NVMe 1.4c sec 7.6.2 shutdown\n");
 #endif
 
-    // First, mask all interrupts to prevent interrupt storms during shutdown
-    NvmeWriteReg32(DevExt, NVME_REG_INTMS, 0xFFFFFFFF);
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: NvmeShutdownController - masked all interrupts\n");
-#endif
+    //
+    // Mark shutdown in progress.  NvmeProcessIoCompletion uses this to
+    // suppress the "Got NULL SRB" ERROR log for completions the spec
+    // permits the controller to emit after the host has architecturally
+    // given up on the command (Delete-SQ aborts; "Commands Aborted due
+    // to Power Loss Notification" during the SHN window).  The SCSI
+    // port may also have retired the matching tags internally as part
+    // of its own quiesce, so ScsiPortGetSrb legitimately returns NULL
+    // for them.
+    //
+    DevExt->ShuttingDown = 1;
 
-    // Check if controller is even enabled before trying to delete queues
+    //
+    // Cancel any pending FallbackTimer.  If left armed it will fire
+    // 1 ms into shutdown, walk the I/O CQ we are about to drain
+    // ourselves, and call ScsiPortGetSrb() for tags the port has
+    // already retired — surfacing as the "Got NULL SRB" log at
+    // shutdown.  Cancel here so the drain below has sole ownership
+    // of the CQ.
+    //
+    ScsiPortNotification(RequestTimerCall, DevExt, FallbackTimer, 0);
+    DevExt->FallbackTimerNeeded = 0;
+
+    // If the controller is not READY, there is nothing live to
+    // drain, delete, or notify — skip straight to cleanup.
     csts = NvmeReadReg32(DevExt, NVME_REG_CSTS);
     if (!(csts & NVME_CSTS_RDY)) {
 #ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: NvmeShutdownController - controller not ready, skipping queue deletion\n");
+        ScsiDebugPrint(0, "nvme2k: controller not ready (CSTS=%08X), skipping teardown\n", csts);
 #endif
-        // Controller is already disabled, just clean up state and return
-        goto cleanup_state;
+        goto mask_and_cleanup;
     }
 
-    // Step 1: Delete I/O Submission Queue (must be deleted before CQ)
+    //
+    // Step 1: allow outstanding I/O to complete (sec 7.6.2 step 1).
+    // Drain the I/O CQ for up to 100 ms, with an early exit after
+    // 10 consecutive empty polls.  Admin CQ is polled in the same
+    // loop so any in-flight admin commands also retire.
+    //
+    quietPolls = 0;
+    for (elapsed = 0; elapsed < 100; elapsed++) {
+        BOOLEAN io    = NvmeProcessIoCompletion(DevExt);
+        BOOLEAN admin = NvmeProcessAdminCompletion(DevExt);
+        if (!io && !admin) {
+            if (++quietPolls >= 10)
+                break;
+        } else {
+            quietPolls = 0;
+        }
+        ScsiPortStallExecution(1000);  // 1 ms
+    }
+
+    //
+    // Step 2: Delete I/O Submission Queue (sec 7.6.2 step 2).
+    // Per spec, a successful Delete-SQ aborts any commands still
+    // outstanding in that SQ; their completions arrive on the I/O
+    // CQ, which we drain immediately after.
+    //
     if (DevExt->InitComplete && DevExt->IoQueue.SubmissionQueue != NULL) {
         NVME_COMMAND cmd;
 
@@ -903,141 +976,141 @@ VOID NvmeShutdownController(IN PHW_DEVICE_EXTENSION DevExt)
         cmd.CDW10 = 1;  // QID = 1 (I/O queue)
 
 #ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: Deleting I/O Submission Queue\n");
+        ScsiDebugPrint(0, "nvme2k: Delete I/O SQ\n");
 #endif
         NvmeSubmitAdminCommand(DevExt, &cmd);
 
-        // Poll for completion (simple polling, no interrupt)
-        timeoutMs = 1000; // 1 second timeout
-        elapsed = 0;
-        while (elapsed < timeoutMs) {
-            if (NvmeProcessAdminCompletion(DevExt)) {
+        timeoutMs = 1000;
+        for (elapsed = 0; elapsed < timeoutMs; elapsed++) {
+            if (NvmeProcessAdminCompletion(DevExt))
                 break;
+            ScsiPortStallExecution(1000);
+        }
+
+        // Drain abort completions produced by the Delete-SQ before
+        // tearing down the CQ they live in.
+        quietPolls = 0;
+        for (elapsed = 0; elapsed < 50; elapsed++) {
+            if (!NvmeProcessIoCompletion(DevExt)) {
+                if (++quietPolls >= 5)
+                    break;
+            } else {
+                quietPolls = 0;
             }
-            ScsiPortStallExecution(1000);  // 1 millisecond
-            elapsed++;
+            ScsiPortStallExecution(1000);
         }
     }
 
-    // Step 2: Delete I/O Completion Queue
+    //
+    // Step 3: Delete I/O Completion Queue (sec 7.6.2 step 3).
+    //
     if (DevExt->InitComplete && DevExt->IoQueue.CompletionQueue != NULL) {
         NVME_COMMAND cmd;
 
         memset(&cmd, 0, sizeof(NVME_COMMAND));
         cmd.CDW0.Fields.Opcode = NVME_ADMIN_DELETE_CQ;
         cmd.CDW0.Fields.CommandId = ADMIN_CID_SHUTDOWN_DELETE_CQ;
-        cmd.CDW10 = 1;  // QID = 1 (I/O queue)
+        cmd.CDW10 = 1;
 
 #ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: Deleting I/O Completion Queue\n");
+        ScsiDebugPrint(0, "nvme2k: Delete I/O CQ\n");
 #endif
         NvmeSubmitAdminCommand(DevExt, &cmd);
 
-        // Poll for completion
-        timeoutMs = 1000; // 1 second timeout
-        elapsed = 0;
-        while (elapsed < timeoutMs) {
-            if (NvmeProcessAdminCompletion(DevExt)) {
+        timeoutMs = 1000;
+        for (elapsed = 0; elapsed < timeoutMs; elapsed++) {
+            if (NvmeProcessAdminCompletion(DevExt))
                 break;
-            }
-            ScsiPortStallExecution(1000); // 1 millisecond
-            elapsed++;
+            ScsiPortStallExecution(1000);
         }
     }
 
-    // Step 3: Issue shutdown notification
+    //
+    // Step 4: Shutdown Notification (sec 7.6.2 step 4).  Set
+    // CC.SHN = 01b, then poll CSTS.SHST for 10b.  Spec minimum wait
+    // is RTD3 Entry Latency (or 1 s when not reported); 5 s is a
+    // safety cap so a misbehaving controller cannot hang reboot.
+    // The controller may emit "Aborted due to Power Loss
+    // Notification" completions on the admin CQ during this window,
+    // so keep polling it.
+    //
     cc = NvmeReadReg32(DevExt, NVME_REG_CC);
-
-    // Clear existing shutdown bits and set normal shutdown
     cc = (cc & ~NVME_CC_SHN_MASK) | NVME_CC_SHN_NORMAL;
     NvmeWriteReg32(DevExt, NVME_REG_CC, cc);
 
 #ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: Shutdown notification sent, waiting for completion\n");
+    ScsiDebugPrint(0, "nvme2k: CC.SHN=01b, polling CSTS.SHST\n");
 #endif
 
-    // Step 4: Wait for shutdown to complete (CSTS.SHST = 10b)
-    timeoutMs = 5000; // 5 second timeout
-    elapsed = 0;
-    while (elapsed < timeoutMs) {
+    timeoutMs = 5000;
+    for (elapsed = 0; elapsed < timeoutMs; elapsed++) {
         csts = NvmeReadReg32(DevExt, NVME_REG_CSTS);
         shutdownStatus = csts & NVME_CSTS_SHST_MASK;
 
-        if (shutdownStatus == NVME_CSTS_SHST_COMPLETE) {
-#ifdef NVME2K_DBG
-            ScsiDebugPrint(0, "nvme2k: Shutdown complete\n");
-#endif
+        NvmeProcessAdminCompletion(DevExt);
+
+        if (shutdownStatus == NVME_CSTS_SHST_COMPLETE)
             break;
-        }
-        ScsiPortStallExecution(1000); // 1 millisecond
-        elapsed++;
+        ScsiPortStallExecution(1000);
     }
 
     if (elapsed >= timeoutMs) {
-        ScsiDebugPrint(0, "nvme2k: WARNING - Shutdown timeout, CSTS=0x%08X\n", csts);
-        // Controller may not be in a clean state, but we must continue shutdown
+        ScsiDebugPrint(0, "nvme2k: WARNING - CC.SHN timeout, CSTS=%08X\n", csts);
+        // Continue regardless — system is going down.
     }
+#ifdef NVME2K_DBG
+    else {
+        ScsiDebugPrint(0, "nvme2k: shutdown notification complete\n");
+    }
+#endif
 
-    // Step 6: Disable the controller (CC.EN = 0)
+    //
+    // CC.EN=0 only AFTER CC.SHN completes — spec 7.6.2 explicitly
+    // advises against using CC.EN as the shutdown trigger.
+    //
     cc = NvmeReadReg32(DevExt, NVME_REG_CC);
     cc &= ~NVME_CC_ENABLE;
     NvmeWriteReg32(DevExt, NVME_REG_CC, cc);
 
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: Controller disabled\n");
-#endif
-
-    // Step 7: Wait for controller to become not ready (CSTS.RDY = 0)
-    // This is critical - controller must be fully stopped before driver unload
     if (!NvmeWaitForReady(DevExt, FALSE)) {
         csts = NvmeReadReg32(DevExt, NVME_REG_CSTS);
-        ScsiDebugPrint(0, "nvme2k: WARNING - Controller failed to clear RDY bit, CSTS=0x%08X\n", csts);
-        // Continue anyway - we've done what we can
+        ScsiDebugPrint(0, "nvme2k: WARNING - RDY did not clear, CSTS=%08X\n", csts);
     }
-#ifdef NVME2K_DBG
-    else {
-        ScsiDebugPrint(0, "nvme2k: Controller RDY bit cleared\n");
-    }
-#endif
-
-    // Step 5 (Moved): Clear admin queue hardware registers AFTER disabling controller
-    // This ensures the controller doesn't try to access stale queue pointers during shutdown
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: Clearing admin queue registers\n");
-#endif
 
     NvmeWriteReg32(DevExt, NVME_REG_AQA, 0);
     NvmeWriteReg64(DevExt, NVME_REG_ASQ, 0);
     NvmeWriteReg64(DevExt, NVME_REG_ACQ, 0);
 
-cleanup_state:
-    // Step 8: Reset queue software state to match hardware reset state
-    // When controller is disabled (CC.EN=0), hardware resets doorbell registers to 0
-    // We must reset our software state to match, otherwise re-initialization will fail
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: Resetting queue state\n");
-#endif
+mask_and_cleanup:
+    //
+    // Mask interrupts only at the very end — by this point the
+    // controller is either not-ready or has acknowledged shutdown,
+    // so no further completions are expected and there is nothing
+    // for an ISR to do.
+    //
+    NvmeWriteReg32(DevExt, NVME_REG_INTMS, 0xFFFFFFFF);
 
-    // Reset Admin Queue state
+    //
+    // Reset software state to match the post-CC.EN=0 hardware reset
+    // (doorbells back to 0; CQ heads parked at QueueSize so the phase
+    // bit re-establishes as 1 on the next init).
+    //
     DevExt->AdminQueue.SubmissionQueueHead = 0;
     DevExt->AdminQueue.SubmissionQueueTail = 0;
-    // Reset CQ head to QueueSize to re-establish phase bit as 1 for next init
     DevExt->AdminQueue.CompletionQueueHead = DevExt->AdminQueue.QueueSize;
     DevExt->AdminQueue.CompletionQueueTail = 0;
 
-    // Reset I/O Queue state
     DevExt->IoQueue.SubmissionQueueHead = 0;
     DevExt->IoQueue.SubmissionQueueTail = 0;
-    // Reset CQ head to QueueSize to re-establish phase bit as 1 for next init
     DevExt->IoQueue.CompletionQueueHead = DevExt->IoQueue.QueueSize;
     DevExt->IoQueue.CompletionQueueTail = 0;
 
-    // Clear init state
     DevExt->InitComplete = FALSE;
     DevExt->NonTaggedInFlight = NULL;
+    DevExt->ShuttingDown = 0;
 
 #ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: Shutdown sequence complete\n");
+    ScsiDebugPrint(0, "nvme2k: NvmeShutdownController complete\n");
 #endif
 }
 

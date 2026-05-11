@@ -534,15 +534,27 @@ BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt)
         Srb = NvmeGetSrbFromCommandId(DevExt, commandId);
 
         if (Srb == NULL) {
-#ifdef NVME2K_DBG
-            ScsiDebugPrint(0, "nvme2k: ERROR - Got NULL SRB for CID=%d! This should not happen.\n", commandId);
+            //
+            // NULL SRB is not an error.  Three legitimate causes:
+            //   (1) NVMe 1.4c sec 7.6.2 permits the controller to emit
+            //       completions for commands the host has architecturally
+            //       given up on (Delete-SQ aborts; Power-Loss-Notification
+            //       aborts during the SHN window).
+            //   (2) The NT 3.5 SCSI port has no shutdown notification
+            //       machinery for miniports, so it retires outstanding
+            //       tags internally during kernel halt without ever
+            //       telling us.  Completions for those tags arrive
+            //       afterwards and ScsiPortGetSrb legitimately returns NULL.
+            //   (3) Some buggy real-world NVMe firmware emits duplicate
+            //       completions for an already-retired tag.
+            // All three want the same handling: consume the CQ entry,
+            // advance the head, move on.  The original "ERROR - this
+            // should not happen" wording was overoptimistic; demoted to
+            // an _EXTRA trace.
+            //
+#ifdef NVME2K_DBG_EXTRA
+            ScsiDebugPrint(0, "nvme2k: orphan completion CID=%d (see cpl.c comment)\n", commandId);
 #endif
-            // Clear non-tagged flag to prevent driver from getting stuck
-            if (commandId & CID_NON_TAGGED_FLAG) {
-#ifdef NVME2K_DBG
-                ScsiDebugPrint(0, "nvme2k: Clearing NonTaggedInFlight flag for orphaned CID\n");
-#endif
-            }
         } else {
             PNVME_SRB_EXTENSION srbExt;
 

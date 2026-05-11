@@ -178,7 +178,7 @@ typedef struct _HW_DEVICE_EXTENSION {
     BOOLEAN Busy;                                   // Offset 0xB6 (182)
     BOOLEAN InitComplete;                           // Offset 0xB7 (183)
 
-    ULONG Reserved4a;                               // Offset 0xB8 (184)
+    ULONG ShuttingDown;                             // Offset 0xB8 (184) - non-zero while NvmeShutdownController is in progress; quiets NULL-SRB ERROR logs for spec-permitted post-quiesce completions (NVMe 1.4c sec 7.6.2)
     ULONG InterruptCount;                           // Offset 0xBC (188)
 
     // PRP list pages for scatter-gather (shared pool, allocated after init)
