@@ -326,12 +326,9 @@ Return Value:
         KeI386CpuType = Prcb->CpuType;
         KeI386CpuStep = Prcb->CpuStep;
 
-        if (KeI386CpuType == 3  && (KeI386CpuStep >> 8) <= 1) {
-            KeBugCheckEx(HAL_INITIALIZATION_FAILED,0xb1,KeI386CpuType,KeI386CpuStep,0);
-            for (; ;) {
-            }
-        }
-
+        // MicroNT: stock NT bugchecked here on 386 stepping <= B1
+        // (errata, see KE/I386/CPU.ASM history).  Pentium+ only —
+        // unreachable, dropped.
         KeFeatureBits = KiGetFeatureBits();
 
         //
@@ -408,24 +405,13 @@ Return Value:
                 KeI386CpuType = Prcb->CpuType;
             }
 
-            if (KeI386CpuType <= 3) {
-
-                //
-                // Can not mix processor types of 386 or before
-                //
-
-                KeBugCheck (MULTIPROCESSOR_CONFIGURATION_NOT_SUPPORTED);
-            }
+            // MicroNT: stock NT bugchecked here when the lowest
+            // common CpuType <= 3 (no MP 386 support).  Pentium+
+            // only, unreachable.
         }
 
-        if (KeI386CpuType == 3) {
-
-            //
-            // MP 386 systems no longer supported
-            //
-
-            KeBugCheck (MULTIPROCESSOR_CONFIGURATION_NOT_SUPPORTED);
-        }
+        // MicroNT: stock NT bugchecked here on CpuType == 3 (MP 386
+        // never supported).  Unreachable on Pentium+, dropped.
 
 
         //

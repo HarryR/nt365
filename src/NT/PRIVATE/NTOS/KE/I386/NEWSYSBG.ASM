@@ -81,9 +81,6 @@ endif
 
         EXTRNP  _KdPollBreakIn,0
         extrn   _KeLoaderBlock:DWORD
-        extrn   _KeI386NpxPresent:DWORD
-        extrn   _KeI386CpuType:DWORD
-        extrn   _KeI386CpuStep:DWORD
         extrn   _KeTickCount:DWORD
 
 ifndef NT_UP
@@ -937,24 +934,16 @@ cPublicProc _KiSetCR0Bits ,0
 
         mov     eax, cr0
 ;
-; There are two useful bits in CR0 that we want to turn on if the processor
-; is a 486 or above.  (They don't exist on the 386)
+; CR0_WP — write protect (kernel-mode writes to write-protected pages
+; fault rather than silently succeed).  Stock NT gated this behind a
+; PbCpuType > 3 check because the WP bit didn't exist on the 386;
+; MicroNT is Pentium+ only, so unconditional.
 ;
-;       CR0_AM - Alignment mask (so we can turn on alignment faults)
+; The comment in stock NT also mentioned CR0_AM (alignment-check
+; faults), but the original code didn't actually set it — left as a
+; future tightening if anyone ever wants AC traps in kernel mode.
 ;
-;       CR0_WP - Write protect (so we get page faults if we write to a
-;                write-protected page from kernel mode)
-;
-        cmp     word ptr fs:PcPrcbData.PbCpuType, 3h
-        jbe     @f
-;
-; The processor is not a 386, (486 or greater) so we assume it is ok to
-; turn on these bits.
-;
-
         or      eax, CR0_WP
-
-@@:
         mov     cr0, eax
         stdRET  _KiSetCR0Bits
 
