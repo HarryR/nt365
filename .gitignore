@@ -17,6 +17,8 @@ src/NT/PRIVATE/WINDOWS/SHELL/USERPRI/lib/
 # .sys driver outputs (all built from in-tree sources)
 *.sys
 
+*.pcap
+
 # Generated files
 src/NT/PRIVATE/NTOS/RTL/error.h
 src/NT/PRIVATE/NTOS/RTL/UP/error.h

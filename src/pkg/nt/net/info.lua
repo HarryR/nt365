@@ -60,6 +60,12 @@
 --                         pick the first AT_ENTITY instance, which
 --                         on a single-NIC guest is correct.
 --
+--   interfaces(h)         Array of IFEntry — one per NIC.  Exposes
+--                         if_physaddr (MAC), if_mtu, if_type
+--                         (ETHERNET / LOOPBACK).  DHCP uses this
+--                         to find the chaddr it needs to put in
+--                         the DHCP packet.
+--
 --   add_route(h, e)       Install a route.  `e` is a Lua table:
 --   del_route(h, e)         { dest, mask, nexthop, if_index,
 --                             metric=1, type=IRE_TYPE_INDIRECT,
@@ -211,6 +217,15 @@ typedef struct _ICMPSNMPInfo {
     ICMPStats icsi_outstats;
 } ICMPSNMPInfo;
 
+/* UDPStats — CL_TL_ENTITY / UDP_MIB_STAT_ID.  TCPINFO.H:52. */
+typedef struct _UDPStats {
+    unsigned long us_indatagrams;
+    unsigned long us_noports;       /* received UDP with no listener */
+    unsigned long us_inerrors;      /* delivery errors (AO invalid, etc) */
+    unsigned long us_outdatagrams;
+    unsigned long us_numaddrs;
+} UDPStats;
+
 typedef struct _IPAddrEntry {
     unsigned long  iae_addr;       /* address itself, network order */
     unsigned long  iae_index;      /* interface index (if_index)    */
@@ -240,6 +255,38 @@ typedef struct _IPRouteEntry {
     unsigned long ire_mask;        /* destination mask              */
     unsigned long ire_metric5;
 } IPRouteEntry;
+
+/* Per-interface IFEntry — IF_ENTITY / IF_MIB_STATS_ID.  Variable-
+ * tail layout: fixed fields up to if_descrlen, then `if_descr[1]`
+ * placeholder.  The kernel respects BufferSize and skips the descr
+ * tail when there's only room for the fixed part (ARP.C:3504-3559),
+ * so sizeof(IFEntry) (= IFE_FIXED_SIZE + 1) is enough.  DHCP only
+ * cares about if_physaddrlen + if_physaddr + if_index. */
+typedef struct _IFEntry {
+    unsigned long  if_index;
+    unsigned long  if_type;          /* IF_TYPE_ETHERNET = 6 */
+    unsigned long  if_mtu;
+    unsigned long  if_speed;
+    unsigned long  if_physaddrlen;
+    unsigned char  if_physaddr[8];   /* MAX_PHYSADDR_SIZE */
+    unsigned long  if_adminstatus;
+    unsigned long  if_operstatus;
+    unsigned long  if_lastchange;
+    unsigned long  if_inoctets;
+    unsigned long  if_inucastpkts;
+    unsigned long  if_innucastpkts;
+    unsigned long  if_indiscards;
+    unsigned long  if_inerrors;
+    unsigned long  if_inunknownprotos;
+    unsigned long  if_outoctets;
+    unsigned long  if_outucastpkts;
+    unsigned long  if_outnucastpkts;
+    unsigned long  if_outdiscards;
+    unsigned long  if_outerrors;
+    unsigned long  if_outqlen;
+    unsigned long  if_descrlen;
+    unsigned char  if_descr[1];
+} IFEntry;
 
 /* ARP entry — note MAX_PHYSADDR_SIZE = 8 in LLINFO.H to accommodate
  * the wider hardware addresses (e.g. FDDI 6-byte, Token Ring 6-byte
@@ -292,20 +339,24 @@ typedef struct _IP_SET_ADDRESS_REQUEST {
 -- ------------------------------------------------------------------
 
 local GENERIC_ENTITY        = 0
+local IF_ENTITY             = 0x200   -- per-NIC interface (NDIS adapter)
+local AT_ENTITY             = 0x280   -- ARP / address translation
 local CL_NL_ENTITY          = 0x301   -- IP
 local ER_ENTITY             = 0x380   -- ICMP
-local AT_ENTITY             = 0x280   -- ARP / address translation
+local CL_TL_ENTITY          = 0x401   -- UDP (connectionless transport)
 
 local INFO_CLASS_GENERIC    = 0x100
 local INFO_CLASS_PROTOCOL   = 0x200
 local INFO_TYPE_PROVIDER    = 0x100
 
 local ENTITY_LIST_ID        = 0
+local IF_MIB_STATS_ID       = 1
 local IP_MIB_STATS_ID       = 1
 local IP_MIB_RTTABLE_ENTRY_ID   = 0x101
 local IP_MIB_ADDRTABLE_ENTRY_ID = 0x102
 local ICMP_MIB_STATS_ID         = 1
 local AT_MIB_ADDRXLAT_ENTRY_ID  = 0x101
+local UDP_MIB_STAT_ID           = 1
 
 local STATUS_BUFFER_OVERFLOW = 0x80000005
 
@@ -352,6 +403,16 @@ M.INME_TYPE_OTHER   = 1
 M.INME_TYPE_INVALID = 2
 M.INME_TYPE_DYNAMIC = 3
 M.INME_TYPE_STATIC  = 4
+
+-- IFEntry.if_type — interface link-layer family.  DHCP wants
+-- ETHERNET (the loopback IF entry has type IF_TYPE_LOOPBACK == 24
+-- per RFC 1213 but in this tree the loopback NTE has its own
+-- entity and is filtered out by addresses() callers anyway).
+M.IF_TYPE_OTHER     = 1
+M.IF_TYPE_ETHERNET  = 6
+M.IF_TYPE_TOKENRING = 9
+M.IF_TYPE_FDDI      = 15
+M.IF_TYPE_LOOPBACK  = 24
 
 -- ------------------------------------------------------------------
 -- IOCTL primitive — synchronous, returns (Information as Lua number,
@@ -564,6 +625,11 @@ function M.icmp_stats(h)
                        'ICMPSNMPInfo', 'nt.net.info.icmp_stats')
 end
 
+function M.udp_stats(h)
+    return query_stats(h, CL_TL_ENTITY, UDP_MIB_STAT_ID,
+                       'UDPStats', 'nt.net.info.udp_stats')
+end
+
 function M.addresses(h)
     return walk_table(h, CL_NL_ENTITY, IP_MIB_ADDRTABLE_ENTRY_ID,
                       'IPAddrEntry', 'nt.net.info.addresses')
@@ -572,6 +638,52 @@ end
 function M.routes(h)
     return walk_table(h, CL_NL_ENTITY, IP_MIB_RTTABLE_ENTRY_ID,
                       'IPRouteEntry', 'nt.net.info.routes')
+end
+
+-- ------------------------------------------------------------------
+-- Per-interface enumeration.  IF_ENTITY is NOT a cursor walker —
+-- each instance returns ONE IFEntry (ARP.C:3497-3560).  To get the
+-- full set we iterate the entity list and query each IF_ENTITY
+-- instance independently.  DHCP uses this to discover the NIC's
+-- MAC for chaddr; also useful for any caller that wants per-NIC
+-- counters or MTU.
+--
+-- Returns an array of IFEntry cdata.  Entries are copied by value
+-- so the array survives independent of any transient buffer.  Note
+-- we request only IFE_FIXED_SIZE worth of bytes (the description
+-- string would round-trip but DHCP doesn't care, and stripping it
+-- keeps the cdata fixed-size).
+-- ------------------------------------------------------------------
+
+function M.interfaces(h)
+    local list, n = _entity_list(h)
+    local result = {}
+    for i = 0, n - 1 do
+        if list[i].tei_entity == IF_ENTITY then
+            local req = ffi.new('TCP_REQUEST_QUERY_INFORMATION_EX')
+            req.ID.toi_entity.tei_entity   = IF_ENTITY
+            req.ID.toi_entity.tei_instance = list[i].tei_instance
+            req.ID.toi_class               = INFO_CLASS_PROTOCOL
+            req.ID.toi_type                = INFO_TYPE_PROVIDER
+            req.ID.toi_id                  = IF_MIB_STATS_ID
+
+            local out = ffi.new('IFEntry')
+            -- BUFFER_OVERFLOW here means the descriptor didn't fit
+            -- — fine, the fixed part landed and that's all DHCP
+            -- wants (ARP.C:3556-3559).
+            local _got, st = ioctl(h, IOCTL_TCP_QUERY_INFORMATION_EX,
+                                   req, ffi.sizeof(req),
+                                   out, ffi.sizeof(out))
+            if st ~= 0 and st ~= STATUS_BUFFER_OVERFLOW then
+                err.raise('nt.net.info.interfaces', st)
+            end
+
+            local entry = ffi.new('IFEntry')
+            ffi.copy(entry, out, ffi.sizeof('IFEntry'))
+            result[#result + 1] = entry
+        end
+    end
+    return result
 end
 
 function M.arp(h)

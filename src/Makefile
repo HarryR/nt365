@@ -115,6 +115,10 @@ selftest: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\selftest.lua'
 # so the collision can't happen.  Default selftest layout is split-ntfs
 # unless the operator overrides via `make selftest LAYOUT=split-fat`.
 selftest: LAYOUT_FLAG := --layout=$(or $(LAYOUT),split-ntfs)
+# --netdump dumps every virtio-net frame to ./vionet.pcap so DHCP
+# (and other network-layer test) traffic can be inspected with
+# Wireshark / tshark when a test misbehaves.
+selftest: BOOT_FLAGS += --netdump
 selftest: boot
 
 # Smoke test — minimal "did the system boot on this hardware shape?"

@@ -26,9 +26,12 @@ print("================")
 -- collapse to no-ops.
 require('nt.boot').run()
 
--- Suite order doesn't matter — each suite is self-contained — but
--- grouping shallow modules first makes debug easier when things
--- explode early.
+-- Suite order: shallow modules first for easier debug on early
+-- explosions.  The dhcp suite runs BEFORE the network-dependent
+-- suites (afd, iphard) because the Vionet1 NTE now boots without
+-- a static address — afd's UDP-loopback tests still work because
+-- they bind 127.0.0.1, but anything touching the vionet interface
+-- depends on dhcp.acquire() having configured it first.
 require('test.str')
 require('test.handle')
 require('test.ob')
@@ -42,6 +45,7 @@ require('test.thread')
 require('test.sync')
 require('test.io')
 require('test.os')
+require('test.dhcp')
 require('test.afd')
 require('test.iphard')
 require('test.sysenter')

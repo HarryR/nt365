@@ -43,10 +43,11 @@
 -- straight away. Going async unlocks timeouts without forking the API
 -- surface, and keeps us source-compatible with a future IOCP layer.
 --
--- Unconnected UDP (recvfrom returning the source address) is NOT
--- yet wrapped — needs IOCTL_TDI_RECEIVE_DATAGRAM with the
--- AFD_RECEIVE_DATAGRAM_OUTPUT shape. Out of v1 scope; for the
--- tests we use the "both sides connect" pattern.
+-- Unconnected UDP (sendto / recvfrom) is wrapped via udp_sendto /
+-- udp_recvfrom — IOCTL_TDI_SEND_DATAGRAM / IOCTL_TDI_RECEIVE_DATAGRAM
+-- with AFD's "fast" buffer shapes (AfdSendDatagram in SEND.C and
+-- AfdReceiveDatagram in RECVDG.C).  Used by DHCP, which needs to
+-- broadcast DISCOVER before it has a peer to connect() to.
 --
 -- Lifetime: every socket is an NT_HANDLE wrapper. :close() goes
 -- through the standard NT_HANDLE __gc / NtClose path.
@@ -135,6 +136,51 @@ typedef struct _TDI_CONNECTION_INFORMATION {
     void *RemoteAddress;
 } TDI_CONNECTION_INFORMATION;
 
+/* Send-datagram contiguous buffer.  Mirrors the connect-buffer
+ * pointer-fixup pattern: SendDatagramInformation points at the
+ * embedded TDI_CONNECTION_INFORMATION, which in turn points at the
+ * embedded TA_IP_ADDRESS.  Kernel does the user-mode pointer
+ * dereferences (SEND.C:1005-1011) — buffer must live across the
+ * IOCTL.  Total 66 bytes under pack(1). */
+typedef struct _AFD_SEND_DG_BUF {
+    TDI_REQUEST                Request;
+    TDI_CONNECTION_INFORMATION *SendDatagramInformation;
+    TDI_CONNECTION_INFORMATION ConnInfo;
+    TA_IP_ADDRESS              Addr;
+} AFD_SEND_DG_BUF;
+
+/* Receive-datagram control buffer.  Single allocation that serves
+ * as both InputBuffer (kernel reads ReceiveFlags at offset 0 and
+ * OutputBuffer pointer at offset 4) AND output destination (kernel
+ * writes ReceiveLength/AddressLength/source-address starting at
+ * offset 0 — overwriting the input fields).  Aliasing-back to
+ * itself is the Winsock convention: WINSOCK/RECV.C:402-403 declares
+ * `receiveInput = receiveOutput = requestBuffer` and sets
+ * `receiveInput->OutputBuffer = receiveOutput`.  Necessary because
+ * AFD's fast path (FASTIO.C:1245) writes directly to InputBuffer
+ * offsets, ignoring the OutputBuffer field — pointing OutputBuffer
+ * at a separate allocation breaks the fast path silently.
+ *
+ * Total size must be >= AFD_FAST_RECVDG_BUFFER_LENGTH (58) to pass
+ * AfdReceiveDatagram's length check (RECVDG.C:107).  We size to 64
+ * with a trailing pad to absorb any /Zp8 alignment differences. */
+typedef struct _AFD_RECV_DG_CTRL {
+    /* INPUT view (before IOCTL): */
+    /*   offset 0..3  ReceiveFlags                                    */
+    /*   offset 4..7  OutputBuffer pointer (set to &self)             */
+    /* OUTPUT view (after IOCTL):                                     */
+    /*   offset 0..3  ReceiveLength                                   */
+    /*   offset 4..7  AddressLength                                   */
+    /*   offset 8..n  TRANSPORT_ADDRESS (TAAddressCount + TA_ADDRESS) */
+    unsigned long  ReceiveLength_or_Flags;
+    unsigned long  AddressLength_or_OutputBuffer;
+    long           TAAddressCount;
+    unsigned short InnerAddrLength;
+    unsigned short InnerAddrType;
+    TDI_ADDRESS_IP InnerAddr;
+    unsigned char  pad[34];
+} AFD_RECV_DG_CTRL;
+
 typedef struct _AFD_CONNECT_BUFFER {
     /* TDI_REQUEST_CONNECT header. */
     TDI_REQUEST                Request;
@@ -179,6 +225,21 @@ local IOCTL_AFD_ACCEPT             = 0x1200C
 local IOCTL_AFD_GET_ADDRESS        = 0x1201A   -- METHOD_OUT_DIRECT (= 2 in low bits)
 
 local IOCTL_TDI_CONNECT            = 0x210004
+
+-- (0x21<<16) | (6<<2) | METHOD_OUT_DIRECT(2) = 0x21001A
+local IOCTL_TDI_RECEIVE_DATAGRAM   = 0x21001A
+-- (0x21<<16) | (8<<2) | METHOD_IN_DIRECT(1) = 0x210021
+local IOCTL_TDI_SEND_DATAGRAM      = 0x210021
+
+local TDI_RECEIVE_NORMAL    = 0x20
+
+-- Length floor for IOCTL_TDI_RECEIVE_DATAGRAM input buffer
+-- (AfdReceiveDatagram in RECVDG.C:107-112 rejects under this).
+-- Evaluates to sizeof(AFD_RECEIVE_DATAGRAM_INPUT) +
+-- sizeof(AFD_RECEIVE_DATAGRAM_OUTPUT) + AFD_MAX_TDI_FAST_ADDRESS
+-- = 8 + 18 + 32 = 58 on /Zp8 builds; we round to 64 to absorb any
+-- alignment gunk and not have to track the kernel's exact sizeof.
+local AFD_RECVDG_INPUT_BYTES = 64
 
 -- AFD_ENDPOINT_TYPE enum.
 local AfdEndpointTypeStream     = 0
@@ -247,13 +308,23 @@ end
 
 -- Build a fully-formed TA_IP_ADDRESS cdata from (host, port). Single
 -- 22-byte allocation; caller keeps the cdata reachable across the
--- syscall.
-local function make_ta_ip_address(host, port)
+-- syscall.  When `dhcp_marker` is true, stuff the magic 0x12345678
+-- into sin_zero[0..3] — NTDISP.C's IsDHCPZeroAddress (line 3300)
+-- looks for that exact value to flag the AddrObj as DHCP-mode, which
+-- makes UDPSend skip the route lookup that would otherwise fail on
+-- an interface without a NTE_VALID address (UDP.C:769-780).
+local function make_ta_ip_address(host, port, dhcp_marker)
     local ta = ffi.new('TA_IP_ADDRESS')
     ta.TAAddressCount = 1
     ta.AddressLength  = TDI_ADDRESS_LENGTH_IP
     ta.AddressType    = TDI_ADDRESS_TYPE_IP
     fill_addr(ta.Address, host, port)
+    if dhcp_marker then
+        -- sin_zero is at offset 6 of TDI_ADDRESS_IP (2-byte sin_port +
+        -- 4-byte in_addr).  Write ULONG 0x12345678 in native byte order
+        -- — the kernel reads it as `*(ULONG *)sin_zero`.
+        ffi.cast('uint32_t *', ta.Address.sin_zero)[0] = 0x12345678
+    end
     return ta
 end
 
@@ -473,8 +544,8 @@ end
 -- the check lets TDI assign distinct ephemeral ports per socket;
 -- we use getsockname() if the caller wants the assigned port.
 -- ------------------------------------------------------------------
-local function bind(sock, host, port, timeout_secs)
-    local ta = make_ta_ip_address(host, port)
+local function bind(sock, host, port, timeout_secs, opts)
+    local ta = make_ta_ip_address(host, port, opts and opts.dhcp)
     ioctl(sock, IOCTL_AFD_BIND,
           ta,  ffi.sizeof('TA_IP_ADDRESS'),
           nil, 0, timeout_secs)
@@ -609,6 +680,99 @@ local function recv(sock, max_bytes, timeout_secs)
 end
 
 -- ------------------------------------------------------------------
+-- udp_sendto — IOCTL_TDI_SEND_DATAGRAM for unconnected UDP.
+--
+-- One contiguous AFD_SEND_DG_BUF with SendDatagramInformation and
+-- the RemoteAddress pointer both fixed up to point at embedded
+-- offsets within the buffer.  The kernel (SEND.C:1005-1037)
+-- dereferences these user-mode pointers from kernel mode via
+-- try/except — they must be valid user addresses, which our
+-- LuaJIT cdata satisfies as long as we keep `buf` alive across
+-- the IOCTL (the `ioctl(..., buf, ...)` line below).
+--
+-- Data goes through METHOD_IN_DIRECT's MDL-locked OutputBuffer
+-- (sic — for SEND_DATAGRAM, "Output" is the payload).  Endpoint
+-- must be bound — DHCP binds to 0.0.0.0:68 before calling this.
+-- ------------------------------------------------------------------
+
+local function udp_sendto(sock, host, port, data, timeout_secs)
+    local buf      = ffi.new('AFD_SEND_DG_BUF')
+    local buf_base = ffi.cast('uint8_t *', buf)
+
+    buf.Request.Handle              = nil
+    buf.Request.RequestNotifyObject = nil
+    buf.Request.RequestContext      = nil
+    buf.Request.TdiStatus           = 0
+
+    buf.SendDatagramInformation = ffi.cast('TDI_CONNECTION_INFORMATION *',
+        buf_base + ffi.offsetof('AFD_SEND_DG_BUF', 'ConnInfo'))
+
+    buf.ConnInfo.UserDataLength      = 0
+    buf.ConnInfo.UserData            = nil
+    buf.ConnInfo.OptionsLength       = 0
+    buf.ConnInfo.Options             = nil
+    buf.ConnInfo.RemoteAddressLength = ffi.sizeof('TA_IP_ADDRESS')
+    buf.ConnInfo.RemoteAddress       = ffi.cast('void *',
+        buf_base + ffi.offsetof('AFD_SEND_DG_BUF', 'Addr'))
+
+    buf.Addr.TAAddressCount = 1
+    buf.Addr.AddressLength  = TDI_ADDRESS_LENGTH_IP
+    buf.Addr.AddressType    = TDI_ADDRESS_TYPE_IP
+    fill_addr(buf.Addr.Address, host, port)
+
+    local n     = #data
+    local data_cbuf = ffi.new('uint8_t[?]', n)
+    ffi.copy(data_cbuf, data, n)
+
+    return ioctl(sock, IOCTL_TDI_SEND_DATAGRAM,
+                 buf,      ffi.sizeof('AFD_SEND_DG_BUF'),
+                 data_cbuf, n,
+                 timeout_secs)
+end
+
+-- ------------------------------------------------------------------
+-- udp_recvfrom — IOCTL_TDI_RECEIVE_DATAGRAM for unconnected UDP.
+-- Returns (data_string, source_host, source_port, status).
+--
+-- Three user-mode buffers:
+--   input (64 bytes) - AFD_RECEIVE_DATAGRAM_INPUT header + dead
+--                      space.  The kernel checks InputBufferLength
+--                      >= AFD_FAST_RECVDG_BUFFER_LENGTH (RECVDG.C:107)
+--                      so we round to 64.
+--   meta             - AFD_RECV_DG_META.  Receives ReceiveLength +
+--                      AddressLength + source TRANSPORT_ADDRESS at
+--                      IRP completion via the IRP_INPUT_OPERATION
+--                      copy from SystemBuffer (RECVDG.C:1163-1213).
+--   data             - OutputBuffer; MDL-locked, gets the datagram
+--                      bytes via TdiCopyBufferToMdl (RECVDG.C:1118).
+--
+-- input[4..7] holds a pointer to `meta`; the kernel reads it on
+-- entry (RECVDG.C:137) and stashes it in Irp->UserBuffer.
+-- ------------------------------------------------------------------
+
+local function udp_recvfrom(sock, max_bytes, timeout_secs)
+    local ctrl = ffi.new('AFD_RECV_DG_CTRL')
+    local data = ffi.new('uint8_t[?]', max_bytes)
+
+    -- INPUT layout in `ctrl`: ReceiveFlags + self-pointer.  After
+    -- the IOCTL, the same bytes hold ReceiveLength + AddressLength
+    -- and the TRANSPORT_ADDRESS tail.
+    ctrl.ReceiveLength_or_Flags = TDI_RECEIVE_NORMAL
+    ffi.cast('void **', ffi.cast('uint8_t *', ctrl) + 4)[0] =
+        ffi.cast('void *', ctrl)
+
+    ioctl(sock, IOCTL_TDI_RECEIVE_DATAGRAM,
+          ctrl, ffi.sizeof('AFD_RECV_DG_CTRL'),
+          data, max_bytes,
+          timeout_secs)
+
+    local n        = tonumber(ctrl.ReceiveLength_or_Flags)
+    local data_str = ffi.string(data, n)
+    local host, port = read_addr(ctrl.InnerAddr)
+    return data_str, host, port
+end
+
+-- ------------------------------------------------------------------
 -- Public surface.
 -- ------------------------------------------------------------------
 return {
@@ -621,6 +785,8 @@ return {
     accept      = accept,
     send        = send,
     recv        = recv,
+    udp_sendto   = udp_sendto,
+    udp_recvfrom = udp_recvfrom,
     getsockname = getsockname,
     -- Helpers that occasionally come in handy outside this module.
     parse_ipv4  = parse_ipv4,

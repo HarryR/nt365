@@ -235,12 +235,16 @@ function M.apply(h, init)
         :set_dword("BusNumber", 0)
 
     -- tcpip per-adapter IP config under Services\<adapter>\Parameters\Tcpip.
-    -- Static config tuned for QEMU's -netdev user NAT defaults.
+    -- Zero-address NTE — NTIP.C:1607-1608 creates the NTE without
+    -- NTE_VALID when nte_addr == NULL_IP_ADDR.  The Lua-side DHCP
+    -- client (nt.net.dhcp.acquire) gets a real lease from QEMU slirp
+    -- (default 10.0.2.15, gateway 10.0.2.2) and promotes the NTE via
+    -- IOCTL_IP_SET_ADDRESS + installs the default route — exactly the
+    -- path the stock NT 3.5 DHCP service used.
     services:key("Vionet1\\Parameters\\Tcpip")
-        :set_dword("EnableDHCP", 0)
-        :set_multi_sz("IPAddress",      { "10.0.2.15" })
-        :set_multi_sz("SubnetMask",     { "255.255.255.0" })
-        :set_multi_sz("DefaultGateway", { "10.0.2.2" })
+        :set_dword("EnableDHCP", 1)
+        :set_multi_sz("IPAddress",  { "0.0.0.0" })
+        :set_multi_sz("SubnetMask", { "0.0.0.0" })
 
     services:key("tdi")
         :set_dword("Type", 1):set_dword("Start", 1):set_dword("ErrorControl", 1)
