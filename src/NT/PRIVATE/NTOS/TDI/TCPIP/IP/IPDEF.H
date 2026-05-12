@@ -152,8 +152,8 @@ typedef struct BufferReference BufferReference;
 // Definitions of flags in pc_flags field
 #define	PACKET_FLAG_OPTIONS		1		// Set if packet has an options buffer.
 #define	PACKET_FLAG_IPBUF		2		// Set if packet is composed of IP buffers.
-/* PACKET_FLAG_RA — stripped with IP reassembly */
-#define	PACKET_FLAG_FW			8		// Set if packet is a forwarding packet.
+/* PACKET_FLAG_RA (0x04) — stripped with IP reassembly */
+/* PACKET_FLAG_FW (0x08) — stripped with IP forwarding (H-020) */
 #define	PACKET_FLAG_IPHDR		0x10	// Packet uses an IP hdr buffer.
 
 //* Transfer data packet context. Used when TD'ing a packet - we store information for the
@@ -244,10 +244,9 @@ typedef struct Interface Interface;
 #define	PTR_VALID				0
 #define	REQ_OPTION_MISSING		1
 
-#define	REDIRECT_NET			0
-#define	REDIRECT_HOST			1
-#define	REDIRECT_NET_TOS		2
-#define	REDIRECT_HOST_TOS		3
+/* REDIRECT_NET / REDIRECT_HOST / REDIRECT_NET_TOS / REDIRECT_HOST_TOS
+   were the code-field constants for outbound ICMP_REDIRECT.  We no
+   longer generate redirects (forwarding strip, H-020). */
 
 extern	uint	DHCPActivityCount;
 

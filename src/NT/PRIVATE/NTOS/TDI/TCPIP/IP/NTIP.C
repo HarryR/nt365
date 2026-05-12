@@ -476,46 +476,16 @@ Return Value:
 
     if (NT_SUCCESS(status)) {
         //
-        // Expected configuration values. We use reasonable defaults if they
-        // aren't available for some reason.
+        // Forwarding removed (H-020): IpEnableRouter / ForwardBroadcasts /
+        // ForwardBufferMemory / NumForwardPackets are no longer read from
+        // the registry.  ici_gateway / ici_fwbcast / ici_fwbufsize /
+        // ici_fwpackets are forced to safe defaults so any residual
+        // consumer sees a non-router configuration.
         //
-        status = GetRegDWORDValue(
-                     myRegKey,
-                     L"IpEnableRouter",
-                     &(IPConfiguration->ici_gateway)
-                     );
-
-        if (!NT_SUCCESS(status)) {
-            TCPTRACE((
-        	    "IP: Unable to read IpEnableRouter value from the registry.\n"
-        		"    Routing will be disabled.\n"
-        		));
-            IPConfiguration->ici_gateway = 0;
-        }
-
-        //
-        // Optional (hidden) values
-        //
-        InitRegDWORDParameter(
-            myRegKey,
-            L"ForwardBufferMemory",
-            &(IPConfiguration->ici_fwbufsize),
-            DEFAULT_FW_BUFSIZE
-            );
-
-        InitRegDWORDParameter(
-            myRegKey,
-            L"ForwardBroadcasts",
-            &(IPConfiguration->ici_fwbcast),
-            FALSE
-            );
-
-        InitRegDWORDParameter(
-            myRegKey,
-            L"NumForwardPackets",
-            &(IPConfiguration->ici_fwpackets),
-            DEFAULT_FW_PACKETS
-            );
+        IPConfiguration->ici_gateway = 0;
+        IPConfiguration->ici_fwbcast = 0;
+        IPConfiguration->ici_fwbufsize = 0;
+        IPConfiguration->ici_fwpackets = 0;
 
         InitRegDWORDParameter(
             myRegKey,
@@ -568,8 +538,8 @@ Return Value:
 		//
         IPConfiguration->ici_fwbcast = 0;
         IPConfiguration->ici_gateway = 0;
-        IPConfiguration->ici_fwbufsize = DEFAULT_FW_BUFSIZE;
-        IPConfiguration->ici_fwpackets = DEFAULT_FW_PACKETS;
+        IPConfiguration->ici_fwbufsize = 0;
+        IPConfiguration->ici_fwpackets = 0;
         IPConfiguration->ici_igmplevel = DEFAULT_IGMP_LEVEL;
         IPConfiguration->ici_deadgwdetect = FALSE;
         IPConfiguration->ici_pmtudiscovery = FALSE;

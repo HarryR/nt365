@@ -1841,10 +1841,10 @@ IPInit()
 
     CTEInitLock(&IPIDLock);
 
-    if (!ci->ici_gateway)
-        InterfaceSize = sizeof(Interface);
-    else
-        InterfaceSize = sizeof(RouteInterface);
+    // Forwarding removed (H-020): always allocate the smaller plain
+    // Interface, never the RouteInterface that carried per-IF
+    // forwarding send queues.
+    InterfaceSize = sizeof(Interface);
 		
 	DeadGWDetect = ci->ici_deadgwdetect;
 	PMTUDiscovery = ci->ici_pmtudiscovery;
@@ -2092,8 +2092,9 @@ IPInit()
     if (NumNTE != 0) {         // We have an NTE, and loopback initialized.
         PNDIS_PACKET    Packet;
 
-		IPSInfo.ipsi_forwarding = (ci->ici_gateway ? IP_FORWARDING :
-			IP_NOT_FORWARDING);
+		// Forwarding removed (H-020): always report IP_NOT_FORWARDING
+		// through MIB-II.  ci->ici_gateway is ignored.
+		IPSInfo.ipsi_forwarding = IP_NOT_FORWARDING;
 		IPSInfo.ipsi_defaultttl = DefaultTTL;
 		/* ipReasmTimeout (RFC 2011): 0 reports "no reassembly support". */
 		IPSInfo.ipsi_reasmtimeout = 0;
@@ -2125,10 +2126,9 @@ IPInit()
 		if (!IGMPInit())
 			IGMPLevel = 1;
 
-		// Should check error code, and log an event here if this fails.
-		CTERefillMem();			
-		InitGateway(ci);
-		
+		// InitGateway() removed with the forwarding strip (H-020).
+		CTERefillMem();
+
         IPFreeConfig(ci);
         CTERefillMem();
 

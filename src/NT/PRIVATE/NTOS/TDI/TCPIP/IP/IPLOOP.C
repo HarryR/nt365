@@ -38,7 +38,7 @@ DEFINE_LOCK_STRUCTURE(LoopLock)
 PNDIS_PACKET    LoopXmitHead = (PNDIS_PACKET)NULL;
 PNDIS_PACKET    LoopXmitTail = (PNDIS_PACKET)NULL;
 CTEEvent        LoopXmitEvent;
-RouteInterface	LoopInterface;              // Loopback interface.
+Interface	LoopInterface;              // Loopback interface.
 uint            LoopXmitRtnRunning = 0;
 
 
@@ -596,22 +596,22 @@ InitLoopback(IPConfigInfo *ConfigInfo)
 	LoopNTE->nte_flags = NTE_VALID | NTE_ACTIVE | NTE_PRIMARY;
 
     CTEInitLock(&LoopNTE->nte_lock);
-    CTEInitLock(&LoopInterface.ri_if.if_lock);
+    CTEInitLock(&LoopInterface.if_lock);
     LoopNTE->nte_mss = LOOPBACK_MSS;
-    LoopNTE->nte_if = (Interface *)&LoopInterface;
-    LoopInterface.ri_if.if_lcontext = LoopNTE;
-    LoopInterface.ri_if.if_xmit = LoopXmit;
-    LoopInterface.ri_if.if_transfer = LoopXfer;
-    LoopInterface.ri_if.if_close = LoopClose;
-    LoopInterface.ri_if.if_invalidate = LoopInvalidate;
-    LoopInterface.ri_if.if_qinfo = LoopQInfo;
-    LoopInterface.ri_if.if_setinfo = LoopSetInfo;
-    LoopInterface.ri_if.if_getelist = LoopGetEList;
-    LoopInterface.ri_if.if_addaddr = LoopAddAddr;
-    LoopInterface.ri_if.if_deladdr = LoopAddAddr;
-	LoopInterface.ri_if.if_bcast = IP_LOCAL_BCST;
-	LoopInterface.ri_if.if_speed = 10000000;
-	LoopInterface.ri_if.if_mtu = LOOPBACK_MSS;
+    LoopNTE->nte_if = &LoopInterface;
+    LoopInterface.if_lcontext = LoopNTE;
+    LoopInterface.if_xmit = LoopXmit;
+    LoopInterface.if_transfer = LoopXfer;
+    LoopInterface.if_close = LoopClose;
+    LoopInterface.if_invalidate = LoopInvalidate;
+    LoopInterface.if_qinfo = LoopQInfo;
+    LoopInterface.if_setinfo = LoopSetInfo;
+    LoopInterface.if_getelist = LoopGetEList;
+    LoopInterface.if_addaddr = LoopAddAddr;
+    LoopInterface.if_deladdr = LoopAddAddr;
+	LoopInterface.if_bcast = IP_LOCAL_BCST;
+	LoopInterface.if_speed = 10000000;
+	LoopInterface.if_mtu = LOOPBACK_MSS;
 
     ARPInfo.lip_mss = LOOPBACK_MSS + sizeof(IPHeader);
 	ARPInfo.lip_index = LoopIndex;
@@ -620,7 +620,7 @@ InitLoopback(IPConfigInfo *ConfigInfo)
     ARPInfo.lip_deladdr = LoopAddAddr;
     ARPInfo.lip_flags = LIP_COPY_FLAG;
 	LoopIndex = NumIF + 1;
-	LoopInterface.ri_if.if_index = LoopIndex;
+	LoopInterface.if_index = LoopIndex;
     CTEInitEvent(&LoopXmitEvent, LoopXmitRtn);
     CTEInitLock(&LoopLock);
 	LoopIFE.if_index = LoopIndex;
@@ -631,7 +631,7 @@ InitLoopback(IPConfigInfo *ConfigInfo)
 	LoopIFE.if_operstatus = IF_STATUS_UP;
 	LoopIFE.if_descrlen = sizeof(LoopName);
 
-    IFList = (Interface *)&LoopInterface;
+    IFList = &LoopInterface;
 	NumIF++;
 
 	NumNTE++;

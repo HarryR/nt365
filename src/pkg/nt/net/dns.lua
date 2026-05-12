@@ -1,6 +1,6 @@
--- nt.dns — minimal pure-Lua DNS A-record resolver over UDP.
+-- nt.net.dns — minimal pure-Lua DNS A-record resolver over UDP.
 --
--- Built on nt.afd. Single-shot per call (no retries), no cache, no
+-- Built on nt.net.afd. Single-shot per call (no retries), no cache, no
 -- search-list expansion — the caller passes a fully-qualified name.
 -- That's deliberate: this module exists so higher layers can resolve
 -- without hard-coded literals, not to be a recursive resolver.
@@ -24,7 +24,7 @@
 -- equivalent (or whatever registry-driven mechanism we end up wiring).
 
 local bit = require('bit')
-local afd = require('nt.afd')
+local afd = require('nt.net.afd')
 
 local M = {}
 

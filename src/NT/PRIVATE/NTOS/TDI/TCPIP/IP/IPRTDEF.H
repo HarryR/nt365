@@ -62,65 +62,11 @@ struct RouteTableEntry {
 #define	HOST_ROUTE_PRI		32
 #define	DEFAULT_ROUTE_PRI	0
 
-typedef struct RouteTableEntry RouteTableEntry;	
+typedef struct RouteTableEntry RouteTableEntry;
 
-//* Forward Q linkage structure.
-struct	FWQ {
-	struct FWQ	*fq_next;
-	struct FWQ	*fq_prev;
-}; /* FWQ */
-
-typedef struct FWQ FWQ;
-
-
-//* Forward context structure, used when TD'ing a packet to be forwarded.
-struct FWContext {
-	PacketContext	fc_pc;					// Dummy packet context for send routines.
-	FWQ				fc_q;					// Queue structure.
-	PNDIS_BUFFER	fc_hndisbuff;			// Pointer to NDIS buffer for header.
-	IPHeader		*fc_hbuff;				// Header buffer.
-	PNDIS_BUFFER	fc_buffhead;			// Head of list of NDIS buffers.
-	PNDIS_BUFFER	fc_bufftail;			// Tail of list of NDIS buffers.
-	uchar			*fc_options;			// Options,
-	Interface		*fc_if;					// Destination interface.
-	IPAddr			fc_outaddr;				// IP address of interface.
-	uint			fc_mtu;					// Max MTU outgoing.
-	NetTableEntry	*fc_srcnte;				// Source NTE.
-	IPAddr			fc_nexthop;				// Next hop.
-	uint			fc_datalength;			// Length in bytes of data.
-	OptIndex		fc_index;				// Index of relevant options.
-	uchar			fc_optlength;			// Length of options.
-	uchar			fc_sos;					// Send on source indicator.
-	uchar			fc_dtype;				// Dest type.
-	uchar			fc_pad;
-}; /* FWContext */
-
-typedef struct FWContext	FWContext;
-
-#define	PACKET_FROM_FWQ(_fwq_) 	(PNDIS_PACKET)((uchar *)(_fwq_) - (offsetof(struct FWContext, fc_q) + \
-	offsetof(NDIS_PACKET, ProtocolReserved)))
-
-//* Route send queue structure. This consists of a dummy FWContext for use as 
-//	a queue head, a count of sends pending on the interface, and a count of packets
-//	in the queue. 
-struct RouteSendQ {
-	FWQ				rsq_qh;
-	uint			rsq_pending;
-	uint			rsq_qlength;
-	uint 			rsq_running;
-	DEFINE_LOCK_STRUCTURE(rsq_lock)
-}; /* RouteSendQ */
-
-typedef struct RouteSendQ RouteSendQ;
-
-
-//* Routing interface, a superset of the ordinary interface when we're configured as a router.
-struct RouteInterface {
-	Interface		ri_if;
-	RouteSendQ		ri_q;
-}; /* RouteInterface */
-
-typedef struct RouteInterface RouteInterface;
+// FWQ / FWContext / RouteSendQ / RouteInterface removed.  These were
+// the forwarding-path data structures (per-interface send queues,
+// per-packet TD context).  Forwarding is gone (H-020).
 
 extern IPMask  IPMaskTable[];
 	

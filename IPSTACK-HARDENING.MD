@@ -98,19 +98,25 @@ Conventions:
 Properties we want to assert and keep asserted. Each is its own work item;
 violations turn into findings.
 
-- I1. **No IP forwarding, ever.** Registry, init path, and any runtime
-  toggle must default off. To be enforced and verified by boot-time check.
-- I2. **No source-routed packets accepted for local delivery.** LSRR/SSRR
-  options on inbound packets cause drop, not processing. (Distinct from I1:
-  a non-forwarding host can still honour source routing for itself.)
-- I3. **No ICMP redirect acceptance.** Redirect arrivals are counted and
-  dropped; routing table is not mutated by network input.
+- ~~I1. **No IP forwarding, ever.**~~ Retired 2026-05-12: the
+  forwarding code path has been removed (`IPForward`, `Redirect`,
+  `FWContext` pool, `RouteInterface`, `BCastRSQ`, registry knobs).
+  There is no longer anything for an invariant to guard.
+- ~~I2. **No source-routed packets accepted for local delivery.**~~
+  Retired 2026-05-12: `CheckLocalOptions` returns `DEST_INVALID` for
+  any inbound packet carrying LSRR/SSRR.  The "forward this for me"
+  branch that used to honour source routing on a non-forwarding host
+  is gone (no forwarding path to dispatch to).
+- ~~I3. **No ICMP redirect acceptance.**~~ Retired 2026-05-12: ICMP
+  type-5 reception is dropped at dispatch in `ICMP.C`; the `Redirect`
+  function in `IPROUTE.C` is gone.  Routing table cannot be mutated
+  by network input.
 - I4. **Reassembly is bounded.** Total in-flight reassembly memory and
   per-source context count have explicit caps; oldest contexts evict on
   pressure; per-context timeout is enforced on a real timer, not opportunistic.
-- I5. **Datagram size is bounded before allocation.** Any path that adds
-  fragment data computes the resulting total length in a width that cannot
-  alias 16-bit, and rejects > 65535 before touching reassembly state.
+- ~~I5. **Datagram size is bounded before allocation.**~~ Retired
+  2026-05-11: IP-layer reassembly is gone; there is no path that
+  accumulates fragment data into a single allocation.
 - I6. **TCB allocation is bounded per listener.** SYN-RCVD count per
   listening AddrObj has a cap; over-cap drops the oldest half-open or the
   new SYN, deterministically.
@@ -271,13 +277,17 @@ pinned on first analysis.
 - **Reachable:** T1 (delivery-to-self), T3 (impersonation).
 - **Summary:** LSRR/SSRR options are processed for inbound packets even
   with forwarding off.
-- **Invariant violated:** I2.
-- **Analysis:** TBD. Confirm whether forwarding=off short-circuits any of
-  this. Determine whether any legitimate inbound traffic in our deployment
-  would carry these options (expected: none).
-- **Reproducer:** TBD.
-- **Decision:** TBD.
-- **Status:** LOGGED.
+- **Invariant violated:** I2 (retired).
+- **Decision:** 2026-05-12 — strip inbound source-route processing.
+  `CheckLocalOptions` returns `DEST_INVALID` for any packet whose
+  options include LSRR/SSRR; the packet is dropped and counted in
+  `ipsi_inhdrerrors`.  No `ICMP_PARAM_PROBLEM` reply is sent (the
+  original would, which advertises that this stack is responding).
+  Outbound `IP_FLAG_SSRR` fast-path in `IPXMIT.C` also removed —
+  upper layers in this tree don't generate source-routed options.
+- **Test:** verified by clean build; runtime probe pending the test
+  harness.
+- **Status:** INVALID — code path removed.
 
 ### H-007 — IP option-walk infinite loop on Length<2
 
@@ -312,12 +322,16 @@ pinned on first analysis.
   current gateway, but spoofing a single IPv4 source on shared L2 is cheap).
 - **Reachable:** T3 primarily; T1 if the upstream provider does not filter
   inbound spoofed-source packets.
-- **Invariant violated:** I3.
-- **Analysis:** TBD. Confirm exact validation. We do not need redirects in
-  our deployment.
-- **Reproducer:** TBD.
-- **Decision:** TBD.
-- **Status:** LOGGED.
+- **Invariant violated:** I3 (retired).
+- **Decision:** 2026-05-12 — strip ICMP redirect reception and the
+  `Redirect()` route-table mutator entirely.  Inbound type-5 packets
+  are counted in `icmps_redirects` and dropped at dispatch; the
+  routing table cannot be modified by network input.  We never
+  needed redirects in our deployment (single upstream gateway,
+  whatever DHCP says is it).
+- **Test:** verified by clean build; runtime probe pending the test
+  harness.
+- **Status:** INVALID — code path removed.
 
 ### H-010 — ICMP echo reply size uncapped
 
@@ -450,11 +464,24 @@ pinned on first analysis.
 - **Class:** Configuration invariant.
 - **Severity:** HIGH if violated (turns the box into an open relay for
   many of the above).
-- **Invariant violated:** I1.
-- **Analysis:** TBD. Confirm default in `INIT.C`; confirm there is no input
-  channel that flips it without admin auth; consider compile-out of the
-  forwarding code path entirely for our build.
-- **Status:** LOGGED.
+- **Invariant violated:** I1 (retired).
+- **Decision:** 2026-05-12 — compile-out (resolves OQ-1).  Removed:
+  `IPForward` (~280 LOC) + `FreeFWPacket` / `FWSendComplete` /
+  `TransmitFWPacket` / `SendFWPacket` / `RemoveRandomFWPacket` /
+  `GetFWBuffer` / `GetFWPacket` (~520 LOC) + `Redirect` (~60 LOC) +
+  `FWContext` / `FWQ` / `RouteSendQ` / `RouteInterface` structs +
+  globals (`ForwardPackets`, `RouterConfigured`, `ForwardBCast`,
+  `MaxFWSending`, `BCastRSQ`, `FWBufFree`, `FWPacketFree`).  Registry
+  knobs `IpEnableRouter` / `ForwardBroadcasts` / `ForwardBufferMemory`
+  / `NumForwardPackets` no longer read; `InitGateway()` removed.
+  `IPSInfo.ipsi_forwarding` is hard-coded to `IP_NOT_FORWARDING` and
+  `SetIPInfo` refuses any attempt to flip it.  `PACKET_FLAG_FW` and
+  `REDIRECT_*` defines removed.  Inbound `IPForward()` callers in
+  `IPRCV.C` (broadcast-relay completion paths + `forward:` label)
+  replaced with drop+counter.
+- **Test:** verified by clean build; runtime probe pending the test
+  harness.
+- **Status:** INVALID — code path removed.
 
 ## 7. Decision log
 
@@ -500,9 +527,8 @@ per entry, dated. Append-only.
 
 Tracked separately from per-finding TBDs because they cut across findings.
 
-- OQ-1. Do we want to compile the forwarding path out entirely, or leave it
-  in and gate at runtime? Compile-out is harder to reason about wrt source
-  drift; runtime-gate has a flip-the-bit risk.
+- ~~OQ-1.~~ Resolved 2026-05-12 — compile-out chosen.  Forwarding code
+  removed entirely; nothing left to flip.
 - OQ-2. What is our policy when an attacker fills a bounded structure (frag
   table, half-open queue, ARP cache)? Drop-oldest, drop-new, randomized
   drop, or per-source quota? Same answer for all three?
@@ -525,3 +551,13 @@ Tracked separately from per-finding TBDs because they cut across findings.
   AFILTER/FFILTER/TFILTER deleted, MINIPORT/WRAPPER `MediaType` arms removed,
   registration gate added. Findings H-001 .. H-005 marked INVALID. Invariant
   I5 retires. Build verified clean.
+- 2026-05-12 — Strip landed: IP forwarding + ICMP redirect + inbound
+  source routing.  `IPForward`, `Redirect`, FW packet pool, `FWContext`
+  / `RouteInterface` / `RouteSendQ` structs, `ForwardPackets` /
+  `RouterConfigured` / `ForwardBCast` globals, registry knobs
+  (`IpEnableRouter`, `ForwardBroadcasts`, `ForwardBufferMemory`,
+  `NumForwardPackets`), and `InitGateway` all gone.  ICMP type-5 dropped
+  at dispatch; inbound LSRR/SSRR silent-dropped at `CheckLocalOptions`;
+  `IPSInfo.ipsi_forwarding` hard-locked to `IP_NOT_FORWARDING`.  Findings
+  H-006, H-009, H-020 marked INVALID.  Invariants I1, I2, I3 retire.
+  OQ-1 resolved (compile-out).  Build verified clean.

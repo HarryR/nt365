@@ -327,21 +327,23 @@ CheckLocalOptions(NetTableEntry *SrcNTE, IPHeader UNALIGNED *Header,
 	OptInfo->ioi_optlength = HeaderLength - sizeof(IPHeader); 						
 	
 
-	// We have options of some sort. The packet may or may not be bound for us.
+	// We have options of some sort.  Validate them.  ParseRcvdOptions
+	// errors are silently dropped (no ICMP_PARAM_PROBLEM reply) to
+	// avoid advertising stack fingerprint over invalid input.
 	Index.oi_srindex = MAX_OPT_SIZE;
 	if ((ErrIndex = ParseRcvdOptions(OptInfo, &Index)) < MAX_OPT_SIZE) {
-		SendICMPErr(SrcNTE->nte_addr, Header, ICMP_PARAM_PROBLEM, PTR_VALID,
-			net_long((ulong)ErrIndex + sizeof(IPHeader)));
-			return DEST_INVALID; 								// Parameter error.
-		}
-			
-	// If there's no source route, or if the destination is a broadcast, we'll take
-	// it. If it is a broadcast DeliverToUser will forward it when it's done, and
-	// the forwarding code will reprocess the options.
-	if (Index.oi_srindex == MAX_OPT_SIZE || IS_BCAST_DEST(DestType))
-			return DEST_LOCAL;
-	else 		
-		return DEST_REMOTE;
+		return DEST_INVALID;
+	}
+
+	// H-006: source-routed packets are dropped on receive.  LSRR/SSRR
+	// are not honoured.  Forwarding is gone, and the only legitimate
+	// use of an inbound source-route on a single-NIC guest is L2
+	// impersonation.  ParseRcvdOptions still records the SR index so
+	// we can silently drop here.
+	if (Index.oi_srindex != MAX_OPT_SIZE)
+		return DEST_INVALID;
+
+	return DEST_LOCAL;
 
 }
 
@@ -390,10 +392,7 @@ TDUserRcv(void *NetContext, PNDIS_PACKET Packet, NDIS_STATUS Status, uint DataSi
 		RcvBuf.ipr_size = DataSize;
 
 		DeliverToUser(NTE, Context->tdc_nte, Header, &RcvBuf, DataSize, &OptInfo, DestType);
-		// If it's a broadcast packet forward it on.
-		if (IS_BCAST_DEST(DestType))
-			IPForward(NTE, Header, Context->tdc_hlength, RcvBuf.ipr_buffer, DataSize,
-				NULL, 0, DestType);
+		// Broadcast-forwarding removed with H-020; nothing to relay.
 	}
 	
 	SrcIF = NTE->nte_if;
@@ -578,12 +577,8 @@ IPRcv(void *MyContext, void *Data, uint DataSize, uint TotalSize, NDIS_HANDLE LC
 						// it.
 						DeliverToUser(NTE, DestNTE, IPH, &RcvBuf, IPDataLength,
 							&OptInfo, DestType);
-						// When we're here, we're through with the packet
-						// locally. If it's a broadcast packet forward it on.
-						if (IS_BCAST_DEST(DestType)) {
-							IPForward(NTE, IPH, HeaderLength, Data, IPDataLength,
-								NULL, 0, DestType);
-						}
+						// Broadcast-forwarding removed with H-020;
+						// packet is delivered locally and discarded.
 						if (TDC != NULL) {
 							CTEGetLockAtDPC(&RcvIF->if_lock, &Handle);
 							TDC->tdc_common.pc_link = RcvIF->if_tdpacket;
@@ -604,15 +599,13 @@ IPRcv(void *MyContext, void *Data, uint DataSize, uint TotalSize, NDIS_HANDLE LC
 	
 				}
 	
-				// Not for us, may need to be forwarded. It might be an outgoing
-				// broadcast that came in through a source route, so we need to
-				// check that.
+				// H-020: forwarding removed.  Anything not destined
+				// for us is dropped and counted.  The `forward:` label
+				// is retained as a goto target for CheckLocalOptions
+				// rejects (which set DestType=DEST_REMOTE so options
+				// would have been re-validated by the forwarding path).
 forward:
-				if (DestType != DEST_INVALID)
-					IPForward(NTE, IPH, HeaderLength, Data, DataSize,
-						LContext1, LContext2, DestType);
-				else
-					IPSInfo.ipsi_inaddrerrors++;
+				IPSInfo.ipsi_inaddrerrors++;
 				return;
 			}										// Bad version		
 		} 											// Bad checksum
@@ -638,12 +631,10 @@ IPTDComplete(void *MyContext, PNDIS_PACKET Packet, NDIS_STATUS Status, uint Byte
 {
 	TDContext		*TDC = (TDContext *)Packet->ProtocolReserved;
 
-	// PACKET_FLAG_RA branch removed with IP reassembly — no caller ever
-	// sets that flag now.  Forwarding (PACKET_FLAG_FW) vs regular user
-	// receive remain.
-	if (TDC->tdc_common.pc_flags & PACKET_FLAG_FW)
-		SendFWPacket(Packet, Status, BytesCopied);
-	else
-		TDUserRcv(MyContext, Packet, Status, BytesCopied);
+	// PACKET_FLAG_RA branch removed with IP reassembly; PACKET_FLAG_FW
+	// branch removed with IP forwarding (H-020).  Only the
+	// regular user-receive completion path remains.
+	(void)TDC;
+	TDUserRcv(MyContext, Packet, Status, BytesCopied);
 }
 

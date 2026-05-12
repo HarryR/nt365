@@ -127,7 +127,7 @@ FreeIPPacket(PNDIS_PACKET Packet)
 #endif // VXD
 
 	// If there's no IP header on this packet, we have nothing else to do.
-	if (!(pc->pc_common.pc_flags & (PACKET_FLAG_IPHDR | PACKET_FLAG_FW))) {
+	if (!(pc->pc_common.pc_flags & PACKET_FLAG_IPHDR)) {
 		CTEAssert(pc->pc_common.pc_flags == 0);
 		
 		NdisReinitializePacket(Packet);
@@ -167,10 +167,9 @@ FreeIPPacket(PNDIS_PACKET Packet)
 		CTEAssert(NextBuffer != NULL);
 
         NdisQueryBuffer(OptBuffer, &Options, &OptSize);
-        // If this is a FW packet, the options don't really belong to us, so
-        // don't free them.
-        if (!(pc->pc_common.pc_flags & PACKET_FLAG_FW))
-            CTEFreeMem(Options);
+        // Forwarding is gone, so the only options reaching here are
+        // ones we generated for outbound packets; always free them.
+        CTEFreeMem(Options);
         NdisFreeBuffer(OptBuffer);
         pc->pc_common.pc_flags &= ~PACKET_FLAG_OPTIONS;
     }
@@ -183,20 +182,19 @@ FreeIPPacket(PNDIS_PACKET Packet)
     }
 
 
-	if (!(pc->pc_common.pc_flags & PACKET_FLAG_FW)) {
-		FreeIPHdrBuffer(OldBuffer);
-		NdisReinitializePacket(Packet);
+	// Forwarding is gone; always free the IP header buffer.
+	FreeIPHdrBuffer(OldBuffer);
+	NdisReinitializePacket(Packet);
 #ifdef VXD
-        pc->pc_common.pc_link = PacketList;
-        PacketList = Packet;
+	pc->pc_common.pc_link = PacketList;
+	PacketList = Packet;
 #else
-    	ExInterlockedPushEntryList(
-        	STRUCT_OF(SINGLE_LIST_ENTRY, &PacketList, Next),
-        	STRUCT_OF(SINGLE_LIST_ENTRY, &(pc->pc_common.pc_link), Next),
-        	&HeaderLock
-        );
+	ExInterlockedPushEntryList(
+		STRUCT_OF(SINGLE_LIST_ENTRY, &PacketList, Next),
+		STRUCT_OF(SINGLE_LIST_ENTRY, &(pc->pc_common.pc_link), Next),
+		&HeaderLock
+	);
 #endif
-	}
 
     return NextBuffer;
 }
@@ -1098,7 +1096,6 @@ SendIPBCast(NetTableEntry *SrcNTE, IPAddr Destination, PNDIS_PACKET Packet,
             *(PacketContext *)NewPacket->ProtocolReserved = *PContext;
             *NewHeader = *IPH;
             (*(PacketContext*)NewPacket->ProtocolReserved).pc_common.pc_flags |= PACKET_FLAG_IPBUF;
-            (*(PacketContext*)NewPacket->ProtocolReserved).pc_common.pc_flags &= ~PACKET_FLAG_FW;
             if (Options)  {
                 // We have options, make a copy.
                 if ((NewOptions = CTEAllocMem(OptionSize)) == (uchar *)NULL) {
@@ -1354,16 +1351,9 @@ IPTransmit(void *Context, void *SendContext, PNDIS_BUFFER Buffer, uint DataSize,
         }
 
         // See if we have any options. If we do, copy them now.
+        // H-006: outbound SSRR fast-path (force Dest==FirstHop) removed;
+        // upper layers never produce source-routed options on MicroNT.
         if (OptInfo->ioi_options != NULL) {
-            // If we have a SSRR, make sure that we're sending straight to the
-            // first hop.
-            if (OptInfo->ioi_flags & IP_FLAG_SSRR) {
-                if (!IP_ADDR_EQUAL(Dest, FirstHop)) {
-                    FreeIPPacket(Packet);
-                    IPSInfo.ipsi_outnoroutes++;
-                    return IP_DEST_HOST_UNREACHABLE;
-                }
-            }
             Options = CTEAllocMem(OptionSize = OptInfo->ioi_optlength);
             if (Options == (uchar *)NULL) {
                 FreeIPPacket(Packet);

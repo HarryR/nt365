@@ -257,7 +257,7 @@ function M.apply(h, init)
     services:key("tcpip\\Parameters")
 
     -- afd.sys — Ancillary Function Driver, \Device\Afd.  Sits above TDI;
-    -- userland (Lua via nt.afd) opens \Device\Afd with an EA buffer
+    -- userland (Lua via nt.net.afd) opens \Device\Afd with an EA buffer
     -- naming the underlying TDI transport (\Device\Tcp / \Device\Udp).
     services:key("afd")
         :set_dword("Type", 1):set_dword("Start", 1):set_dword("ErrorControl", 1)

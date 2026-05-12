@@ -758,17 +758,24 @@ ICMPRcv(NetTableEntry *NTE, IPAddr Dest, IPAddr Src, IPAddr LocalAddr, IPRcvBuf 
 
     switch (Header->ich_type) {
 
+        case ICMP_REDIRECT:
+            // H-009: redirect reception removed.  Hostile L2 neighbours
+            // could otherwise inject a host route to any destination
+            // through an attacker-controlled gateway.  Count and drop.
+            ICMPInStats.icmps_redirects++;
+            ICMPInStats.icmps_errors++;
+            break;
+
         case ICMP_DEST_UNREACH:
         case ICMP_TIME_EXCEED:
         case ICMP_PARAM_PROBLEM:
         case ICMP_SOURCE_QUENCH:
-        case ICMP_REDIRECT:
 
 			if (Data == NULL || Size < sizeof(IPHeader)) {
 				ICMPInStats.icmps_errors++;
 				return IP_SUCCESS; 					// No data, error.
 			}
-			
+
 			IPH = (IPHeader UNALIGNED *)Data;
 			HeaderLength = (IPH->iph_verlen & (uchar)~IP_VER_FLAG) << 2;
 			if (Size < (HeaderLength + MIN_ERRDATA_LENGTH)) {
@@ -785,24 +792,17 @@ ICMPRcv(NetTableEntry *NTE, IPAddr Dest, IPAddr Src, IPAddr LocalAddr, IPRcvBuf 
 				return IP_SUCCESS;				// Bad src in header.
 			}
 
-			if (Header->ich_type != ICMP_REDIRECT) {
-				
-				UpdateICMPStats(&ICMPInStats, Header->ich_type);
-				
-				if (ULStatus = FindULStatus(IPH->iph_protocol)) {
-					(void)(*ULStatus)(IP_NET_STATUS,
-						ICMPMapStatus(Header->ich_type, Header->ich_code),
-						IPH->iph_dest, IPH->iph_src, Src, Header->ich_param,
-						(uchar *)IPH + HeaderLength);
-				}
-				if (Header->ich_code == FRAG_NEEDED)
-					RouteFragNeeded(IPH,
-						(ushort)net_short(*((ushort UNALIGNED *)&Header->ich_param + 1)));
-			} else {
-				ICMPInStats.icmps_redirects++;
-				Redirect(NTE, Src, IPH->iph_dest, IPH->iph_src,
-					Header->ich_param);
+			UpdateICMPStats(&ICMPInStats, Header->ich_type);
+
+			if (ULStatus = FindULStatus(IPH->iph_protocol)) {
+				(void)(*ULStatus)(IP_NET_STATUS,
+					ICMPMapStatus(Header->ich_type, Header->ich_code),
+					IPH->iph_dest, IPH->iph_src, Src, Header->ich_param,
+					(uchar *)IPH + HeaderLength);
 			}
+			if (Header->ich_code == FRAG_NEEDED)
+				RouteFragNeeded(IPH,
+					(ushort)net_short(*((ushort UNALIGNED *)&Header->ich_param + 1)));
 			break;
 
 

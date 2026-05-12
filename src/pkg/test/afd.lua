@@ -1,4 +1,4 @@
--- nt.afd — TCP/UDP sockets, diagnostic-traced order.
+-- nt.net.afd — TCP/UDP sockets, diagnostic-traced order.
 --
 -- Test order is loopback-first (no network dependency), external
 -- second. Each step prints a DIAG line so we can see exactly which
@@ -8,8 +8,8 @@ local ffi  = require('ffi')
 local bit  = require('bit')
 local t    = require('test')
 local ke   = require('nt.dll.ke')
-local afd  = require('nt.afd')
-local dns  = require('nt.dns')
+local afd  = require('nt.net.afd')
+local dns  = require('nt.net.dns')
 
 t.suite("afd")
 
@@ -97,7 +97,7 @@ t.test("TCP loopback exchange on 127.0.0.1", function()
     local th = thread.run([[
         local ffi    = require('ffi')
         local handle = require('nt.dll.handle')
-        local afd    = require('nt.afd')
+        local afd    = require('nt.net.afd')
         local listener_h = ffi.cast('HANDLE', tonumber(PAYLOAD))
         local listener  = handle.borrow(listener_h)
         local peer = afd.accept(listener, 2.0)

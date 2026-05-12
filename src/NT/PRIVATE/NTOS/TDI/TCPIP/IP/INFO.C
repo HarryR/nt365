@@ -497,17 +497,18 @@ IPSetInfo(TDIObjectID *ID, void *Buffer, uint Size)
 	} else {
 		if (ID->toi_id == IP_MIB_STATS_ID) {
 			IPSNMPInfo		*Info = (IPSNMPInfo *)Buffer;
-			
-			// Setting information about TTL and/or routing.
-			if (Info->ipsi_defaultttl > 255 || (!RouterConfigured &&
-				Info->ipsi_forwarding == IP_FORWARDING)) {
+
+			// Setting TTL.  Forwarding cannot be turned on at
+			// runtime — the forwarding code path is gone (H-020),
+			// so requests to flip ipsi_forwarding to IP_FORWARDING
+			// are refused; IP_NOT_FORWARDING is accepted as a no-op.
+			if (Info->ipsi_defaultttl > 255 ||
+				Info->ipsi_forwarding == IP_FORWARDING) {
 				return TDI_INVALID_PARAMETER;
 			}
-			
+
 			DefaultTTL = Info->ipsi_defaultttl;
-			ForwardPackets = Info->ipsi_forwarding == IP_FORWARDING ? TRUE :
-				FALSE;
-			
+
 			return TDI_SUCCESS;
 		}
 		return TDI_INVALID_PARAMETER;

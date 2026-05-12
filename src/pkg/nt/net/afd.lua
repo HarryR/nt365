@@ -1,4 +1,4 @@
--- nt.afd — IPv4 sockets over \Device\Afd.
+-- nt.net.afd — IPv4 sockets over \Device\Afd.
 --
 -- AFD is the kernel-side socket emulation layer above TDI. We open
 -- \Device\Afd with an EA buffer naming the underlying transport
@@ -203,15 +203,15 @@ local AfdOpenPacketName = "AfdOpenPacketXX"
 -- (no DNS resolver yet); callers pass numeric IPs.
 local function parse_ipv4(s)
     if type(s) ~= "string" then
-        error("nt.afd: expected dotted-quad string, got " .. type(s), 3)
+        error("nt.net.afd: expected dotted-quad string, got " .. type(s), 3)
     end
     local b0, b1, b2, b3 = s:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
     if not b0 then
-        error("nt.afd: bad IPv4 address: " .. s, 3)
+        error("nt.net.afd: bad IPv4 address: " .. s, 3)
     end
     b0, b1, b2, b3 = tonumber(b0), tonumber(b1), tonumber(b2), tonumber(b3)
     if b0 > 255 or b1 > 255 or b2 > 255 or b3 > 255 then
-        error("nt.afd: octet out of range in: " .. s, 3)
+        error("nt.net.afd: octet out of range in: " .. s, 3)
     end
     return b0, b1, b2, b3
 end
@@ -398,7 +398,7 @@ local function socket(kind)
         endpoint_type   = AfdEndpointTypeDatagram
         transport_name  = "\\Device\\Udp"
     else
-        error("nt.afd.socket: kind must be 'tcp' or 'udp', got " ..
+        error("nt.net.afd.socket: kind must be 'tcp' or 'udp', got " ..
               tostring(kind), 2)
     end
 

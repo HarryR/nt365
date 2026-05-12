@@ -16,17 +16,8 @@ extern struct Interface	*LookupNextHop(IPAddr Dest, IPAddr Src,
 extern uchar 			GetAddrType(IPAddr Address);
 extern uchar			GetLocalNTE(IPAddr Address, NetTableEntry **NTE);
 extern uchar			IsBCastOnNTE(IPAddr Address, NetTableEntry *NTE);
-extern void				SendFWPacket(PNDIS_PACKET Packet, NDIS_STATUS Status,
-							uint DataLength);
-extern void				IPForward(NetTableEntry *SrcNTE,
-								IPHeader UNALIGNED *Header, uint HeaderLength,
-								void *Data, uint BufferLength,
-								NDIS_HANDLE LContext1, uint LContext2,
-								uchar DestType);
 
 extern uint				AttachRCEToRTE(RouteCacheEntry *RCE);
-extern void				Redirect(NetTableEntry *NTE, IPAddr RDSrc,
-							IPAddr Target, IPAddr Src, IPAddr FirstHop);
 extern IP_STATUS		AddRoute(IPAddr Destination, IPMask Mask,
 							IPAddr FirstHop, Interface *OutIF, uint MTU,
 							uint Metric, uint Proto, uint AType);
@@ -53,14 +44,11 @@ extern IP_STATUS		IPGetPInfo(IPAddr Dest, IPAddr Src, uint *NewMTU,
 extern int				InitRouting(struct IPConfigInfo    *ci);
 extern uint				InitNTERouting(NetTableEntry *NTE, uint NumGWs,
 							IPAddr *GW);
-extern uint				InitGateway(struct IPConfigInfo *ci);
 
 EXTERNAL_LOCK(RouteTableLock)
 
 extern uint				DeadGWDetect;
 extern uint				PMTUDiscovery;
-extern uchar            ForwardPackets;
-extern uchar			RouterConfigured;
 
 #define	IPADDR_LOCAL		0xffffffff		// Indicates that IP address is
 											// directly connected.
