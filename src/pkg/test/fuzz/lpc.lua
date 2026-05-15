@@ -222,44 +222,65 @@ for _, bm in ipairs(BAD_MESSAGES) do
 end
 
 -- ------------------------------------------------------------------
--- NtConnectPort — client connect. Blocking once a real port is found,
--- so cases use bad pointers or a nonexistent name (name lookup fails
--- before any connect/block).
+-- NtConnectPort — client connect. The prologue probes EVERY pointer
+-- parameter before the name lookup + connect, so a corrupt slot is
+-- rejected before any blocking wait. Every pointer slot is swept: a
+-- kernel-range pointer in particular flushes any deref-before-probe
+-- (this is the shape of the ClientView/ServerView length-read-before-
+-- probe that lived in LPCCONN.C).
 -- ------------------------------------------------------------------
 
-for _, bad in ipairs(OOR) do
-    t.test("NtConnectPort rejects PortHandle = " .. bad.name .. " pointer", function()
-        local name = str.to_utf16("\\NoSuchLpcPortXYZ")
-        local qos  = lpc.default_qos()
-        local st = err.normalize(ntdll.NtConnectPort(
-            bad.make('HANDLE *'), name.us, qos,
-            nil, nil, nil, nil, nil))
-        rejects("NtConnectPort/bad-handle", st)
-    end)
+-- Build an all-valid NtConnectPort arg list, then corrupt one slot.
+local function connect_call(slot_idx, ptr)
+    local h    = ffi.new('HANDLE[1]')
+    local name = str.to_utf16("\\NoSuchLpcPortZZZ")
+    local qos  = lpc.default_qos()
+    local a = { h, name.us, qos, nil, nil, nil, nil, nil }
+    if slot_idx then a[slot_idx] = ptr end
+    return err.normalize(ntdll.NtConnectPort(
+        a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]))
+end
 
-    t.test("NtConnectPort rejects PortName = " .. bad.name .. " pointer", function()
-        local h   = ffi.new('HANDLE[1]')
-        local qos = lpc.default_qos()
-        local st = err.normalize(ntdll.NtConnectPort(
-            h, bad.make('UNICODE_STRING *'), qos,
-            nil, nil, nil, nil, nil))
-        rejects("NtConnectPort/bad-name", st)
+-- Required pointer slots — both NULL and kernel-range are invalid.
+-- SecurityQos is probed unconditionally, so it belongs here too.
+local CONNECT_REQ_SLOTS = {
+    { name = "PortHandle",  idx = 1, ct = 'HANDLE *' },
+    { name = "PortName",    idx = 2, ct = 'UNICODE_STRING *' },
+    { name = "SecurityQos", idx = 3, ct = 'SECURITY_QUALITY_OF_SERVICE *' },
+}
+for _, slot in ipairs(CONNECT_REQ_SLOTS) do
+    for _, bad in ipairs(OOR) do
+        t.test("NtConnectPort rejects " .. slot.name .. " = " .. bad.name .. " pointer", function()
+            rejects("NtConnectPort/" .. slot.name,
+                    connect_call(slot.idx, bad.make(slot.ct)))
+        end)
+    end
+end
+
+-- Optional IN OUT view slots — a NULL there just means "absent" (a
+-- valid call), so only a kernel-range pointer meaningfully exercises
+-- the probe path.
+local CONNECT_VIEW_SLOTS = {
+    { name = "ClientView", idx = 4, ct = 'PORT_VIEW *' },
+    { name = "ServerView", idx = 5, ct = 'REMOTE_PORT_VIEW *' },
+}
+for _, slot in ipairs(CONNECT_VIEW_SLOTS) do
+    t.test("NtConnectPort rejects " .. slot.name .. " = kernel-range pointer", function()
+        rejects("NtConnectPort/" .. slot.name,
+                connect_call(slot.idx, ffi.cast(slot.ct, 0x80000000)))
     end)
 end
 
 t.test("NtConnectPort rejects a nonexistent port name", function()
-    local h    = ffi.new('HANDLE[1]')
-    local name = str.to_utf16("\\NoSuchLpcPortZZZ")
-    local qos  = lpc.default_qos()
-    local st = err.normalize(ntdll.NtConnectPort(
-        h, name.us, qos, nil, nil, nil, nil, nil))
-    rejects("NtConnectPort/nonexistent-name", st)
+    -- All slots valid: the call clears the probe block and fails
+    -- cleanly at name resolution.
+    rejects("NtConnectPort/nonexistent-name", connect_call())
 end)
 
 -- ------------------------------------------------------------------
 -- NtAcceptConnectPort — (HANDLE *out, ctx, PORT_MESSAGE *connreq,
--- accept, views). Non-blocking. Fuzz the out-handle and the
--- connection-request message pointer.
+-- accept, ServerView, ClientView). Non-blocking. Fuzz the out-handle,
+-- the connection-request message pointer, and both view slots.
 -- ------------------------------------------------------------------
 
 for _, bad in ipairs(OOR) do
@@ -276,6 +297,26 @@ for _, bad in ipairs(OOR) do
         local st = err.normalize(ntdll.NtAcceptConnectPort(
             h, nil, bad.make('PORT_MESSAGE *'), 1, nil, nil))
         rejects("NtAcceptConnectPort/bad-connreq", st)
+    end)
+end
+
+-- Optional IN OUT view slots — kernel-range only (NULL = "absent").
+-- These flush any deref-before-probe: LPCCOMPL.C read ServerView->
+-- Length / ClientView->Length before ProbeForWrite, the same shape
+-- as NtConnectPort.
+local ACCEPT_VIEW_SLOTS = {
+    { name = "ServerView", idx = 5, ct = 'PORT_VIEW *' },
+    { name = "ClientView", idx = 6, ct = 'REMOTE_PORT_VIEW *' },
+}
+for _, slot in ipairs(ACCEPT_VIEW_SLOTS) do
+    t.test("NtAcceptConnectPort rejects " .. slot.name .. " = kernel-range pointer", function()
+        local h       = ffi.new('HANDLE[1]')
+        local connreq = lpc.new_message(64)
+        local a = { h, nil, ffi.cast('PORT_MESSAGE *', connreq), 1, nil, nil }
+        a[slot.idx] = ffi.cast(slot.ct, 0x80000000)
+        local st = err.normalize(ntdll.NtAcceptConnectPort(
+            a[1], a[2], a[3], a[4], a[5], a[6]))
+        rejects("NtAcceptConnectPort/" .. slot.name, st)
     end)
 end
 

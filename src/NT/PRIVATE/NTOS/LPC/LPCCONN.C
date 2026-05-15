@@ -227,27 +227,34 @@ Return Value:
         try {
             ProbeForWriteHandle( PortHandle );
 
+            //
+            // Probe ClientView/ServerView before touching any field.
+            // They are IN OUT pointers; reading ->Length on an
+            // unprobed kernel-range pointer would bugcheck past the
+            // try/except, which is a fault catcher, not a pointer
+            // validator.
+            //
+
             if (ARGUMENT_PRESENT( ClientView )) {
+                ProbeForWrite( ClientView,
+                               sizeof( *ClientView ),
+                               sizeof( ULONG )
+                             );
                 if (ClientView->Length != sizeof( *ClientView )) {
                     return( STATUS_INVALID_PARAMETER );
                     }
 
                 CapturedClientView = *ClientView;
-                ProbeForWrite( ClientView,
-                               sizeof( *ClientView ),
-                               sizeof( ULONG )
-                             );
                 }
 
             if (ARGUMENT_PRESENT( ServerView )) {
-                if (ServerView->Length != sizeof( *ServerView )) {
-                    return( STATUS_INVALID_PARAMETER );
-                    }
-
                 ProbeForWrite( ServerView,
                                sizeof( *ServerView ),
                                sizeof( ULONG )
                              );
+                if (ServerView->Length != sizeof( *ServerView )) {
+                    return( STATUS_INVALID_PARAMETER );
+                    }
                 }
 
             if (ARGUMENT_PRESENT( MaxMessageLength )) {

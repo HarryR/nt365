@@ -239,27 +239,35 @@ Return Value:
                         );
 
             CapturedReplyMessage = *ConnectionRequest;
+
+            //
+            // Probe ServerView/ClientView before touching any field.
+            // They are IN OUT pointers; reading ->Length on an
+            // unprobed kernel-range pointer would bugcheck past the
+            // try/except, which is a fault catcher, not a pointer
+            // validator.
+            //
+
             if (ARGUMENT_PRESENT( ServerView )) {
+                ProbeForWrite( ServerView,
+                               sizeof( *ServerView ),
+                               sizeof( ULONG )
+                             );
                 if (ServerView->Length != sizeof( *ServerView )) {
                     return( STATUS_INVALID_PARAMETER );
                     }
 
                 CapturedServerView = *ServerView;
-                ProbeForWrite( ServerView,
-                               sizeof( *ServerView ),
-                               sizeof( ULONG )
-                             );
                 }
 
             if (ARGUMENT_PRESENT( ClientView )) {
-                if (ClientView->Length != sizeof( *ClientView )) {
-                    return( STATUS_INVALID_PARAMETER );
-                    }
-
                 ProbeForWrite( ClientView,
                                sizeof( *ClientView ),
                                sizeof( ULONG )
                              );
+                if (ClientView->Length != sizeof( *ClientView )) {
+                    return( STATUS_INVALID_PARAMETER );
+                    }
                 }
             }
         except( EXCEPTION_EXECUTE_HANDLER ) {
