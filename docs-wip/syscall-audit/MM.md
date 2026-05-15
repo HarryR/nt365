@@ -482,14 +482,16 @@ space into caller's buffer using a sized helper:
 - [x] C6 Semantic validation gaps — `PROCESS_VM_READ` required.
 - C7 IOCTL access-bit encoding — N/A
 - C8 Output buffer aliasing / METHOD mismatch — N/A
-- [ ] C9 Pool exhaustion via attacker-controlled allocation
+- [x] C9 Pool exhaustion via attacker-controlled allocation *(closed: P11 must-succeed fallback dropped)*
   - `:815` `ExAllocatePoolWithTag(NonPagedPool, MaximumMoved)`
-    where `MaximumMoved` is kernel-bounded (typically 64KB or
-    1 MB depending on build).  Per-call bounded, but rapid
-    concurrent calls can put non-paged-pool pressure on the
-    system.
-  - Fallback `NonPagedPoolMustSucceed` at `:819` — bypasses
-    the may-fail check.
+    where `MaximumMoved` is kernel-bounded (`MAX_MOVE_SIZE`,
+    64KB).  Per-call bounded, but rapid concurrent calls can put
+    non-paged-pool pressure on the system.
+  - The `NonPagedPoolMustSucceed` fallback is gone: `MiDoPoolCopy`'s
+    retry loop now halves the staging buffer down to
+    `MINIMUM_ALLOCATION` (128 bytes) against regular
+    `NonPagedPool`, then returns `STATUS_INSUFFICIENT_RESOURCES`
+    rather than bug-checking under exhaustion.
 - [x] C10 Uninitialized output / pool-contents leak
   - Pool block populated by source-process read; copied to user
     destination.  `NumberOfBytesRead` written via try.
@@ -572,9 +574,10 @@ pattern at `:863-879`.
 - [x] C6 Semantic validation gaps — `PROCESS_VM_WRITE` required.
 - C7 IOCTL access-bit encoding — N/A
 - C8 Output buffer aliasing / METHOD mismatch — N/A
-- [ ] C9 Pool exhaustion via attacker-controlled allocation
+- [x] C9 Pool exhaustion via attacker-controlled allocation *(closed: P11 must-succeed fallback dropped)*
   - Same `NonPagedPool` staged-buffer pattern as
-    `NtReadVirtualMemory`.
+    `NtReadVirtualMemory`; shares the `MiDoPoolCopy` helper and
+    its `STATUS_INSUFFICIENT_RESOURCES` exhaustion path.
 - [x] C10 Uninitialized output / pool-contents leak — input syscall;
   scalar `NumberOfBytesWritten` writeback only.
 - [x] C11 Reference-count discipline under error paths.
@@ -602,14 +605,14 @@ pattern at `:863-879`.
    leak.
 
 3. **`NtReadVirtualMemory` / `NtWriteVirtualMemory`
-   `NonPagedPoolMustSucceed` fallback** — at `READWRT.C:819`,
-   when the standard non-paged-pool allocation fails for the
-   staged transfer buffer, the code falls back to
+   `NonPagedPoolMustSucceed` fallback** *(closed)* — at
+   `READWRT.C:819`, when the standard non-paged-pool allocation
+   failed for the staged transfer buffer, the code fell back to
    `NonPagedPoolMustSucceed` which bypasses fail-out semantics.
-   Under pool pressure, this can keep allocating until the
-   system bug-checks.  Privileged-only in practice (requires
+   Under pool pressure, this could keep allocating until the
+   system bug-checked.  Privileged-only in practice (requires
    `PROCESS_VM_READ` / `PROCESS_VM_WRITE` on a target process)
-   but a debugged process across processes can apply pressure.
+   but a debugged process across processes could apply pressure.
 
 ### Fix shape
 
@@ -623,10 +626,14 @@ pattern at `:863-879`.
    Cheap, closes the latent risk.
 
 3. **`NtReadVirtualMemory` / `NtWriteVirtualMemory`
-   `NonPagedPoolMustSucceed`** — drop the fallback.  If
-   non-paged pool is exhausted, return
-   `STATUS_INSUFFICIENT_RESOURCES` instead of bug-checking.
-   Caller can split the transfer.
+   `NonPagedPoolMustSucceed`** — **done.**  The fallback is
+   dropped: `MiDoPoolCopy`'s retry loop halves the staging
+   buffer down to `MINIMUM_ALLOCATION` (128 bytes) against
+   regular `NonPagedPool`, then returns
+   `STATUS_INSUFFICIENT_RESOURCES` on total exhaustion instead
+   of bug-checking.  The status propagates through
+   `MmCopyVirtualMemory` to both syscalls; the caller can split
+   the transfer.
 
 ### Clean classes
 

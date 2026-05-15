@@ -395,19 +395,30 @@ on a target thread.
 
 ### P11 — `NonPagedPoolMustSucceed` fallback under pressure
 
-**Shape.**  `MM/READWRT.C:819` (in
-`NtReadVirtualMemory`/`NtWriteVirtualMemory` large-transfer
-staging) falls back to `NonPagedPoolMustSucceed` when the
-regular `NonPagedPool` allocation fails.  Under pool pressure
-this can recurse until the system bug-checks.
+**Closed.**  `MiDoPoolCopy` in `MM/READWRT.C` (the staged-copy
+helper behind `NtReadVirtualMemory`/`NtWriteVirtualMemory`) no
+longer falls back to `NonPagedPoolMustSucceed`.  The retry loop
+still halves the staging buffer from `MAX_MOVE_SIZE` down toward
+`MINIMUM_ALLOCATION` (128 bytes) against regular `NonPagedPool`;
+once even that minimum request fails it returns
+`STATUS_INSUFFICIENT_RESOURCES`.  The status propagates through
+`MmCopyVirtualMemory` to both syscalls; `BytesCopied` is
+zero-initialised at the syscall entry, so the bytes-transferred
+count stays 0 and nothing reads uninitialised memory.  A
+transient shortage of large blocks still degrades gracefully via
+the halving loop — only total non-paged-pool exhaustion now
+fails the call, where it previously risked a system bug-check.
+
+**Original shape.**  `MM/READWRT.C:819` fell back to
+`NonPagedPoolMustSucceed` when the regular `NonPagedPool`
+allocation failed.  Under pool pressure this could recurse
+until the system bug-checked.
 
 **Reach (1 site):** the read/write helper in `READWRT.C`.
 
-**Severity.**  System DoS under pressure.  Requires
-`PROCESS_VM_READ` or `PROCESS_VM_WRITE`, so privileged-ish.
-
-**Fix shape.**  Drop the fallback.  Return
-`STATUS_INSUFFICIENT_RESOURCES`; caller can split the transfer.
+**Severity (when present).**  System DoS under pressure.
+Required `PROCESS_VM_READ` or `PROCESS_VM_WRITE`, so
+privileged-ish.
 
 ---
 
@@ -518,7 +529,7 @@ disclosures elsewhere.
 | P8 — Phase-1 disclosure | 1 site, restructure | ~50 lines |
 | P9 — IOCP data-loss | 1 site, reorder | ~10 lines |
 | ~~P10 — Pool zero typo~~ (closed: alloc-then-zero in `PSCTX.C`) | 2 sites | done |
-| P11 — Must-succeed fallback | 1 site, drop fallback | ~5 lines |
+| ~~P11 — Must-succeed fallback~~ (closed: fallback dropped in `READWRT.C`) | 1 site | done |
 | ~~P12 — `NtAccessCheck` adhoc~~ (closed: SE wrap-up commit) | 4 sites | done |
 | **Subtotal — direct fixes** | **~60 edits** | **~400 lines** |
 | Primitives backport | 7 primitives | ~200-300 lines per primitive |

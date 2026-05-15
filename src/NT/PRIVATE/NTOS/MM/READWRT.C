@@ -816,13 +816,20 @@ Return Value:
 
     while (PoolArea == NULL) {
         if (MaximumMoved <= MINIMUM_ALLOCATION) {
-            PoolArea = ExAllocatePoolWithTag (NonPagedPoolMustSucceed,
-                                       MaximumMoved, 'wRmM');
 
-        } else {
-            MaximumMoved = MaximumMoved >> 1;
-            PoolArea = ExAllocatePoolWithTag (NonPagedPool, MaximumMoved, 'wRmM');
+            //
+            // Even a minimum-sized allocation could not be satisfied.
+            // Do not fall back to NonPagedPoolMustSucceed: under pool
+            // pressure that path can bug-check the entire system.
+            // Report the resource shortage instead and let the caller
+            // split or retry the transfer.
+            //
+
+            return STATUS_INSUFFICIENT_RESOURCES;
         }
+
+        MaximumMoved = MaximumMoved >> 1;
+        PoolArea = ExAllocatePoolWithTag (NonPagedPool, MaximumMoved, 'wRmM');
     }
 
     //
