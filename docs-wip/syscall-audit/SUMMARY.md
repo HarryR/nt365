@@ -11,6 +11,15 @@ those 40 findings collapse to **~12 root patterns**.  Most
 patterns recur because they're 1990–1992 NT house-style choices
 applied uniformly, not localised mistakes by individual authors.
 
+**Methodology note.**  The patterns below were found by static
+review against a fixed bug-class catalog.  **P14 was not** — it was
+found afterward by the `test/fuzz/*.lua` bugcheck-resistance suites,
+in two syscalls (`NtConnectPort`, `NtAcceptConnectPort`) this audit
+had explicitly cleared (see P1).  A static per-pattern pass can
+certify a syscall only against the patterns in its catalog; it
+cannot certify the syscall.  P14 is recorded both as a live pattern
+and as a standing caveat on every "closed" above.
+
 ## Pattern catalog
 
 Each pattern below lists: (a) the defect, (b) every syscall it
@@ -489,6 +498,66 @@ Surfaced while building the IOCP completion-source test helper
 
 ---
 
+### P14 — Untrusted-pointer deref without a preceding probe
+
+**LPC/OB swept; reach beyond unknown.**  Found post-audit by the
+`test/fuzz/lpc.lua` pointer-slot sweep, not by the static pass.
+
+**Defect.**  A syscall reads a field of a caller-supplied `IN`
+pointer before a `ProbeForRead/Write` (or a capture helper) has
+validated it.  The NT 3.5 house style wraps the prologue in one
+`__try` and treats that as sufficient.  It is not:
+
+- `__try` catches a fault on a **user-range** address (the trap
+  path raises `STATUS_ACCESS_VIOLATION`, SEH unwinds).  It does
+  **not** catch a fault on a **kernel-range** address — that
+  bug-checks `0x50` directly, or raises `0x1E` with no handler.
+  A hostile caller passes `0x80000000`; `__try` is irrelevant.
+- A probe is a **range check** (`p + len <= MmUserProbeAddress`)
+  evaluated *before* the dereference — the only thing that
+  rejects a kernel-range pointer.  `__try` is a fault catcher,
+  not a pointer validator; the two are not interchangeable.
+- A probe is **not a capture**.  It validates, it does not copy.
+  Probe-then-deref-the-live-pointer leaves a TOCTOU window (this
+  is the root of **P9**).  The pointer must be captured into a
+  kernel local and only the copy read.
+
+**Instances (closed — commits 70c62cd, 27eefad):**
+
+| Syscall | Source | Deref-before-probe |
+| --- | --- | --- |
+| `NtCreatePort` | `LPCCREAT.C` | `ObjectAttributes->ObjectName`, attrs unprobed |
+| `ObReferenceObjectByName` | `OBREF.C` | `ObjectName->Length` ahead of `ObpCaptureObjectName` |
+| `NtConnectPort` | `LPCCONN.C` | `ClientView/ServerView->Length` before `ProbeForWrite` |
+| `NtAcceptConnectPort` | `LPCCOMPL.C` | same view pattern |
+
+**Already in the catalog, fragmented.**  P5 (`SepAdjust*` first
+pass called without `__try`) and P12 bullet 1 (`*PrivilegeSetLength`
+dereferenced *outside* `__try`, `ACCESSCK.C:970/1012`) are the same
+family — an untrusted pointer dereferenced where an AV is not
+cleanly handled.  P5 was closed by adding `__try` (necessary, but
+per above not sufficient against a kernel-range pointer); P12 was
+filed as an "ad-hoc bug."  Neither was generalised, so the catalog
+had no P14 entry and the audit never swept for it.  A one-off that
+is really a pattern instance is a catalog gap.
+
+**Reach.**  Unknown by construction — the static pass did not look
+for this class, so reach across IO/SE/MM/PS/CM/EX cannot be read
+off existing notes.  Every `Nt*` syscall with an `IN` pointer is a
+candidate.  The per-subsystem `test/fuzz/*.lua` pointer-slot sweeps
+are the enumeration method; LPC is the worked example.
+
+**Severity.**  Local DoS — system bug-check from an unprivileged
+caller passing a kernel-range pointer.  No privilege required
+beyond the ability to issue the syscall.  Direct violation of the
+bugcheck-resistance invariant.
+
+**Fix shape.**  Per site: probe (or run the capture helper) before
+the first field access, for the `PreviousMode != KernelMode` path.
+Structurally: Primitive 8.
+
+---
+
 ## Defense-in-depth roadmap
 
 Beyond the per-pattern fixes, the audit suggests a set of
@@ -554,6 +623,29 @@ return composite structures with embedded pointers.  Closes
 **P8** structurally and prevents similar partial-write
 disclosures elsewhere.
 
+### Primitive 8 — Capture-first syscall prologue
+
+The structural close for **P14**.  Modern Windows syscalls open
+with a single block that probes and copies *every* `IN` pointer
+argument into kernel locals; the body then never touches user
+memory again except through `OUT` writes (each with its own
+probe + `__try`).  NT 3.5's house style interleaves probe-and-use
+down the length of the prologue — and that interleaving is the
+bug surface.
+
+NT 3.5 already has the capture helpers (`ObpCaptureObjectName`,
+`ObpCaptureObjectAttributes`, `SeCaptureSid`, ...).  The defect is
+that they are used inconsistently — `NtCreatePort` hand-peeked
+`ObjectName` rather than defer to `ObpCaptureObjectAttributes`;
+`ObReferenceObjectByName` ran a fast-fail check ahead of its own
+`ObpCaptureObjectName`.  So the primitive is mostly a *discipline*,
+not new code: capture is the only path to a user structure, and a
+hand-rolled peek at user memory is itself the defect.
+
+Pairs with the fuzz spine: "did this syscall capture-first?" is not
+mechanically checkable from source, so the per-subsystem
+pointer-slot fuzz sweep is the enforcement and regression net.
+
 ---
 
 ## Fix-effort summary
@@ -573,6 +665,7 @@ disclosures elsewhere.
 | ~~P11 — Must-succeed fallback~~ (closed: fallback dropped in `READWRT.C`) | 1 site | done |
 | ~~P12 — `NtAccessCheck` adhoc~~ (closed: SE wrap-up commit) | 4 sites | done |
 | ~~P13 — SetInfo access-table off-by-one~~ (closed: missing entry inserted in `IODATA.C`) | 1 site | done |
+| P14 — Untrusted-pointer deref (LPC/OB closed; reach TBD) | 4 sites done, rest pending fuzz | LPC done |
 | **Subtotal — direct fixes** | **~60 edits** | **~400 lines** |
 | Primitives backport | 7 primitives | ~200-300 lines per primitive |
 

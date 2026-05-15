@@ -571,3 +571,226 @@ name, but disappear when I list the folder it lives in?"*  Answer:
 your cluster has more than one file record in it.  The log replays the
 wrong one.  Pick a cluster size that exactly matches a file record and
 your problem goes away.  Or upgrade to NT 4.0."
+
+---
+
+## 5. The kernel mistakes `__try` for a pointer validator
+
+### The punchline
+
+The standard NT 3.5 system-call prologue probes the caller's pointers,
+dereferences them, and wraps the whole thing in one `try / except` —
+and considers the job done. It is not done. `__try` catches a fault on
+a *user-mode* address: the trap path turns it into a
+`STATUS_ACCESS_VIOLATION` exception and SEH unwinds it. It does
+**nothing** for a fault on a *kernel-mode* address. A kernel-range
+pointer that faults does not raise a catchable exception — it
+bugchecks the machine, right past every `__except` on the stack.
+
+So a syscall that dereferences `ObjectAttributes->ObjectName` before
+it has *probed* `ObjectAttributes` is perfectly safe against the bad
+pointers an honest program produces — NULL, freed, unmapped, all
+user-range — and perfectly defenceless against a caller who simply
+passes `0x80000000`. The probe is the only thing in the building that
+rejects a kernel-range pointer, and only if it runs *before* the
+dereference. Four LPC/OB syscalls run it after, or not at all.
+
+Nobody noticed for thirty years because the only programs that ever
+called these syscalls were Microsoft's own subsystems, and they never
+passed a kernel pointer — not maliciously, not by accident, not ever.
+
+### The setup
+
+Here is the idiom, reduced. Every `Nt*` entry point in the tree is a
+variation on it:
+
+```c
+PreviousMode = KeGetPreviousMode();
+if (PreviousMode != KernelMode) {
+    try {
+        ProbeForWriteHandle( PortHandle );
+        if (ObjectAttributes->ObjectName == NULL || ...) {   // <-- deref
+            UnNamedPort = TRUE;
+        }
+    } except( EXCEPTION_EXECUTE_HANDLER ) {
+        return( GetExceptionCode() );
+    }
+}
+```
+
+`ProbeForWriteHandle` validated `PortHandle`. Nothing validated
+`ObjectAttributes`. The author's mental model is visible in the
+structure: the `try` is the safety net, the probes are a courtesy
+inside it, and the dereference is just *code* — if it faults, the net
+catches it. Two of those three beliefs are correct. The net does catch
+the dereference of a bad `PortHandle`-shaped user pointer. The net does
+let you return a clean status instead of crashing.
+
+The third belief — that the net catches *everything* — is the bug, and
+it is not written down anywhere because the author did not know he held
+it.
+
+### Why `__try` cannot catch this
+
+A page fault on i386 NT goes through `KiTrap0E` into `MmAccessFault`.
+What happens next depends entirely on *which side of the line* the
+faulting address is on:
+
+- **User-range address, not resident.** `MmAccessFault` returns a
+  failure status; the trap code raises it as a `STATUS_ACCESS_VIOLATION`
+  *exception*. The exception dispatcher walks the kernel stack, finds
+  your `__except`, and hands it the fault. This is the case the idiom
+  was built for. It works.
+
+- **Kernel-range address, not valid.** There is no user program to
+  blame and no private region to fault in. The trap path either
+  bugchecks `0x50 PAGE_FAULT_IN_NONPAGED_AREA` on the spot — no
+  exception, nothing to catch — or raises a `0xC0000005` that no frame
+  is willing to claim and bugchecks `0x1E KMODE_EXCEPTION_NOT_HANDLED`
+  instead. Which of the two you get depends on the page-table state for
+  that address. Neither is survivable.
+
+`ProbeForRead` / `ProbeForWrite` are a different kind of thing
+entirely. They are not fault catchers; they are a **range check**:
+`address + length <= MmUserProbeAddress`, evaluated *before* anybody
+touches the memory. A probe handed `0x80000000` rejects it as *data* —
+it raises a clean, catchable `STATUS_ACCESS_VIOLATION` without ever
+dereferencing the pointer. That is the whole point of the probe, and it
+is a point the house style half-remembered: it remembered "probe so the
+attacker can't make the kernel read kernel memory for him," and forgot
+"probe *first*, every pointer, or a kernel-range value crashes you past
+your own `__try`." Same instruction, two reasons, and only one of them
+made it into the muscle memory.
+
+### Same bug, two bugchecks
+
+The cleanest demonstration that this is unreasonable to reason about:
+the *same defect class*, fuzzed twice, produced two different STOP
+codes.
+
+```
+NtCreatePort, ObjectAttributes = 0x80000000:
+  *** STOP: 0x00000050 (0x80000008, ...)  PAGE_FAULT_IN_NONPAGED_AREA
+        (faulting address 0x80000008 = ObjectName field, offset 8)
+
+ObReferenceObjectByName, ObjectName = 0x80000000:
+  *** STOP: 0x0000001E (0xC0000005, 0x80178FD2, 0, 0x80000000)
+        KMODE_EXCEPTION_NOT_HANDLED
+```
+
+One bugchecked directly; the other raised an exception that nothing
+handled. If you are a kernel developer holding the belief "my `__try`
+covers it," the `0x1E` case is the cruel one — an exception *was*
+raised, `0xC0000005`, the exact code your `__except` is written to
+catch. It just wasn't raised anywhere your handler could see it. The
+belief survives the evidence. That is how a bug class lives thirty
+years.
+
+### The four it bit
+
+Found by `test/fuzz/lpc.lua` sweeping every pointer parameter of every
+`Nt*Port` syscall with a kernel-range value — and by the source audit
+that sweep then justified:
+
+| Syscall | How it dies | Field dereferenced |
+|---|---|---|
+| `NtCreatePort` | STOP `0x50`, live | `ObjectAttributes->ObjectName` — attributes never probed |
+| `ObReferenceObjectByName` | STOP `0x1E`, live | `ObjectName->Length` — checked ahead of its own `ObpCaptureObjectName` |
+| `NtConnectPort` | audit | `ClientView->Length` / `ServerView->Length` before `ProbeForWrite` |
+| `NtAcceptConnectPort` | audit | same `ServerView` / `ClientView` shape |
+
+The `ObReferenceObjectByName` one is the tell. That function *has* a
+correct capture routine — `ObpCaptureObjectName`, which probes the
+descriptor and the string buffer under SEH, properly. The bug is a
+fast-fail check (`!ObjectName->Length`) bolted on *in front of* the
+capture routine, dereferencing the raw pointer to save a few
+instructions in the reject-early case. The kernel knew how to do this
+correctly. It just didn't, in the one spot that ran first.
+
+### The raison d'être
+
+This is the part worth slowing down for, because the bug is not
+sloppiness — it is a perfectly sound decision aging badly.
+
+NT's user/kernel boundary was designed, around 1989–1992, as a
+**robustness** boundary. The threat it was built against was a *buggy*
+program: a program that passes a NULL pointer, a stale pointer, a
+pointer off the end of its own buffer. The correct kernel response to a
+buggy program is not to crash — it is to fail that program's call with
+a status code and keep running. `try / except` around the syscall
+prologue does exactly that, exactly well, for exactly that threat.
+Every fault a *buggy* program can hand you is a user-range fault, and
+user-range faults are precisely what SEH catches. The idiom is not
+wrong. It is a correct solution to the problem as posed.
+
+The problem was posed in 1991, and in 1991 the *caller* was not the
+adversary. The programs issuing `NtCreatePort` were CSRSS, the
+subsystems, Microsoft's own code. The boundary was a robustness
+boundary because the only thing on the other side of it that could go
+wrong was a *bug*, and a bug is a robustness problem. Nobody on the
+far side was *trying* to get in. The syscall interface was, in
+spirit, an ABI between cooperating components — and `__try` was that
+ABI's politeness: a guarantee that if a cooperating component made a
+mistake, the kernel would absorb it gracefully. It was never armour,
+because in the room NT was built in there was nothing to armour
+against.
+
+The probe's anti-kernel-address check existed — somebody did think
+about the malicious case — but it was understood narrowly, as
+*confused-deputy* prevention: stop a caller from naming a kernel
+address and tricking the kernel into reading it. It was filed under
+"don't leak kernel memory," not under "don't *crash* on a kernel
+address." So the probe got applied where a *read of kernel data* would
+matter and skipped where the author judged it didn't — and the fact
+that skipping it *also* turned every kernel-range pointer into an
+un-catchable bugcheck was simply not on the list of things the skip
+cost you. The two consequences of a missing probe — *information
+disclosure* and *uncatchable crash* — were never unified into a single
+rule, so the rule that got internalized was the partial one.
+
+Thirty years later the same code runs with the local, unprivileged
+user as a genuine adversary, and a genuine adversary does the one
+thing no cooperating component ever did: passes `0x80000000` on
+purpose, to see what happens. The `__try` is still there. It is still
+doing its job perfectly. Its job was to convert *honest mistakes* into
+*clean errors*, and it still converts every honest mistake into a
+clean error. It was simply never asked, and never able, to convert a
+*hostile input* into a clean error — and now it is being asked, and it
+is the only thing standing there, and it cannot.
+
+That is the raison d'être, and the category error inside it: NT built a
+boundary that is robust against bugs and assumed — correctly, for the
+world it shipped into — that robust-against-bugs was the same thing as
+robust-against-callers. It was the same thing, right up until the
+caller stopped being a colleague.
+
+### The fix
+
+Per site: probe the pointer (or run the capture helper) *before* the
+first field access, for the `PreviousMode != KernelMode` path. Four
+small edits; landed in commits `70c62cd` and `27eefad`.
+
+Structurally: the **capture-first prologue**. Probe and copy every `IN`
+pointer argument into kernel locals in one block at the top of the
+syscall; let the body touch user memory never again, except `OUT`
+writes with their own probes. Modern Windows syscalls open with exactly
+that block, and it is why. It makes "deref before probe" *unexpressible*
+— the body has nothing but captured locals to deref. NT 3.5 already
+owns the capture helpers (`ObpCaptureObjectName`, `SeCaptureSid`, the
+rest); what it lacks is the discipline that capture is the *only* door,
+and a hand-rolled peek at a user structure is itself the defect. See
+`docs-wip/syscall-audit/SUMMARY.md`, pattern P14 and Primitive 8.
+
+### For Raymond
+
+Hypothetical title: *"Why does `__try` protect my driver from some bad
+pointers but not others?"* Answer: "`__try` was never a pointer
+validator. It catches the access violations that honest programs cause
+by accident — and those are always in user address space, where the
+trap handler raises a catchable exception. A kernel-mode address that
+faults doesn't raise an exception your `__except` can ever see; it
+bugchecks the machine. The probe is your validator. The probe is the
+*only* thing that tells a kernel address apart from a user one, and it
+only counts if you run it before you dereference. We built the syscall
+boundary to forgive mistakes, back when everyone calling it was on our
+side. You're the first caller in thirty years who wasn't."
