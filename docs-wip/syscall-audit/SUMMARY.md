@@ -500,8 +500,8 @@ Surfaced while building the IOCP completion-source test helper
 
 ### P14 — Untrusted-pointer deref without a preceding probe
 
-**LPC, SE, OB, IO swept; reach beyond unknown.**  Found post-audit by
-the `test/fuzz/*.lua` pointer-slot sweeps, not by the static pass.
+**LPC, SE, OB, IO, PS swept; reach beyond unknown.**  Found post-audit
+by the `test/fuzz/*.lua` pointer-slot sweeps, not by the static pass.
 
 **Defect.**  A syscall reads a field of a caller-supplied `IN`
 pointer before a `ProbeForRead/Write` (or a capture helper) has
@@ -546,9 +546,9 @@ had no P14 entry and the audit never swept for it.  A one-off that
 is really a pattern instance is a catalog gap.
 
 **Reach.**  Unknown by construction — the static pass did not look
-for this class.  LPC, SE, OB and IO have since been swept with the
-per-subsystem `test/fuzz/*.lua` pointer-slot sweeps: SE and IO
-audited clean, LPC and OB one-plus fixes each.  MM/PS/CM/EX remain
+for this class.  LPC, SE, OB, IO and PS have since been swept with
+the per-subsystem `test/fuzz/*.lua` pointer-slot sweeps: SE, IO and
+PS audited clean, LPC and OB one-plus fixes each.  MM/CM/EX remain
 unswept — every `Nt*` syscall with an `IN` pointer is a candidate.
 
 **Severity.**  Local DoS — system bug-check from an unprivileged
@@ -669,7 +669,7 @@ pointer-slot fuzz sweep is the enforcement and regression net.
 | ~~P11 — Must-succeed fallback~~ (closed: fallback dropped in `READWRT.C`) | 1 site | done |
 | ~~P12 — `NtAccessCheck` adhoc~~ (closed: SE wrap-up commit) | 4 sites | done |
 | ~~P13 — SetInfo access-table off-by-one~~ (closed: missing entry inserted in `IODATA.C`) | 1 site | done |
-| P14 — Untrusted-pointer deref (LPC/SE/OB/IO swept; MM/PS/CM/EX TBD) | 5 sites done, rest pending fuzz | LPC/SE/OB/IO done |
+| P14 — Untrusted-pointer deref (LPC/SE/OB/IO/PS swept; MM/CM/EX TBD) | 5 sites done, rest pending fuzz | LPC/SE/OB/IO/PS done |
 | **Subtotal — direct fixes** | **~60 edits** | **~400 lines** |
 | Primitives backport | 7 primitives | ~200-300 lines per primitive |
 
