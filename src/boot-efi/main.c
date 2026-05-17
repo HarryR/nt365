@@ -4,7 +4,8 @@
  * Flow:
  *   1. com1_init              - serial alive before anything else
  *   2. InitializeLib          - gnu-efi globals (gBS, ST, etc.)
- *   3. fs_init + fs_read      - pull ntoskrnl / hal / drivers / NLS / hive
+ *   3. fs_init + fs_read      - pull ntoskrnl / hal / NLS / hive;
+ *                               walk \Boot\ for the boot drivers
  *   4. pe_stage               - relocate PE images to their bases
  *   5. mmu_alloc_reserved     - grab pages for PD/PT/PCR/TSS/stack
  *   6. arena_init             - reserve the arena for LPB + hwtree
@@ -39,6 +40,124 @@ extern void handoff(unsigned long entry_kseg0,
                     unsigned long gdt_phys,
                     unsigned long idt_phys);
 
+/* Upper bound on boot drivers staged from \Boot\.  The real set is
+ * ~7 (scsiport, atdisk, nvme2k, vioblk, scsidisk, fastfat, ntfs);
+ * 32 leaves generous headroom for future storage/FS layers. */
+#define MAX_BOOT_DRIVERS 32
+
+/* Lexical compare of two CHAR16 strings over the ASCII range. */
+static int u16cmp(const CHAR16 *a, const CHAR16 *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return (int)*a - (int)*b;
+}
+
+/* Insertion sort fs_dirent[] by name — small N, ascending lexical. */
+static void sort_dirents(fs_dirent *e, UINTN n) {
+    for (UINTN i = 1; i < n; i++) {
+        fs_dirent tmp = e[i];
+        UINTN j = i;
+        while (j > 0 && u16cmp(e[j - 1].name, tmp.name) > 0) {
+            e[j] = e[j - 1];
+            j--;
+        }
+        e[j] = tmp;
+    }
+}
+
+/*
+ * Stage every boot driver found under \Boot\ on the ESP.
+ *
+ * \Boot\ holds 2-digit bucket subdirectories (\Boot\10, \Boot\20, …).
+ * Lexical bucket order IS the load order: the kernel's
+ * IopInitializeBootDrivers walks LoaderBlock->BootDriverListHead in the
+ * order we wire it and does NOT re-sort by ServiceGroupOrder.  The
+ * bucket convention (set by ntosbe's layer system) keeps the framework
+ * ahead of its dependants:
+ *   10  scsiport             (miniports import ScsiPortInitialize)
+ *   20  atdisk/nvme2k/vioblk  (storage miniports, mutually independent)
+ *   30  scsidisk             (class driver — walks the miniports' devices)
+ *   90  fastfat/ntfs         (FS recognizers — no hardware at DriverEntry)
+ * Within a bucket the drivers are independent, so lexical file order
+ * there is immaterial.
+ *
+ * The bucket directory is invisible to the kernel: pe_stage records the
+ * bare filename ("nvme2k.sys"), from which lpb.c rebuilds both the
+ * image path and the Services\<name> registry path.
+ *
+ * Returns the count staged into out[0..N-1].
+ */
+static UINTN stage_boot_drivers(pe_image_t *out, UINTN max) {
+    /* pe_stage stores the name pointer (it does not copy), so the name
+     * strings must outlive this function — keep a static pool. */
+    static char      namepool[MAX_BOOT_DRIVERS][32];
+    static fs_dirent buckets[24];
+    static fs_dirent files[MAX_BOOT_DRIVERS];
+    UINTN n_buckets = 0, staged = 0;
+
+    if (fs_listdir(L"\\Boot", buckets, 24, &n_buckets) != EFI_SUCCESS) {
+        BXLOG(L"\\Boot enumeration failed — no boot drivers staged");
+        return 0;
+    }
+    sort_dirents(buckets, n_buckets);
+
+    for (UINTN b = 0; b < n_buckets; b++) {
+        if (!buckets[b].is_dir) continue;
+
+        /* dirpath = "\Boot\<bucket>" */
+        CHAR16 dirpath[80];
+        UINTN  p = 0;
+        for (const CHAR16 *s = L"\\Boot\\"; *s; s++) dirpath[p++] = *s;
+        for (UINTN k = 0; buckets[b].name[k]; k++)
+            dirpath[p++] = buckets[b].name[k];
+        dirpath[p] = 0;
+
+        UINTN n_files = 0;
+        if (fs_listdir(dirpath, files, MAX_BOOT_DRIVERS, &n_files)
+            != EFI_SUCCESS)
+            continue;
+        sort_dirents(files, n_files);
+
+        for (UINTN f = 0; f < n_files; f++) {
+            if (files[f].is_dir) continue;
+            if (staged >= max) {
+                BXLOG(L"boot-driver count exceeds %lu — truncating",
+                      (UINT64)max);
+                return staged;
+            }
+
+            /* fpath = "\Boot\<bucket>\<file>" */
+            CHAR16 fpath[160];
+            UINTN  q = 0;
+            for (UINTN k = 0; dirpath[k]; k++) fpath[q++] = dirpath[k];
+            fpath[q++] = L'\\';
+            for (UINTN k = 0; files[f].name[k]; k++)
+                fpath[q++] = files[f].name[k];
+            fpath[q] = 0;
+
+            /* ASCII basename for pe_stage -> lpb (Services\<name>). */
+            char  *aname = namepool[staged];
+            UINTN  a = 0;
+            for (UINTN k = 0;
+                 files[f].name[k] && a < sizeof namepool[0] - 1; k++)
+                aname[a++] = (char)files[f].name[k];
+            aname[a] = 0;
+
+            void *blob; UINTN bsz;
+            if (fs_read(fpath, PK_FIRMWARE_TEMP, &blob, &bsz)
+                != EFI_SUCCESS)
+                continue;
+            if (pe_stage(blob, bsz, PK_BOOT_DRIVER, aname, &out[staged])
+                == EFI_SUCCESS) {
+                staged++;
+            } else {
+                BXLOG(L"%a: pe_stage failed", aname);
+            }
+        }
+    }
+    BXLOG(L"staged %lu boot driver(s) from \\Boot", (UINT64)staged);
+    return staged;
+}
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
                            EFI_SYSTEM_TABLE *SystemTable) {
     EFI_INPUT_KEY key;
@@ -50,40 +169,20 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
 
     if (fs_init(ImageHandle) != EFI_SUCCESS) goto halt;
 
-    /* Load what the kernel handoff needs: the kernel itself, HAL, every
-     * candidate boot-disk driver (atdisk for legacy IDE, scsiport+
-     * scsidisk+nvme2k for NVMe, vioblk for virtio-blk), the FS drivers
-     * (fastfat for FAT16, ntfs for NTFS volumes), the registry hive,
-     * and NLS.  We pre-load *all* candidate disk + FS drivers
-     * unconditionally — discovery in each driver's DriverEntry decides
-     * which one binds at runtime.  Same image boots on pc+IDE (atdisk
-     * wins, nvme2k+vioblk bail on PCI walk), q35+NVMe (nvme2k claims),
-     * q35+virtio-blk (vioblk claims).  fastfat claims FAT16 volumes;
-     * ntfs returns STATUS_UNRECOGNIZED_VOLUME on FAT BPBs (no NTFS
-     * volumes today — driver loaded but inactive).  All ErrorControl=
-     * Normal so no-hardware/no-volume returns are logged not
-     * bugchecked.  User-mode images (ntdll, kernel32) stay on disk. */
-    void *blob_kernel   = 0, *blob_hal      = 0;
-    void *blob_atdisk   = 0, *blob_scsiport = 0;
-    void *blob_scsidisk = 0, *blob_nvme2k   = 0;
-    void *blob_vioblk   = 0, *blob_fastfat  = 0;
-    void *blob_ntfs     = 0;
-    UINTN sz_kernel, sz_hal;
-    UINTN sz_atdisk, sz_scsiport, sz_scsidisk, sz_nvme2k, sz_vioblk, sz_fastfat, sz_ntfs;
+    /* Load what the kernel handoff needs from the ESP: the kernel
+     * itself, HAL, and the registry hive.  The boot drivers come from
+     * the \Boot\ directory tree (staged below by stage_boot_drivers).
+     * User-mode images (ntdll, kernel32) stay on disk for the kernel's
+     * loader to fault in. */
+    void *blob_kernel = 0, *blob_hal = 0;
+    UINTN sz_kernel = 0, sz_hal = 0;
     {
         void  *buf;
         UINTN  size;
-        fs_read(L"\\System32\\ntoskrnl.exe",            PK_FIRMWARE_TEMP, &blob_kernel,   &sz_kernel);
-        fs_read(L"\\System32\\hal.dll",                  PK_FIRMWARE_TEMP, &blob_hal,      &sz_hal);
-        fs_read(L"\\System32\\Drivers\\atdisk.sys",      PK_FIRMWARE_TEMP, &blob_atdisk,   &sz_atdisk);
-        fs_read(L"\\System32\\Drivers\\scsiport.sys",    PK_FIRMWARE_TEMP, &blob_scsiport, &sz_scsiport);
-        fs_read(L"\\System32\\Drivers\\scsidisk.sys",    PK_FIRMWARE_TEMP, &blob_scsidisk, &sz_scsidisk);
-        fs_read(L"\\System32\\Drivers\\nvme2k.sys",      PK_FIRMWARE_TEMP, &blob_nvme2k,   &sz_nvme2k);
-        fs_read(L"\\System32\\Drivers\\vioblk.sys",      PK_FIRMWARE_TEMP, &blob_vioblk,   &sz_vioblk);
-        fs_read(L"\\System32\\Drivers\\fastfat.sys",     PK_FIRMWARE_TEMP, &blob_fastfat,  &sz_fastfat);
-        fs_read(L"\\System32\\Drivers\\ntfs.sys",        PK_FIRMWARE_TEMP, &blob_ntfs,     &sz_ntfs);
-        fs_read(L"\\System32\\config\\SYSTEM",           PK_REGISTRY,      &buf, &size); (void)size;
-        (void)buf;
+        fs_read(L"\\System32\\ntoskrnl.exe", PK_FIRMWARE_TEMP, &blob_kernel, &sz_kernel);
+        fs_read(L"\\System32\\hal.dll",       PK_FIRMWARE_TEMP, &blob_hal,    &sz_hal);
+        fs_read(L"\\System32\\config\\SYSTEM", PK_REGISTRY,      &buf, &size);
+        (void)size; (void)buf;
     }
 
     /* NLS: NT's Phase1Initialization (NTOS/INIT/INIT.C:392) computes
@@ -131,51 +230,19 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
      * their virtual addresses, base relocations applied. Then resolve
      * imports so calls between modules get patched to real addresses.
      *
-     * Drivers staged unconditionally as a profile-agnostic candidate
-     * set: atdisk (legacy IDE), scsiport+scsidisk+nvme2k (NVMe via the
-     * SCSI miniport stack), fastfat (FS).  Each disk driver decides at
-     * DriverEntry whether its hardware is present; the losers return
-     * STATUS_NO_SUCH_DEVICE and the kernel logs + skips.  Order in the
-     * pre-load list doesn't dictate runtime load order — the kernel's
-     * IopInitializeBootDrivers walks LoadOrderList by ServiceGroupOrder
-     * and DependOnService dependencies. */
+     * Boot drivers are discovered by walking the \Boot\ directory tree
+     * on the ESP (stage_boot_drivers) — a profile-agnostic candidate
+     * set composed by ntosbe's layer system, with load order carried
+     * by the 2-digit bucket subdirectory names.  Each disk driver
+     * decides at DriverEntry whether its hardware is present; the
+     * losers return STATUS_NO_SUCH_DEVICE and the kernel logs + skips.
+     * Same image boots pc+IDE, q35+NVMe and q35+virtio-blk. */
     static pe_image_t kernel, hal;
-    static pe_image_t drivers[7];   /* atdisk, scsiport, nvme2k, vioblk, scsidisk, fastfat, ntfs */
+    static pe_image_t drivers[MAX_BOOT_DRIVERS];
     UINTN n_drivers = 0;
     {
-        pe_image_t all[2 + 7];      /* kernel + hal + drivers[] */
+        pe_image_t all[2 + MAX_BOOT_DRIVERS];   /* kernel + hal + drivers[] */
         UINTN n = 0;
-
-        /* Order matters: the kernel's IopInitializeBootDrivers walks
-         * LoaderBlock->BootDriverListHead in the order we wire it here
-         * (it does NOT re-sort by ServiceGroupOrder — real NT's
-         * OSLOADER sorted before handoff; we hand-sort instead).
-         *
-         * Constraints:
-         *   - scsiport.sys before any miniport (nvme2k / vioblk import
-         *     the framework's ScsiPortInitialize).
-         *   - All SCSI miniports (nvme2k, vioblk) before scsidisk:
-         *     scsidisk's DriverEntry eagerly walks \Device\ScsiPort0..N
-         *     and returns STATUS_NO_SUCH_DEVICE if the namespace is
-         *     empty.  Loading scsidisk before any miniport has
-         *     registered surfaces zero disks even when the hardware
-         *     is present.
-         *   - fastfat.sys at any point — it doesn't touch disk state
-         *     at DriverEntry. */
-        struct { void *blob; UINTN size; const char *name; } stage_list[] = {
-            { blob_atdisk,   sz_atdisk,   "atdisk.sys"   },
-            { blob_scsiport, sz_scsiport, "scsiport.sys" },
-            { blob_nvme2k,   sz_nvme2k,   "nvme2k.sys"   },
-            { blob_vioblk,   sz_vioblk,   "vioblk.sys"   },
-            { blob_scsidisk, sz_scsidisk, "scsidisk.sys" },
-            /* FS drivers last; they don't touch hardware at DriverEntry,
-             * just register a recognizer with the I/O manager.  fastfat
-             * before ntfs is alphabetic-ish; both probe each volume's
-             * BPB at mount time, the matching one claims it. */
-            { blob_fastfat,  sz_fastfat,  "fastfat.sys"  },
-            { blob_ntfs,     sz_ntfs,     "ntfs.sys"     },
-        };
-        const UINTN N_STAGE = sizeof(stage_list) / sizeof(stage_list[0]);
 
         if (blob_kernel && pe_stage(blob_kernel, sz_kernel,
                                     PK_KERNEL_IMAGE, "ntoskrnl.exe",
@@ -184,24 +251,12 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle,
                                  PK_HAL_IMAGE, "hal.dll",
                                  &hal) == EFI_SUCCESS) all[n++] = hal;
 
-        for (UINTN i = 0; i < N_STAGE; i++) {
-            if (!stage_list[i].blob) {
-                BXLOG(L"%a: missing blob, skipping", stage_list[i].name);
-                continue;
-            }
-            if (pe_stage(stage_list[i].blob, stage_list[i].size,
-                         PK_BOOT_DRIVER, stage_list[i].name,
-                         &drivers[n_drivers]) == EFI_SUCCESS) {
-                all[n++] = drivers[n_drivers];
-                n_drivers++;
-            } else {
-                BXLOG(L"%a: pe_stage failed", stage_list[i].name);
-            }
-        }
+        n_drivers = stage_boot_drivers(drivers, MAX_BOOT_DRIVERS);
+        for (UINTN i = 0; i < n_drivers; i++) all[n++] = drivers[i];
 
-        /* Two passes for ntoskrnl<->hal circular dep: both are staged
-         * before any import resolution.  scsidisk imports scsiport,
-         * nvme2k imports scsiport — same pre-stage-then-resolve pattern
+        /* Two passes for ntoskrnl<->hal circular dep: every image is
+         * staged before any import resolution.  scsidisk and nvme2k
+         * import scsiport — the same pre-stage-then-resolve pattern
          * handles those naturally. */
         for (UINTN i = 0; i < n; i++) pe_resolve_imports(&all[i], all, n);
     }

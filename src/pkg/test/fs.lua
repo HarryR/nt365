@@ -112,13 +112,14 @@ t.test("NtQueryDirectoryFile enumerates \\SystemRoot\\", function()
         end
     end
     h:close()
-    -- The system partition has System32 / lua / pkg / tmp; we index
-    -- `seen` upper-cased so this matches whether the FS preserves or
-    -- folds case.  (EFI lives only on the ESP, which isn't \SystemRoot
-    -- in split layouts.)
+    -- The selftest system partition has System32 / lua / tmp; we index
+    -- `seen` upper-cased so this matches whether the FS preserves case
+    -- ("System32") or folds it ("SYSTEM32").  pkg/ is NOT asserted: it
+    -- is staged only by the msvc layer (the selfhost profile, not
+    -- selftest).  EFI lives only on the ESP, which isn't \SystemRoot in
+    -- split layouts.
     t.ne(seen.SYSTEM32, nil, "SYSTEM32 present")
     t.ne(seen.LUA,      nil, "LUA present")
-    t.ne(seen.PKG,      nil, "PKG present")
 end)
 
 t.test("Directory enumeration on non-directory returns empty/fails", function()

@@ -508,15 +508,21 @@ function M.main(opts)
         return 0
     end
 
-    -- ----- RTL — needs error.h generated first (Python helper for now). -----
+    -- ----- RTL — needs error.h + bugcodes.h generated first.  bugcodes.h
+    -- is pulled in via ntos.h, so every RTL source needs it; ensure it
+    -- here rather than relying on a build-order accident. -----
     targets.rtl = function()
         if not ensure_error_h() then return 1 end
+        if not ensure_bugcodes() then return 1 end
         return run_nmake(NTOS .. "/RTL/UP", "RTL - Runtime Library")
     end
 
-    -- ----- Userland NT runtime libs ----------------------------------------
+    -- ----- Userland NT runtime libs.  Same ntos.h → bugcodes.h need;
+    -- this is what `imagehlp` (tools phase) pulls in, so the message
+    -- compiler must already be built — see the TOOL_TARGETS ordering.
     targets.rtl_user = function()
         if not ensure_error_h() then return 1 end
+        if not ensure_bugcodes() then return 1 end
         -- TARGETPATH=..\obj puts rtl.lib at RTL/obj/i386/.
         mkdir_p(NTOS .. "/RTL/obj/i386")
         return run_nmake(NTOS .. "/RTL/USER", "RTL_USER - user-mode runtime library")
@@ -940,8 +946,12 @@ function M.main(opts)
         end
 
         mkdir_p(out_dir)
+        -- selfhost = the full disk (NT source tree + toolchain); the
+        -- main.lua init override makes it an interactive image, the
+        -- same shape `make boot` produces.
         return ntosbe.build_image {
-            profile    = "ide",
+            profile    = "selfhost",
+            init       = { args = "\\SystemRoot\\lua\\main.lua" },
             efi_binary = efi_bin,
             output_dir = out_dir,
             src_root   = SCRIPT_DIR,
@@ -953,9 +963,14 @@ function M.main(opts)
     -- Group targets — order inside each list matters (deps first).
     -- ------------------------------------------------------------------
 
+    -- `mc` builds early — right after `link` — because the message
+    -- compiler is needed for codegen (ensure_bugcodes → bugcodes.h)
+    -- before `imagehlp`: imagehlp links rtl_user's imagedir.obj, and
+    -- rtl_user's sources include ntos.h → bugcodes.h.  mc itself only
+    -- needs the CL/LINK seeds, so it has no earlier dependency.
     local TOOL_TARGETS = {
-        "link", "mkmsg", "cvpack", "imagehlp", "cvdump", "dbg2dwf",
-        "pdbdump", "mc", "rc", "gensrv",
+        "link", "mc", "mkmsg", "cvpack", "imagehlp", "cvdump", "dbg2dwf",
+        "pdbdump", "rc", "gensrv",
     }
 
     local NTOSKRNL_TARGETS = {
@@ -1000,8 +1015,19 @@ function M.main(opts)
     targets.drivers  = function() return build_group("drivers",  DRIVER_TARGETS)  end
     targets.userland = function() return build_group("userland", USERLAND_TARGETS) end
 
+    -- `all` is the host build-everything target: every artifact —
+    -- tools, kernel, drivers, userland, the cr runtime and the UEFI
+    -- loader — but NOT a disk image.  Disk composition is a separate,
+    -- profile-specific step (`build.sh disk`, `make disk` / smoke-disk
+    -- / selftest / selfhost); baking one here would stage the whole NT
+    -- source tree (the selfhost profile) on every plain `build.sh`.
+    --
+    -- `all` is host-only — `cr` (mingw) and `efi` (gcc/gnu-efi) go
+    -- through run_make, which fails when not on_host.  The self-hosted
+    -- build never runs `all`; test.ntosbe enumerates the four portable
+    -- groups (tools/ntoskrnl/drivers/userland) explicitly.
     targets.all = function()
-        for _, g in ipairs({ "tools", "ntoskrnl", "drivers", "userland", "cr", "disk" }) do
+        for _, g in ipairs({ "tools", "ntoskrnl", "drivers", "userland", "cr", "efi" }) do
             local rc = targets[g]()
             if rc ~= 0 then return rc end
         end
@@ -1115,8 +1141,13 @@ function M.main(opts)
             }
         end
         if name == "disk" then
-            log("Cleaning build/disk/ ...")
+            log("Cleaning build/disk* ...")
+            -- The default dir plus the per-profile dirs the Makefile
+            -- composes into (build/disk-selftest, -selfhost, -smoke).
             rmrf(REPO_ROOT .. "/build/disk")
+            rmrf(REPO_ROOT .. "/build/disk-selftest")
+            rmrf(REPO_ROOT .. "/build/disk-selfhost")
+            rmrf(REPO_ROOT .. "/build/disk-smoke")
             return 0
         end
 
@@ -1281,7 +1312,7 @@ function M.main(opts)
             and "[--wibo-trace] [--no-syms]" or "[--no-syms]"
         platform.log("Usage: build.sh " .. flag_summary .. " [<target> ...]")
         platform.log("")
-        platform.log("No arguments → builds 'all' (every group + cr + disk).")
+        platform.log("No arguments → builds 'all' (every group + cr + boot-efi; no disk image).")
         platform.log("")
         platform.log("Flags:")
         if platform.on_host then
@@ -1309,7 +1340,7 @@ function M.main(opts)
         platform.log("  clean:<group>      — recurse over the group's members")
         platform.log("  clean:cr           — delegates to make -C cr clean")
         platform.log("  clean:efi          — delegates to make -C boot-efi clean")
-        platform.log("  clean:disk         — drops build/disk/")
+        platform.log("  clean:disk         — drops build/disk* (all profile dirs)")
     end
 
     -- argv parsing already handled at top of main() so the flags

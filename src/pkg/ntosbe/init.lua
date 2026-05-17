@@ -15,11 +15,13 @@
 --
 --   platform.lua    host-vs-OS abstraction: file I/O, directory
 --                   listing, timestamps, logging.
---   profiles/       one .lua per platform target.  Declarative
---                   description of {boot driver, services list,
---                   drivers to stage, network config, init exe}.
---                   Today's mkhive build_system_hive + mkdisk
---                   _CORE_FILES live in profiles/ide.lua.
+--   layers/         one .lua per capability slice.  Each layer owns
+--                   its driver files, SYSTEM-hive service entries and
+--                   boot-driver order.  See layers/core.lua.
+--   profiles/       one .lua per disk flavour: a layer list + the
+--                   init entry script.
+--   compose.lua     resolves a profile's layers (globs + `requires`)
+--                   and runs them into one hive + one file list.
 --
 -- Filesystem and disk-image format libraries (hive, mbr, fat16,
 -- ntfs, drive) live under pkg/nt/fs/ — this orchestrator pulls
@@ -35,7 +37,7 @@ M.fs       = require('nt.fs')
 -- build_image — builds SYSTEM hive + ESP boot disk for a given profile.
 --
 -- opts (table):
---   profile      = profile name (default "ide")
+--   profile      = profile name (default "selfhost")
 --   init         = { exe, args, stdio }  partial overrides ok
 --   efi_binary   = absolute path to BOOTX64.EFI                (required)
 --   output_dir   = where SYSTEM + esp.img land                 (required)
@@ -49,7 +51,6 @@ M.fs       = require('nt.fs')
 
 function M.build_image(opts)
     local platform = M.platform
-    local profile  = require('ntosbe.profiles.' .. (opts.profile or "ide"))
     local now      = platform.now()
 
     -- Resolve the paths the profile asks for.
@@ -66,13 +67,25 @@ function M.build_image(opts)
 
     local fs = M.fs
 
+    -- ---- Compose the disk from the profile's layers ----
+    -- The profile names a layer set; compose resolves it (globs +
+    -- `requires`) and runs each layer to yield the hive content and
+    -- the disk file list.  Default "selfhost" = the full disk, so a
+    -- bare `ntosbe` invocation behaves as it did pre-layers.
+    local composed = require('ntosbe.compose').compose {
+        profile   = opts.profile or "selfhost",
+        init      = opts.init,
+        paths     = paths,
+        list_tree = platform.list_tree,
+    }
+
     -- ---- Build hive ----
     local h = fs.hive.new("SYSTEM")
-    profile.apply(h, opts.init)
+    composed.apply(h)
     local hive_bytes = h:build(now)
 
     -- ---- Resolve disk file list + check sources exist ----
-    local files = profile.disk_files(paths, platform.list_tree)
+    local files = composed.files
     -- BOOTX64.EFI lives on the ESP for UEFI to find it.  Tag
     -- where='esp' so the partitioning loop below routes it.
     table.insert(files, 1,

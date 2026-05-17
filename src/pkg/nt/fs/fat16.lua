@@ -7,7 +7,7 @@
 -- Same on-disk format as the previous ntosbe.disk implementation
 -- (FAT16 type 0x06, NT 3.5 atdisk + fastfat compatible).  Profile
 -- knowledge — *which* files go on the disk — lives in
--- pkg/ntosbe/profiles/.
+-- pkg/ntosbe/layers/ (composed per profile by ntosbe/compose.lua).
 --
 -- Usage:
 --     local fs = require('nt.fs')
@@ -71,7 +71,9 @@ local function encode_83(name)
         ext  = ""
     end
     if #stem > 8 or #ext > 3 then
-        error("name " .. name .. " exceeds 8.3 limits", 2)
+        error("FAT16: name '" .. name .. "' exceeds the 8.3 limit "
+              .. "(max 8-char stem + 3-char ext) — rename it, or build "
+              .. "the disk with an NTFS layout (--layout=split-ntfs)", 2)
     end
     local function pad(s, n) return s .. string.rep(" ", n - #s) end
     return pad(stem, 8) .. pad(ext, 3)

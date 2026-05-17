@@ -4,7 +4,7 @@
 --
 --   ensure_error_h   ntosbe.generr      → NTOS/RTL/error.h
 --   ensure_bugcodes  mc BUGCODES.MC   → NTOS/INC/bugcodes.h, INIT/bugcodes.rc
---   ensure_serlog    mc SERLOG.MC     → DD/SERIAL/serlog.h, /serlog.rc
+--   ensure_serlog    mc serlog.mc     → DD/SERIAL/serlog.h, /serlog.rc
 --   geni386          cl386 + link + run → SDK/INC/KS386.INC, NTOS/INC/HAL386.INC
 --
 -- Each returns true on success, false on failure (and platform.log's
@@ -90,49 +90,48 @@ function M.ensure_bugcodes()
 end
 
 -- ----------------------------------------------------------------
--- ensure_serlog — serial.sys's SERLOG.MC compiled to serlog.rc/.h
--- before the SERIAL build.
+-- ensure_serlog — serial.sys's serlog.mc compiled to serlog.rc/.h
+-- before the SERIAL build.  mc.exe names its output after the input
+-- file, so a lower-case serlog.mc yields serlog.h / serlog.rc
+-- directly — which is what SERIAL.RC's `#include "serlog.rc"` wants.
+-- No case-fixup copy: producer and consumer agree on the name.
 -- ----------------------------------------------------------------
 
 function M.ensure_serlog()
     local dir = cfg.ntos .. "/DD/SERIAL"
     if platform.file_exists(dir .. "/serlog.rc")
        and platform.file_exists(dir .. "/serlog.h")
-       and newer_than(dir .. "/serlog.rc", dir .. "/SERLOG.MC") then
+       and newer_than(dir .. "/serlog.rc", dir .. "/serlog.mc") then
         return true
     end
-    platform.log(">>> mc SERLOG.MC -> serlog.h/.rc")
-    if toolchain.run_wibo_tool(dir, "mc", "SERLOG.MC") ~= 0 then
-        platform.log("!!! mc on SERLOG.MC failed")
+    platform.log(">>> mc serlog.mc -> serlog.h/.rc")
+    if toolchain.run_wibo_tool(dir, "mc", "serlog.mc") ~= 0 then
+        platform.log("!!! mc on serlog.mc failed")
         return false
     end
-    copy_if_present(dir .. "/SERLOG.rc", dir .. "/serlog.rc")
-    copy_if_present(dir .. "/SERLOG.h",  dir .. "/serlog.h")
     return true
 end
 
 -- ----------------------------------------------------------------
--- ensure_cmdmsg — cmd.exe's CMDMSG.MC compiled to cmdmsg.rc/.h +
--- msg00001.bin before the CMD build.  Same shape as ensure_bugcodes:
--- the .mc emits CASE.h / CASE.rc on Windows, we lowercase the copies
--- so cmd.h's `#include "cmdmsg.h"` and cmd.rc's `RCINCLUDE cmdmsg.rc`
--- find them on a case-sensitive Linux FS.
+-- ensure_cmdmsg — cmd.exe's cmdmsg.mc compiled to cmdmsg.rc/.h +
+-- msg00001.bin before the CMD build.  Like ensure_serlog: the input
+-- is lower-case (cmdmsg.mc), so mc.exe emits cmdmsg.h / cmdmsg.rc
+-- directly — matching CMD.H's `#include "cmdmsg.h"`, CMD.RC's
+-- `RCINCLUDE cmdmsg.rc` and the cmdmsg.mc rule in CMD/MAKEFILE.INC.
 -- ----------------------------------------------------------------
 
 function M.ensure_cmdmsg()
     local dir = cfg.nt_root .. "/PRIVATE/WINDOWS/CMD"
     if platform.file_exists(dir .. "/cmdmsg.rc")
        and platform.file_exists(dir .. "/cmdmsg.h")
-       and newer_than(dir .. "/cmdmsg.rc", dir .. "/CMDMSG.MC") then
+       and newer_than(dir .. "/cmdmsg.rc", dir .. "/cmdmsg.mc") then
         return true
     end
-    platform.log(">>> mc CMDMSG.MC -> cmdmsg.h/.rc")
-    if toolchain.run_wibo_tool(dir, "mc", "CMDMSG.MC") ~= 0 then
-        platform.log("!!! mc on CMDMSG.MC failed")
+    platform.log(">>> mc cmdmsg.mc -> cmdmsg.h/.rc")
+    if toolchain.run_wibo_tool(dir, "mc", "cmdmsg.mc") ~= 0 then
+        platform.log("!!! mc on cmdmsg.mc failed")
         return false
     end
-    copy_if_present(dir .. "/CMDMSG.rc",   dir .. "/cmdmsg.rc")
-    copy_if_present(dir .. "/CMDMSG.h",    dir .. "/cmdmsg.h")
     return true
 end
 

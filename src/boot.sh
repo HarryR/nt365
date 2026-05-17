@@ -3,8 +3,12 @@
 # Boot MicroNT UEFI loader under OVMF in QEMU.
 #
 # Usage: boot.sh [--machine pc|q35] [--disk ide|nvme|virtio-blk]
-#                [--vga] [--gdb] [--trace] [--netdump] [--mem MB]
-#                [--kernel-opts STRING]
+#                [--disk-image PATH] [--vga] [--gdb] [--trace]
+#                [--netdump] [--mem MB] [--kernel-opts STRING]
+#   --disk-image PATH
+#               Boot this ESP image instead of the default
+#               build/disk/esp.img.  The Makefile passes per-profile
+#               images (build/disk-selftest/esp.img, …) through here.
 #   --machine   QEMU machine type. q35 = ICH9 (default, modern PCIe
 #               topology, no legacy IDE bus); pc = i440fx + PIIX3
 #               (legacy shape, classic chipset with legacy IDE).
@@ -120,6 +124,16 @@ while [ $# -gt 0 ]; do
         --disk)
             shift
             DISK="$1"
+            shift
+            ;;
+        --disk-image)
+            # Override the boot ESP image.  ntosbe now composes
+            # per-profile images into separate output dirs
+            # (build/disk-selftest, build/disk-selfhost, …); the
+            # Makefile passes the right one here so the lean and full
+            # disks don't clobber a single build/disk/esp.img.
+            shift
+            ESP_IMG="$1"
             shift
             ;;
         --extra-disk)

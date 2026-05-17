@@ -14,7 +14,7 @@
 -- selftest.lua for the ordering contract.
 --
 -- The vionet adapter must come up with IPAddress="0.0.0.0" and
--- SubnetMask="0.0.0.0" — see src/pkg/ntosbe/profiles/ide.lua.  The
+-- SubnetMask="0.0.0.0" — see src/pkg/ntosbe/layers/net.lua.  The
 -- NTE is created without NTE_VALID (NTIP.C:1607-1608); set_address
 -- promotes it once the lease lands.
 

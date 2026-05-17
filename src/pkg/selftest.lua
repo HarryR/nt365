@@ -59,8 +59,10 @@ require('test.fuzz.ob')
 require('test.fuzz.io')
 require('test.fuzz.ps')
 require('test.nls')
-require('test.msvc')
-require('test.ntosbe')
+-- test.msvc (spawns the MS toolchain EXEs) and test.ntosbe (in-OS
+-- NMAKE self-host probe) need \SystemRoot\src and \SystemRoot\pkg\
+-- msvc20\ — they run from the `selfhost` profile / selfhost.lua, which
+-- stages those.  The selftest disk omits them so it composes fast.
 
 local ok = t.summary()
 print("")

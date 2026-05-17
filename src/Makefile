@@ -6,8 +6,11 @@
 # Targets
 #   make disk         — bake the boot disk image from current artifacts
 #   make boot         — disk + boot under QEMU/OVMF (canonical: q35+nvme)
-#   make selftest     — boot pointed at selftest.lua, watch for ALL PASSED
-#   make smoke-disk   — disk image flavoured for smoke.lua (no boot)
+#   make selftest     — compose the `selftest` profile (lean disk, no NT
+#                       source tree) + boot it; watch for ALL PASSED
+#   make selfhost     — compose the `selfhost` profile (full disk: NT
+#                       source tree + MS toolchain) + boot it
+#   make smoke-disk   — compose the `smoke` profile disk (no boot)
 #   make smoketest    — boot smoke disk (used by CI matrix per shape)
 #   make gdb          — launch gdb with ntoskrnl + hal .dwf loaded
 #                       and attach to a running boot.sh --gdb session
@@ -41,7 +44,7 @@ BOOT_EFI    := $(SRC)/boot-efi
 BUILD       := $(REPO)/build/disk
 HOST_LUAJIT := $(REPO)/build/host-tools/luajit
 
-.PHONY: cr disk boot selftest smoketest smoke-disk gdb
+.PHONY: cr disk boot selftest selfhost smoketest smoke-disk gdb
 
 # ---------------- cr binaries (run.exe + lua.dll) -------------------
 #
@@ -52,12 +55,17 @@ cr:
 
 # ---------------- disk image ----------------------------------------
 #
-# Init args override.  ntosbe's profiles/ide.lua defaults point at
-# lua\run.exe with \SystemRoot\lua\main.lua + stdio on \Device\Serial0;
-# we override Init\Args here to swap main.lua for selftest.lua /
-# smoke.lua per target below.  Empty by default → profile defaults
-# stick (so plain `make boot` runs main.lua).
-INIT_ARGS_FLAG ?=
+# PROFILE picks the ntosbe profile — the layer set ntosbe composes.
+# Empty → ntosbe's own default (`selfhost`, the full disk), so a plain
+# `make disk` / `make boot` still bakes a complete image.  The
+# selftest / selfhost / smoke* targets below set it explicitly.
+PROFILE_FLAG ?=
+
+# Init args override.  Each profile carries its own entry script
+# (selftest.lua / selfhost.lua / smoke.lua); the interactive `make boot`
+# instead wants main.lua, so that is the default here.  The profile-
+# driven targets clear this so the profile's own Init\Args wins.
+INIT_ARGS_FLAG ?= --init-args '\SystemRoot\lua\main.lua'
 
 # LAYOUT picks the disk shape: 'single' / 'split-fat' / 'split-ntfs'.
 # Default = profile default (split-fat).  Same set of files; the
@@ -71,7 +79,7 @@ endif
 disk: cr
 	mkdir -p $(BUILD)
 	$(SRC)/bootstrap.sh
-	$(HOST_LUAJIT) -e 'package.path="$(SRC)/pkg/?.lua;$(SRC)/pkg/?/init.lua;"..package.path; os.exit(require("ntosbe").main(arg))' -- ntosbe --src-root=$(SRC) --output-dir=$(BUILD) --efi-binary=$(BOOT_EFI)/BOOTX64.EFI $(INIT_ARGS_FLAG) $(LAYOUT_FLAG)
+	$(HOST_LUAJIT) -e 'package.path="$(SRC)/pkg/?.lua;$(SRC)/pkg/?/init.lua;"..package.path; os.exit(require("ntosbe").main(arg))' -- ntosbe --src-root=$(SRC) --output-dir=$(BUILD) --efi-binary=$(BOOT_EFI)/BOOTX64.EFI $(PROFILE_FLAG) $(INIT_ARGS_FLAG) $(LAYOUT_FLAG)
 
 # ---------------- boot / run targets --------------------------------
 #
@@ -104,16 +112,16 @@ BOOT_REDIRECT :=
 endif
 
 boot: disk
-	$(SRC)/boot.sh $(BOOT_FLAGS) $(BOOT_REDIRECT)
+	$(SRC)/boot.sh --disk-image $(BUILD)/esp.img $(BOOT_FLAGS) $(BOOT_REDIRECT)
 
-selftest: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\selftest.lua'
-# Selftest exercises the in-OS rebuild path which drives NMAKE.  NMAKE's
-# mtime comparison is `>=` and FAT16 has 2-second granularity, so a
-# fresh disk image where SOURCES and ntosbe-generated _objects.mac land
-# in the same FAT timestamp slot triggers the legacy `build.exe -O`
-# rebuild rule (which we don't ship).  NTFS has 100ns mtime resolution,
-# so the collision can't happen.  Default selftest layout is split-ntfs
-# unless the operator overrides via `make selftest LAYOUT=split-fat`.
+# Selftest — the lean disk: full driver config but no NT source tree
+# or MS toolchain, so it composes fast.  test.fs's NTFS directory-index
+# stress tests want a real NTFS volume, so the layout defaults to
+# split-ntfs; override with `make selftest LAYOUT=split-fat`.
+# Each profile carries its own Init\Args, so INIT_ARGS_FLAG is cleared.
+selftest: PROFILE_FLAG := --profile selftest
+selftest: INIT_ARGS_FLAG :=
+selftest: BUILD := $(REPO)/build/disk-selftest
 selftest: LAYOUT_FLAG := --layout=$(or $(LAYOUT),split-ntfs)
 # --netdump dumps every virtio-net frame to ./vionet.pcap so DHCP
 # (and other network-layer test) traffic can be inspected with
@@ -121,18 +129,35 @@ selftest: LAYOUT_FLAG := --layout=$(or $(LAYOUT),split-ntfs)
 selftest: BOOT_FLAGS += --netdump
 selftest: boot
 
+# Selfhost — the full disk: NT source tree + MS toolchain.  Exercises
+# the in-OS rebuild path which drives NMAKE.  NMAKE's mtime comparison
+# is `>=` and FAT16 has 2-second granularity, so a fresh disk image
+# where SOURCES and ntosbe-generated _objects.mac land in the same FAT
+# timestamp slot triggers the legacy `build.exe -O` rebuild rule (which
+# we don't ship).  NTFS has 100ns mtime resolution, so the collision
+# can't happen — hence the split-ntfs default.
+selfhost: PROFILE_FLAG := --profile selfhost
+selfhost: INIT_ARGS_FLAG :=
+selfhost: BUILD := $(REPO)/build/disk-selfhost
+selfhost: LAYOUT_FLAG := --layout=$(or $(LAYOUT),split-ntfs)
+selfhost: boot
+
 # Smoke test — minimal "did the system boot on this hardware shape?"
-# check.  Disk has Init\Args pointed at smoke.lua, which prints
-# 'SMOKE OK' and powers off.  Used across the (MACHINE, DISK) matrix
-# in CI for ~10 s coverage per combo, vs ~4 min for the full selftest.
+# check.  The `smoke` profile points Init\Args at smoke.lua, which
+# prints 'SMOKE OK' and powers off.  Used across the (MACHINE, DISK)
+# matrix in CI for ~10 s coverage per combo, vs ~4 min for selftest.
 #
 # `smoke-disk` builds just the smoke-flavour disk image so CI can
 # build once and reboot it across the matrix without rebuilding
 # the disk per combo.
-smoke-disk: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\smoke.lua'
+smoke-disk: PROFILE_FLAG := --profile smoke
+smoke-disk: INIT_ARGS_FLAG :=
+smoke-disk: BUILD := $(REPO)/build/disk-smoke
 smoke-disk: disk
 
-smoketest: INIT_ARGS_FLAG = --init-args '\SystemRoot\lua\smoke.lua'
+smoketest: PROFILE_FLAG := --profile smoke
+smoketest: INIT_ARGS_FLAG :=
+smoketest: BUILD := $(REPO)/build/disk-smoke
 smoketest: boot
 
 # ---------------- gdb DWARF + interactive session -------------------

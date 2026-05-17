@@ -156,12 +156,28 @@ src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/win31evt.rc
 src/NT/PRIVATE/WINDOWS/BASE/ADVAPI/MSG00001.bin
 
 # NTOS bugcodes — mc compiles NLS/BUGCODES.MC to .h/.rc/.bin; build.sh
-# copies the outputs into INIT and INC.
+# copies the outputs into INIT/bugcodes.rc + INC/bugcodes.h.  All
+# generated, all ignored.  bugcodes.h is included via ntos.h, so the
+# first NTOS compile (RTL_USER, via imagehlp in the tools phase) needs
+# it — the tools-phase ordering builds `mc` before `imagehlp`, and
+# rtl/rtl_user run ensure_bugcodes themselves, so it is regenerated in
+# time without committing it.
 src/NT/PRIVATE/NTOS/NLS/BUGCODES.h
 src/NT/PRIVATE/NTOS/NLS/BUGCODES.rc
 src/NT/PRIVATE/NTOS/NLS/MSG00001.bin
 src/NT/PRIVATE/NTOS/INIT/bugcodes.rc
 src/NT/PRIVATE/NTOS/INIT/msg00001.bin
+src/NT/PRIVATE/NTOS/INC/bugcodes.h
+
+# serial.sys + cmd.exe message resources — mc compiles serlog.mc /
+# cmdmsg.mc to .h/.rc + MSG00001.bin each build (codegen.lua's
+# ensure_serlog / ensure_cmdmsg).  Only the .mc sources are tracked.
+src/NT/PRIVATE/NTOS/DD/SERIAL/serlog.h
+src/NT/PRIVATE/NTOS/DD/SERIAL/serlog.rc
+src/NT/PRIVATE/NTOS/DD/SERIAL/MSG00001.bin
+src/NT/PRIVATE/WINDOWS/CMD/cmdmsg.h
+src/NT/PRIVATE/WINDOWS/CMD/cmdmsg.rc
+src/NT/PRIVATE/WINDOWS/CMD/MSG00001.bin
 
 # rpcutil is a 3-file static lib linked into advapi32.
 src/NT/PUBLIC/SDK/LIB/I386/rpcutil.lib

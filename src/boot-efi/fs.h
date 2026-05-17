@@ -50,4 +50,19 @@ EFI_STATUS fs_boot_disk_size(UINT64 *out_blocks, UINT32 *out_block_size);
  * signature and checksum the kernel matches against. */
 EFI_STATUS fs_boot_disk_read_sector0(void *out, UINTN out_size);
 
+/* A single directory entry returned by fs_listdir. */
+typedef struct {
+    CHAR16 name[64];   /* entry filename, NUL-terminated */
+    int    is_dir;     /* nonzero if the entry is a subdirectory */
+} fs_dirent;
+
+/*
+ * Enumerate the directory `path`, filling out[0..*out_count-1] with up
+ * to `max` entries ("." and ".." excluded).  UEFI returns entries in
+ * directory order — the caller sorts if order matters.  Used to walk
+ * the \Boot\ boot-driver tree on the ESP.
+ */
+EFI_STATUS fs_listdir(const CHAR16 *path, fs_dirent *out,
+                      UINTN max, UINTN *out_count);
+
 #endif

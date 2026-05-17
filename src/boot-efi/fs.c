@@ -220,6 +220,61 @@ done:
     return status;
 }
 
+EFI_STATUS fs_listdir(const CHAR16 *path, fs_dirent *out,
+                      UINTN max, UINTN *out_count) {
+    EFI_FILE_PROTOCOL *dir;
+    EFI_STATUS         status;
+    UINTN              count = 0;
+
+    *out_count = 0;
+    if (!g_root) return EFI_NOT_READY;
+
+    status = uefi_call_wrapper(g_root->Open, 5, g_root, &dir,
+                               (CHAR16 *)path, EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(status)) {
+        BXLOG(L"opendir %s failed: 0x%lx", path, (UINT64)status);
+        return status;
+    }
+
+    /* EFI_FILE_INFO is variable-length (the FileName array is its
+     * tail); 1 KiB of scratch holds any realistic entry name.  Read()
+     * on a directory handle yields one EFI_FILE_INFO per call and
+     * returns a zero byte count at end-of-directory. */
+    static UINT8 entbuf[1024] __attribute__((aligned(8)));
+    for (;;) {
+        UINTN bsz = sizeof entbuf;
+        status = uefi_call_wrapper(dir->Read, 3, dir, &bsz, entbuf);
+        if (EFI_ERROR(status)) {
+            BXLOG(L"readdir %s failed: 0x%lx", path, (UINT64)status);
+            break;
+        }
+        if (bsz == 0) { status = EFI_SUCCESS; break; }   /* end of dir */
+
+        EFI_FILE_INFO *info = (EFI_FILE_INFO *)entbuf;
+        const CHAR16  *nm   = info->FileName;
+        if (nm[0] == L'.' &&
+            (nm[1] == 0 || (nm[1] == L'.' && nm[2] == 0)))
+            continue;                                    /* "." / ".." */
+
+        if (count >= max) {
+            BXLOG(L"listdir %s: more than %lu entries, truncating",
+                  path, (UINT64)max);
+            break;
+        }
+
+        const UINTN cap = sizeof(out[0].name) / sizeof(CHAR16) - 1;
+        UINTN j = 0;
+        while (nm[j] && j < cap) { out[count].name[j] = nm[j]; j++; }
+        out[count].name[j] = 0;
+        out[count].is_dir  = (info->Attribute & EFI_FILE_DIRECTORY) ? 1 : 0;
+        count++;
+    }
+
+    uefi_call_wrapper(dir->Close, 1, dir);
+    *out_count = count;
+    return status;
+}
+
 EFI_STATUS fs_read_into(const CHAR16 *path, void *buf, UINTN buf_size,
                         UINTN *out_size) {
     EFI_FILE_PROTOCOL *file;

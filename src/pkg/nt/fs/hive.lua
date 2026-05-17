@@ -3,7 +3,7 @@
 -- Pure-Lua port of tools/mkhive.py.  Same on-disk format, same
 -- byte-level layout, no behaviour change (verified by parity against
 -- the Python output).  Profile knowledge — i.e. *which* keys + values
--- the SYSTEM hive should contain — lives in pkg/ntosbe/profiles/, not
+-- the SYSTEM hive should contain — lives in pkg/ntosbe/layers/, not
 -- here.  This module just turns a declarative tree into the binary
 -- hive format the kernel parses during Phase 0/1 init.
 --

@@ -87,9 +87,9 @@ jobs:
         #   - tools/ntoskrnl/drivers/userland (wibo + MS toolchain)
         #   - cr (mingw cross-compile of run.exe + lua.dll)
         #   - boot-efi (gcc + gnu-efi for BOOTX64.EFI)
-        #   - default disk image (main.lua flavour)
-        # Smoke-disk and selftest below re-bake the disk with their
-        # own INIT_ARGS but reuse every other artifact.
+        # 'all' builds every artifact but composes NO disk image — the
+        # smoke / selftest / selfhost steps below each bake their own
+        # disk (their own ntosbe profile) and reuse every other artifact.
         run: src/build.sh
 
       - name: smoke matrix across (machine, disk)
@@ -120,7 +120,8 @@ jobs:
             for disk in $disks; do
               log="smoke-$machine-$disk.log"
               echo "=== smoke: machine=$machine disk=$disk ==="
-              timeout 60 src/boot.sh --machine "$machine" --disk "$disk" \
+              timeout 60 src/boot.sh --disk-image build/disk-smoke/esp.img \
+                --machine "$machine" --disk "$disk" \
                 < /dev/null 2>&1 | tee "$log" || true
               if grep -q '^SMOKE OK' "$log"; then
                 echo "  PASS: $machine+$disk"
@@ -133,31 +134,42 @@ jobs:
           exit $fail
 
       - name: run selftest under QEMU
-        # Boot micront under OVMF/QEMU with INIT_ARGS pointed at
-        # selftest.lua; the Lua harness prints a summary and shuts
-        # down cleanly. TCG-only (no /dev/kvm in containers); the
-        # selftest does a full in-OS rebuild (kernel + drivers +
-        # userland) which has grown over time as more drivers
-        # landed -- now ~10 min on a GitHub runner under TCG.
-        # 20-minute wall timeout gives headroom for further growth
-        # without artificial CI failures, while still bounding a
-        # genuinely hung VM.
+        # Boot micront under OVMF/QEMU with the `selftest` ntosbe
+        # profile — the lean disk: kernel + driver + fuzz suites, no NT
+        # source tree, no in-OS rebuild.  The Lua harness prints a
+        # summary and shuts down cleanly.  Fast: composes a small disk
+        # and runs the suites in a single boot.
         #
-        # Runs AFTER the smoke matrix so any boot-side regression
-        # fails the workflow before this step starts the in-OS rebuild
-        # ouroboros.
+        # Runs AFTER the smoke matrix (a boot-side regression fails the
+        # workflow first) and BEFORE selfhost (the expensive in-OS
+        # rebuild).
         #
         # Tee to selftest.log and grep for the harness's ALL PASSED
-        # sentinel. Any failed tests print FAILURES instead so grep -q
-        # returns non-zero and the step fails. The `tee` exit status
-        # doesn't matter for pass/fail — grep is the signal.
+        # sentinel. A failed suite prints FAILURES instead, so grep -q
+        # returns non-zero and the step fails.
         #
         # </dev/null: boot.sh uses -chardev stdio,mux=on for the VM's
         # serial console. Under `act`-style Docker containers without
         # an interactive TTY, qemu can block waiting on stdin. Feeding
-        # /dev/null makes the input stream close immediately so the
-        # mux doesn't stall.
-        timeout-minutes: 25
+        # /dev/null closes the input stream so the mux doesn't stall.
+        timeout-minutes: 15
         run: |
           make -C src selftest < /dev/null 2>&1 | tee selftest.log
           grep -q '^ALL PASSED' selftest.log
+
+      - name: run selfhost (in-OS self-build) under QEMU
+        # Boot the `selfhost` ntosbe profile — the full disk: NT source
+        # tree + MS toolchain.  selfhost.lua drives the in-OS rebuild
+        # (tools + kernel + drivers + userland) via NMAKE plus the
+        # test.msvc toolchain probe — the self-build ouroboros.
+        # TCG-only (no /dev/kvm in containers); the in-OS rebuild has
+        # grown with the driver set and now runs ~10 min on a GitHub
+        # runner under TCG.  The 30-minute wall timeout gives headroom
+        # for further growth while still bounding a genuinely hung VM.
+        #
+        # Runs LAST: the most expensive stage, reached only once the
+        # smoke matrix and selftest have passed.
+        timeout-minutes: 30
+        run: |
+          make -C src selfhost < /dev/null 2>&1 | tee selfhost.log
+          grep -q '^ALL PASSED' selfhost.log
