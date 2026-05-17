@@ -154,6 +154,15 @@ Return Value:
     PreviousMode = KeGetPreviousMode();
     if (PreviousMode != KernelMode) {
         try {
+            //
+            // Probe ObjectAttributes before the Attributes peek below.
+            // A bare dereference is not made safe by the enclosing try:
+            // a kernel-range pointer faults past SEH and bugchecks.
+            //
+            ProbeForRead( ObjectAttributes,
+                          sizeof( *ObjectAttributes ),
+                          sizeof( ULONG )
+                        );
             CapturedAttributes = ObjectAttributes->Attributes;
             ProbeForRead( LinkTarget, sizeof( *LinkTarget ), sizeof( UCHAR ) );
             CapturedLinkTarget = *LinkTarget;

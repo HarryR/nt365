@@ -74,14 +74,22 @@ symbolic link object via `ObCreateObject` sized by
 `MaximumLength` (USHORT-bounded), copies the link target inside a
 second `__try`, inserts the handle, writes the handle to user.
 
-- [x] C1 Probe-then-deref TOCTOU
-  - `ObjectAttributes->Attributes` and `*LinkTarget` read once
-    into locals inside the probe try at `:155-171`.
-  - The follow-on `RtlMoveMemory` at `:221` reads
-    `CapturedLinkTarget.Buffer` *again* from user memory — same
-    pointer probed at `:160` — wrapped in its own `__try` at
-    `:220-229`.  TOCTOU window between probe and copy is closed
-    by the inner try (faults caught; no other consequence).
+- [x] C1 Probe-then-deref TOCTOU — **finding** *(closed: P14 deref-before-probe sweep)*
+  - The prologue read `ObjectAttributes->Attributes` at `:166`
+    with no probe of `ObjectAttributes` itself.  The enclosing
+    `__try` does not make that safe — a kernel-range
+    `ObjectAttributes` faults past SEH and bug-checks (pattern
+    P14, same shape as `NtCreatePort`).  The original audit pass
+    missed it: a bare deref *inside* the probe try reads as clean
+    only if `__try` is mistaken for a pointer validator.  Closed
+    by `ProbeForRead( ObjectAttributes, … )` at `:162-165` ahead
+    of the peek.
+  - `*LinkTarget` is probed at `:167` and captured at `:168`; the
+    follow-on `RtlMoveMemory` at `:230` re-reads
+    `CapturedLinkTarget.Buffer` from user memory — same pointer
+    probed at `:169` — inside its own `__try` at `:229-238`.
+    TOCTOU window between probe and copy closed by the inner try
+    (faults caught; no other consequence).
 - [x] C2 Direct user-pointer deref without capture
   - Header values captured into locals; buffer copied wholesale
     into kernel-allocated symbolic link.
