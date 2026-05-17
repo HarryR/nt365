@@ -78,12 +78,12 @@ NTSTATUS __stdcall NtReleaseSemaphore(HANDLE h,
 NTSTATUS __stdcall NtCreateTimer(HANDLE *h, ULONG Access,
                                  OBJECT_ATTRIBUTES *oa,
                                  int TimerType);
+/* NT 3.5 NtSetTimer is 5-arg and one-shot: the ResumeTimer / Period
+ * parameters (and periodic timers) did not arrive until NT 4.0. */
 NTSTATUS __stdcall NtSetTimer(HANDLE h,
                               LARGE_INTEGER *DueTime,
                               void *TimerApcRoutine,
                               void *TimerContext,
-                              unsigned char ResumeTimer,
-                              long Period,
                               unsigned char *PreviousState);
 NTSTATUS __stdcall NtCancelTimer(HANDLE h, unsigned char *CurrentState);
 
@@ -207,22 +207,19 @@ function M.NtCreateTimer(access, oa, timer_type)
     return handle.wrap(h[0])
 end
 
--- Set a timer's due time + optional period. `due_time` is a
--- LARGE_INTEGER; build via ke.timeout for relative or stamp
--- QuadPart positive for absolute. `period_ms` is milliseconds
--- between firings (0 = one-shot). `apc_routine`/`apc_context` are
--- nil unless the caller is wiring a real APC — ffi.callback into
--- Lua here is treacherous on cross-thread delivery, and no-op for
--- most compositor-style uses.
+-- Set a timer's due time. `due_time` is a LARGE_INTEGER; build via
+-- ke.timeout for relative or stamp QuadPart positive for absolute.
+-- `apc_routine`/`apc_context` are nil unless the caller is wiring a
+-- real APC — ffi.callback into Lua here is treacherous on
+-- cross-thread delivery, and no-op for most compositor-style uses.
+-- NT 3.5's NtSetTimer is one-shot only; there is no period parameter
+-- (periodic timers arrived in NT 4.0).
 --
 -- Returns the previous signaled-state flag.
-function M.NtSetTimer(h, due_time, period_ms,
-                      apc_routine, apc_context, resume_timer)
+function M.NtSetTimer(h, due_time, apc_routine, apc_context)
     local prev = ffi.new('unsigned char[1]')
     local st = ntdll.NtSetTimer(handle.raw(h), due_time,
-                                apc_routine, apc_context,
-                                resume_timer and 1 or 0,
-                                period_ms or 0, prev)
+                                apc_routine, apc_context, prev)
     if err.is_error(st) then err.raise('NtSetTimer', st) end
     return prev[0] ~= 0
 end
@@ -336,12 +333,10 @@ local Timer = {}
 Timer.__index = Timer
 
 -- Set the timer. `due_seconds` = relative delay in seconds (or nil
--- for an infinite delay). `period_seconds` = periodic firing interval
--- (nil = one-shot).
-function Timer:set(due_seconds, period_seconds)
+-- for an infinite delay). NT 3.5's NtSetTimer is one-shot only.
+function Timer:set(due_seconds)
     local due = ke().timeout(due_seconds)
-    local period_ms = period_seconds and math.floor(period_seconds * 1000) or 0
-    return M.NtSetTimer(self._h, due, period_ms)
+    return M.NtSetTimer(self._h, due)
 end
 
 -- Returns true if the timer was signaled at cancel time.

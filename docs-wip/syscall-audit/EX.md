@@ -1491,6 +1491,20 @@ The vast majority of EX is mechanical sync-object plumbing
 with no user-pointer surface beyond `HANDLE` outputs.
 Mutant/Event/Semaphore/Timer query+set sigs are textbook.
 
+**P14 (deref-before-probe) — swept clean.**  A dedicated P14
+prologue audit of every EX `Nt*` entry point found no
+deref-before-probe: create/open probe the OUT handle
+(`ProbeForWriteHandle`) and hand `OBJECT_ATTRIBUTES` to
+`ObCreateObject` / `ObOpenObjectByName`; query probes the
+output buffer + `ReturnLength`; the signal syscalls probe
+their optional previous-state OUT param; `NtSetTimer` probes
+`DueTime` (`ProbeForRead`) before the capture; `NtRaiseHardError`
+bounds-checks `NumberOfParameters`, probes `Response` and the
+`Parameters` array, then probe-captures each nested
+`UNICODE_STRING`.  `test/fuzz/ex.lua` is the 31-test
+confirm-net (kernel-range pointer-slot sweep over the bridged
+event / event-pair / mutant / semaphore / timer syscalls).
+
 `NtSystemDebugControl` is `SeDebugPrivilege`-gated and
 deliberately exposes kernel state — by design.  The C10/C12
 "findings" there are documented for completeness rather than

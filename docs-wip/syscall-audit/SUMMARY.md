@@ -500,9 +500,9 @@ Surfaced while building the IOCP completion-source test helper
 
 ### P14 — Untrusted-pointer deref without a preceding probe
 
-**LPC, SE, OB, IO, PS, MM, CM swept; reach beyond unknown.**  Found
-post-audit by the `test/fuzz/*.lua` pointer-slot sweeps, not by the
-static pass.
+**All 8 NTOS subsystems swept (LPC, SE, OB, IO, PS, MM, CM, EX).**
+Found post-audit by the `test/fuzz/*.lua` pointer-slot sweeps, not by
+the static pass.
 
 **Defect.**  A syscall reads a field of a caller-supplied `IN`
 pointer before a `ProbeForRead/Write` (or a capture helper) has
@@ -547,10 +547,11 @@ filed as an "ad-hoc bug."  Neither was generalised, so the catalog
 had no P14 entry and the audit never swept for it.  A one-off that
 is really a pattern instance is a catalog gap.
 
-**Reach.**  Unknown by construction — the static pass did not look
-for this class.  LPC, SE, OB, IO, PS, MM and CM have since been swept
-with the per-subsystem `test/fuzz/*.lua` pointer-slot sweeps: SE, IO
-and PS audited clean, LPC, OB and MM one-plus fixes each.  CM's
+**Reach.**  Unknown by construction at the time of the static pass —
+which did not look for this class — but now bounded: all 8 NTOS
+subsystems (LPC, SE, OB, IO, PS, MM, CM, EX) have been swept with the
+per-subsystem `test/fuzz/*.lua` pointer-slot sweeps.  SE, IO, PS and
+EX audited clean; LPC, OB and MM took one-plus fixes each.  CM's
 retail prologues audited clean — every syscall probes its caller
 pointers or hands `OBJECT_ATTRIBUTES` to `ObOpenObjectByName` — but
 the per-prologue `CMLOG`/`KdPrint` argument-logging dereferenced
@@ -558,8 +559,9 @@ caller pointers before any probe.  That is dead code in the shipped
 `DBG=0` build (`KdPrint` discards its arguments when `DBG=0`), so it
 is not a retail defect; it was a latent deref-before-probe for
 checked builds.  Stripped from `NTAPI.C` so CM is clean in both
-build flavours.  EX remains unswept — every `Nt*` syscall with an
-`IN` pointer is a candidate.
+build flavours.  The NTOS P14 sweep is complete; `Nt*` syscalls in
+the non-core kernel components (drivers, KE wait paths) remain
+candidates if a future regression surface warrants it.
 
 **Severity.**  Local DoS — system bug-check from an unprivileged
 caller passing a kernel-range pointer.  No privilege required
@@ -679,7 +681,7 @@ pointer-slot fuzz sweep is the enforcement and regression net.
 | ~~P11 — Must-succeed fallback~~ (closed: fallback dropped in `READWRT.C`) | 1 site | done |
 | ~~P12 — `NtAccessCheck` adhoc~~ (closed: SE wrap-up commit) | 4 sites | done |
 | ~~P13 — SetInfo access-table off-by-one~~ (closed: missing entry inserted in `IODATA.C`) | 1 site | done |
-| P14 — Untrusted-pointer deref (LPC/SE/OB/IO/PS/MM/CM swept; EX TBD) | 6 sites done + CM CMLOG strip, rest pending fuzz | LPC/SE/OB/IO/PS/MM/CM done |
+| P14 — Untrusted-pointer deref (all 8 NTOS subsystems swept) | 6 sites done + CM CMLOG strip | LPC/SE/OB/IO/PS/MM/CM/EX done |
 | **Subtotal — direct fixes** | **~60 edits** | **~400 lines** |
 | Primitives backport | 7 primitives | ~200-300 lines per primitive |
 

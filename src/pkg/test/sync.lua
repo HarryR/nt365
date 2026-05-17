@@ -129,19 +129,9 @@ t.test("timer: cancel before fire, wait times out", function()
     tm:close()
 end)
 
-t.test("timer: periodic fires repeatedly", function()
-    -- NotificationTimer with period=20ms. Wait three times, each
-    -- should succeed. Note: NotificationTimer stays signaled once
-    -- fired; periodic re-signals. Reset between waits is needed on
-    -- notification timers — use sync timer for the countdown test.
-    local tm = ex.timer{ notify = false }   -- SynchronizationTimer
-    tm:set(0.02, 0.02)                       -- 20ms due, 20ms period
-    t.ok(tm:wait(0.5), "first fire")
-    t.ok(tm:wait(0.5), "second fire")
-    t.ok(tm:wait(0.5), "third fire")
-    tm:cancel()
-    tm:close()
-end)
+-- NT 3.5's NtSetTimer is one-shot only — there is no periodic-timer
+-- syscall (KeSetTimerEx / a Period argument arrived in NT 4.0), so
+-- there is no periodic case to test here.
 
 -- ------------------------------------------------------------------
 -- EventPair
