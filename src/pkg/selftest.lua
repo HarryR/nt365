@@ -58,6 +58,7 @@ require('test.fuzz.lpc')
 require('test.fuzz.ob')
 require('test.fuzz.io')
 require('test.fuzz.ps')
+require('test.fuzz.mm')
 require('test.nls')
 -- test.msvc (spawns the MS toolchain EXEs) and test.ntosbe (in-OS
 -- NMAKE self-host probe) need \SystemRoot\src and \SystemRoot\pkg\

@@ -194,6 +194,15 @@ Return Value:
         try {
             ProbeForWriteHandle(SectionHandle);
             if (ARGUMENT_PRESENT (MaximumSize)) {
+                //
+                // Probe MaximumSize before the deref below.  A bare
+                // dereference is not made safe by the enclosing try:
+                // a kernel-range pointer faults past SEH and bugchecks.
+                //
+                ProbeForRead( MaximumSize,
+                              sizeof(LARGE_INTEGER),
+                              sizeof(ULONG)
+                            );
                 LargeSize = *MaximumSize;
             } else {
                 ZERO_LARGE (LargeSize);

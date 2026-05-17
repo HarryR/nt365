@@ -500,8 +500,9 @@ Surfaced while building the IOCP completion-source test helper
 
 ### P14 — Untrusted-pointer deref without a preceding probe
 
-**LPC, SE, OB, IO, PS swept; reach beyond unknown.**  Found post-audit
-by the `test/fuzz/*.lua` pointer-slot sweeps, not by the static pass.
+**LPC, SE, OB, IO, PS, MM swept; reach beyond unknown.**  Found
+post-audit by the `test/fuzz/*.lua` pointer-slot sweeps, not by the
+static pass.
 
 **Defect.**  A syscall reads a field of a caller-supplied `IN`
 pointer before a `ProbeForRead/Write` (or a capture helper) has
@@ -531,9 +532,10 @@ validated it.  The NT 3.5 house style wraps the prologue in one
 | `NtConnectPort` | `LPCCONN.C` | `ClientView/ServerView->Length` before `ProbeForWrite` |
 | `NtAcceptConnectPort` | `LPCCOMPL.C` | same view pattern |
 | `NtCreateSymbolicLinkObject` | `OBLINK.C` | `ObjectAttributes->Attributes` peeked unprobed |
+| `NtCreateSection` | `CREASECT.C` | `*MaximumSize` peeked unprobed, only `SectionHandle` probed |
 
 The first four closed in `70c62cd`, `27eefad`; `NtCreateSymbolicLinkObject`
-in the OB-namespace sweep.
+in the OB-namespace sweep; `NtCreateSection` in the MM sweep.
 
 **Already in the catalog, fragmented.**  P5 (`SepAdjust*` first
 pass called without `__try`) and P12 bullet 1 (`*PrivilegeSetLength`
@@ -546,10 +548,11 @@ had no P14 entry and the audit never swept for it.  A one-off that
 is really a pattern instance is a catalog gap.
 
 **Reach.**  Unknown by construction — the static pass did not look
-for this class.  LPC, SE, OB, IO and PS have since been swept with
-the per-subsystem `test/fuzz/*.lua` pointer-slot sweeps: SE, IO and
-PS audited clean, LPC and OB one-plus fixes each.  MM/CM/EX remain
-unswept — every `Nt*` syscall with an `IN` pointer is a candidate.
+for this class.  LPC, SE, OB, IO, PS and MM have since been swept
+with the per-subsystem `test/fuzz/*.lua` pointer-slot sweeps: SE, IO
+and PS audited clean, LPC, OB and MM one-plus fixes each.  CM/EX
+remain unswept — every `Nt*` syscall with an `IN` pointer is a
+candidate.
 
 **Severity.**  Local DoS — system bug-check from an unprivileged
 caller passing a kernel-range pointer.  No privilege required
@@ -669,7 +672,7 @@ pointer-slot fuzz sweep is the enforcement and regression net.
 | ~~P11 — Must-succeed fallback~~ (closed: fallback dropped in `READWRT.C`) | 1 site | done |
 | ~~P12 — `NtAccessCheck` adhoc~~ (closed: SE wrap-up commit) | 4 sites | done |
 | ~~P13 — SetInfo access-table off-by-one~~ (closed: missing entry inserted in `IODATA.C`) | 1 site | done |
-| P14 — Untrusted-pointer deref (LPC/SE/OB/IO/PS swept; MM/CM/EX TBD) | 5 sites done, rest pending fuzz | LPC/SE/OB/IO/PS done |
+| P14 — Untrusted-pointer deref (LPC/SE/OB/IO/PS/MM swept; CM/EX TBD) | 6 sites done, rest pending fuzz | LPC/SE/OB/IO/PS/MM done |
 | **Subtotal — direct fixes** | **~60 edits** | **~400 lines** |
 | Primitives backport | 7 primitives | ~200-300 lines per primitive |
 

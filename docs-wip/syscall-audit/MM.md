@@ -99,7 +99,17 @@ file-backed sections, allocates control-area + segment +
 extended-header from pool (variously paged / non-paged),
 inserts the section object.
 
-- [x] C1 Probe-then-deref TOCTOU — captures inside try.
+- [x] C1 Probe-then-deref TOCTOU — **finding** *(closed: P14 deref-before-probe sweep)*
+  - The prologue read `*MaximumSize` at `:197` with only
+    `SectionHandle` probed — the `MaximumSize` `LARGE_INTEGER`
+    pointer itself was never probed.  The enclosing `__try` does
+    not make that safe: a kernel-range `MaximumSize` faults past
+    SEH and bug-checks (pattern P14, same shape as
+    `NtCreateSymbolicLinkObject`).  The original audit pass missed
+    it — a bare deref *inside* the probe try reads as clean only if
+    `__try` is mistaken for a pointer validator.  Closed by
+    `ProbeForRead( MaximumSize, … )` at `:202-205` ahead of the
+    peek (`LargeSize = *MaximumSize` now `:206`).
 - [x] C2 Direct user-pointer deref without capture — captured.
 - [x] C3 Missing `__try` wrap — accesses inside try.
 - [x] C4 Length-field trust — `MaximumSize.QuadPart` used
