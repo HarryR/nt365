@@ -2,7 +2,15 @@
 
 A running collection of load-bearing bugs baked into the NT 3.5 source tree
 that went unnoticed for decades because nobody ever actually *ran* the code
-from scratch. Keeping notes so one day I can bother Raymond Chen about them.
+from scratch. Keeping notes so one day I can bother Raymond Chen
+([@oldnewthing](https://github.com/oldnewthing)) about them.
+
+The reading, cross-referencing and write-ups here were done with Claude
+(Anthropic) while building MicroNT. Claude worked through the NT 3.50
+(Daytona) source tree under `src/NT/PRIVATE` — kernel, MM, NTFS, CSR, the
+TCP/IP stack — to build, boot and debug it from source on Linux. Every bug
+below surfaced from *running* freshly-compiled NT 3.50, not from reading it:
+each is a trigger the original 1994 build always happened to step around.
 
 ---
 
