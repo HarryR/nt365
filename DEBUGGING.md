@@ -453,7 +453,7 @@ readable/writable, but `FindFirstFile` / `NtQueryDirectoryFile` walking
    tools/dump_ntfs.py build/disk/sys.img | grep -E 'Cluster|FileRecord'
    ```
    If `BytesPerCluster > BytesPerFileRecordSegment`, you're in
-   sub-cluster-FRS territory — see [NT-BUGS.md §4](NT-BUGS.md).
+   sub-cluster-FRS territory.
    The fix is in tree (NT 4.0 byte-form `NtfsWriteLog` backport); if
    the bug recurs, it means a new caller of `NtfsWriteLog` is using
    the cluster-form helpers `LfsClusterCount` / `LfsTargetVcn` instead
