@@ -19,18 +19,6 @@
 #define MAX_USER_PORT   5000        // Maximim value for a user port.
 #define NUM_USER_PORTS  (MAX_USER_PORT - MIN_USER_PORT + 1)
 
-// Per-listener cap on the number of half-open (TCB_SYN_RCVD) TCBs
-// tied to a single AddrObj.  Bounds the per-listener cost of a SYN
-// flood: an attacker can fill the cap on one listening port but
-// cannot exhaust the global TCB pool and DoS every listener at once.
-// At cap, the SYN admission gate in TCPRcv refuses new SYNs (drop-new
-// policy) and the listener naturally drains as existing SYN_RCVD
-// entries time out via the 240s rexmit timer or complete the
-// handshake.  Sized to match `ARP_MAX_ENTRIES` for consistency:
-// generous for any legitimate concurrent-handshake rate on a cloud
-// guest, far below the level where memory pressure matters.
-#define TCP_MAX_SYNRCVD_PER_AO 256
-
 //* Definition of the structure of an address object. Each object represents
 // a local address, and the IP portion may be a wildcard.
 
@@ -57,14 +45,6 @@ struct AddrObj {
 	IPAddr					ao_mcastaddr;	// Source address for MCast from 
 										// this addr object..
     struct TCPConn          *ao_tc;     // List of associated Connections..
-    uint                    ao_synrcvd_count; // Count of half-open
-                                        // TCBs (TCB_SYN_RCVD) parented
-                                        // to this AO.  Capped at
-                                        // TCP_MAX_SYNRCVD_PER_AO by
-                                        // the admission gate in
-                                        // TCPRcv; maintained by
-                                        // LeaveSynRcvd at every
-                                        // SYN_RCVD exit transition.
     CTEEvent                ao_event;   // Event to use for this AO.
     PConnectEvent           ao_connect; // Connect event handle.
     PVOID                   ao_conncontext; // Receive DG context.
