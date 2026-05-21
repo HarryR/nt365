@@ -41,6 +41,7 @@ CROSS    := i686-w64-mingw32-
 CC       := $(CROSS)gcc
 AR       := $(CROSS)ar
 OBJDUMP  := $(CROSS)objdump
+WINDRES  := $(CROSS)windres
 
 # -ffreestanding: no hosted CRT assumptions.
 # -fno-builtin: stop gcc rewriting calls into libc shapes.
@@ -167,7 +168,26 @@ $(LUAJIT_LIB): $(LUAJIT_SOURCES)
 # consumer reaches in.  Each binary (lua.dll, run.exe) carries its own
 # librt copy → its own libc state — no cross-binary aliasing.
 
-LUA_DLL_OBJS := lua_main.o cr_thread.o luajit_main.o
+LUA_DLL_OBJS := lua_main.o cr_thread.o luajit_main.o lua.res.o
+
+# ---------------- version resource (windres) ------------------------
+#
+# version_rc.h is regenerated each invocation from the micront + luajit
+# submodule HEADs by genver.py.  The script writes only if contents
+# actually change, so a quiet rebuild doesn't retrigger windres.
+#
+# version.rc is compiled twice — once with CR_IS_DLL=1 (lua.res.o,
+# FILETYPE=VFT_DLL, OriginalFilename=lua.dll) and once with
+# CR_IS_DLL=0 (run.res.o, FILETYPE=VFT_APP, OriginalFilename=run.exe).
+.PHONY: version_rc.h
+version_rc.h:
+	@python3 $(MKFILE_DIR)genver.py --out $(MKFILE_DIR)version_rc.h
+
+lua.res.o: version.rc version_rc.h
+	$(WINDRES) -DCR_IS_DLL=1 --input-format=rc --output-format=coff -o $@ $<
+
+run.res.o: version.rc version_rc.h
+	$(WINDRES) -DCR_IS_DLL=0 --input-format=rc --output-format=coff -o $@ $<
 
 # luajit_main.o — LuaJIT's standalone luajit.c (the interpreter `main`),
 # compiled with the same TFLAGS as the VM.  libluajit.a is just the VM
@@ -239,10 +259,10 @@ RUN_LDFLAGS := $(LUA_LDFLAGS) \
                -Wl,--image-base,0x00400000 \
                -Wl,--entry,_NtProcessStartup@4
 
-run.exe: run.o librt.a lua.dll.a
+run.exe: run.o run.res.o librt.a lua.dll.a
 	$(CC) $(RUN_LDFLAGS) -m32 \
 	    -o $@ \
-	    run.o \
+	    run.o run.res.o \
 	    -Wl,--start-group \
 	      -L$(MKFILE_DIR) -l:lua.dll.a -lrt \
 	      -lmingwex -lntdllcrt -lntdll -lgcc \
@@ -274,6 +294,6 @@ info: all
 	@$(OBJDUMP) -p $(MKFILE_DIR)run.exe | awk '/DLL Name:/{p=1} p' | head -10
 
 clean:
-	rm -f *.o *.exe *.dll *.a rt/*.o
+	rm -f *.o *.exe *.dll *.a rt/*.o version_rc.h
 
 .PHONY: all rebuild clean info luajit-clean

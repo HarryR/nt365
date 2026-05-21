@@ -7,3 +7,4 @@
 *.pcap
 NOTES.md
 .exes-built
+version_rc.h

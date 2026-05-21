@@ -1,0 +1,55 @@
+/* VS_VERSION_INFO for lua.dll and run.exe.
+ *
+ * Compiled twice by windres: once with -DCR_IS_DLL=1 (lua.res.o),
+ * once with -DCR_IS_DLL=0 (run.res.o).  The shared FILEVERSION /
+ * FileVersion string comes from version_rc.h, regenerated each build
+ * by genver.py from the micront + luajit submodule HEADs.
+ */
+
+#include <windows.h>
+#include "version_rc.h"
+
+#ifndef CR_IS_DLL
+#define CR_IS_DLL 0
+#endif
+
+#if CR_IS_DLL
+# define CR_FILETYPE VFT_DLL
+# define CR_ORIGFILE "lua.dll"
+# define CR_INTERNAL "lua"
+# define CR_DESC     "MicroNT Lua (common runtime)"
+#else
+# define CR_FILETYPE VFT_APP
+# define CR_ORIGFILE "run.exe"
+# define CR_INTERNAL "run"
+# define CR_DESC     "MicroNT Lua"
+#endif
+
+1 VERSIONINFO
+FILEVERSION    CR_FILEVERSION
+PRODUCTVERSION CR_FILEVERSION
+FILEFLAGSMASK  0x3fL
+FILEFLAGS      0x0L
+FILEOS         0x00040004L                 /* VOS_NT_WINDOWS32 */
+FILETYPE       CR_FILETYPE
+FILESUBTYPE    0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"                       /* en-US, Unicode */
+    BEGIN
+      VALUE "CompanyName",      "MicroNT"
+      VALUE "FileDescription",  CR_DESC
+      VALUE "FileVersion",      CR_FILEVERSION_STR
+      VALUE "InternalName",     CR_INTERNAL
+      VALUE "LegalCopyright",   CR_COPYRIGHT_STR
+      VALUE "OriginalFilename", CR_ORIGFILE
+      VALUE "ProductName",      "MicroNT Lua"
+      VALUE "ProductVersion",   CR_FILEVERSION_STR
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END
