@@ -6,6 +6,7 @@
 #                [--disk-image PATH] [--ramdisk PATH] [--vmlinux PATH]
 #                [--vga] [--gdb] [--trace] [--netdump] [--coverage PATH]
 #                [--mem MB] [--kernel-opts STRING] [--net-harness PORT]
+#                [--kvm]
 #   --disk-image PATH
 #               Boot this ESP image instead of the default
 #               build/disk/esp.img.  The Makefile passes per-profile
@@ -33,6 +34,10 @@
 #               (loads ntoskrnl + hal .dwf, sources tools/gdb.init).
 #   --trace     Log int / cpu_reset / in_asm to ./qemu.log.
 #               Produces a large file; opt-in for exception debugging.
+#   --kvm       Run under hardware virtualization (-accel kvm -cpu host)
+#               instead of TCG: interrupts + clock go through KVM's
+#               in-kernel LAPIC/IOAPIC (the production cloud path). Needs
+#               /dev/kvm. Mutually exclusive with --coverage (TCG-only).
 #   --coverage PATH
 #               Load the qcov TCG plugin and write its per-block
 #               execution histogram (NT kernel space) to PATH at guest
@@ -87,6 +92,11 @@ TRACE_FLAGS=""
 NETDUMP_FLAGS=""
 COVERAGE_FLAGS=""
 EXTRA_DRIVE_FLAGS=""
+# Accelerator: unset = qemu's default (TCG here).  --kvm switches to
+# hardware virtualization so interrupts/clock run through KVM's in-kernel
+# LAPIC/IOAPIC (the production cloud path).  -cpu host is mandatory under
+# KVM (the default qemu64 model is rejected).
+ACCEL_FLAGS=""
 # Default NIC backend: QEMU user-mode SLIRP (NAT + built-in DHCP/DNS).
 # --net-harness swaps this for a socket netdev driven by the host-side
 # packet harness.  The -device virtio-net-pci line is unchanged either
@@ -128,6 +138,13 @@ while [ $# -gt 0 ]; do
         --trace)
             TRACE_FLAGS="-d int,cpu_reset,in_asm -D qemu.log"
             echo "[boot.sh] tracing int,cpu_reset,in_asm to ./qemu.log"
+            shift
+            ;;
+        --kvm)
+            # Hardware virtualization: interrupts + clock go through KVM's
+            # in-kernel LAPIC/IOAPIC instead of TCG's emulated chips.
+            ACCEL_FLAGS="-accel kvm -cpu host"
+            echo "[boot.sh] accelerator: KVM (-cpu host, in-kernel irqchip)"
             shift
             ;;
         --coverage)
@@ -261,7 +278,7 @@ MACHINE_FLAGS=""
 case "$MACHINE" in
     pc)  MACHINE_FLAGS="-machine pc"  ;;
     q35) MACHINE_FLAGS="-machine q35" ;;
-    microvm) MACHINE_FLAGS="-machine microvm,pic=on,pit=on,rtc=on" ;;
+    microvm) MACHINE_FLAGS="-machine microvm" ;;
     *)
         echo "boot.sh: unknown --machine '$MACHINE' (try pc, q35, or microvm)" >&2
         exit 1
@@ -293,12 +310,12 @@ if [ -n "$RAMDISK" ]; then
     DEBUG_EXIT="-device isa-debug-exit,iobase=0xf4,iosize=0x04"
 
     if [ "$MACHINE" = "microvm" ]; then
-        exec qemu-system-x86_64 $MACHINE_FLAGS -m "$MEM" \
+        exec qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
             -kernel "$VMLINUX" -initrd "$RAMDISK" -append "$KERNEL_OPTS" \
             $SERIAL_FLAGS $DEBUG_EXIT -no-reboot \
             $DISPLAY_FLAGS $GDB_FLAGS $TRACE_FLAGS $COVERAGE_FLAGS
     else
-        exec qemu-system-x86_64 $MACHINE_FLAGS -m "$MEM" \
+        exec qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
             -kernel "$VMLINUX" -initrd "$RAMDISK" -append "$KERNEL_OPTS" \
             $SERIAL_FLAGS \
             -object rng-random,id=rng0,filename=/dev/urandom \
@@ -417,7 +434,7 @@ fi
 # do NOT pass -global i440FX-pcihost.pci-hole64-size=0 here so this
 # path is exercised end-to-end, matching cloud / non-QEMU firmware
 # that may not honour such tweaks.
-exec qemu-system-x86_64 $MACHINE_FLAGS -m "$MEM" \
+exec qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,file=./OVMF_VARS_4M.fd \
     $STORAGE_FLAGS \

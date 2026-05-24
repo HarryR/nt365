@@ -104,5 +104,14 @@ Hci_spurious:
 
 stdENDP _HalpClockInterrupt
 
+;
+; HalpApicSpurious - LAPIC spurious-interrupt vector (0xFF) handler.
+; A spurious interrupt needs no EOI; just return.  A bare iretd preserves
+; every register because we push/pop nothing.
+;
+cPublicProc _HalpApicSpurious  ,0
+        iretd
+stdENDP _HalpApicSpurious
+
 _TEXT   ends
         end

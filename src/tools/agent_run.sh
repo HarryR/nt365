@@ -35,6 +35,17 @@
 #                      --inspect 'p *ExceptionRecord' \
 #                      --inspect 'nt trapframe'
 #
+# PVH / ramdisk (firmware-less; boots vmlinuz + initrd instead of OVMF +
+# disk).  --vmlinux defaults to src/boot/vmlinuz/vmlinux:
+#   tools/agent_run.sh --ramdisk build/disk-smoke-ramdisk/initrd.img \
+#                      --machine microvm --break Phase1Initialization
+#
+# Hang hunting (--run-secs): free-run, SIGINT after N s, then dump $eip
+# (>=0x80000000 = kernel/KSEG0, else user-mode) + backtrace.  No symbol
+# breakpoint — for "it hangs and I don't know where":
+#   tools/agent_run.sh --ramdisk build/disk-smoke-ramdisk/initrd.img \
+#                      --machine microvm --run-secs 30
+#
 # Exit codes (precise — agents branch on these):
 #   0  inspection completed, qemu exited via KiAgentExit (rc=1) or
 #      reached a successful boot phase
@@ -57,6 +68,7 @@ MEM=128
 BREAK=Phase1Initialization
 BREAK_COND=""
 NO_BREAK=0
+USER_BREAK=0           # 1 once --break is given (lets free-run set a bp too)
 INSPECT_CMDS=()
 GDB_TIMEOUT=120        # gdb-script timeout (bp must hit + script complete)
 WALL_TIMEOUT=240       # outer fence (everything must terminate by now)
@@ -64,6 +76,9 @@ PORT_BASE=12340        # gdb port slot — random offset to avoid clashes
 JSON=0
 KEEP_LOGS=0
 KERNEL_OPTS=""
+RAMDISK=""             # set => PVH boot (vmlinuz + initrd), not OVMF + disk
+VMLINUX="$SRC/boot/vmlinuz/vmlinux"
+RUN_SECS=""            # free-run mode: continue, SIGINT after N s, then backtrace
 
 usage() {
     sed -n '2,/^$/{s/^# \?//;p;}' "$0"
@@ -76,7 +91,7 @@ while [[ $# -gt 0 ]]; do
         --machine)     MACHINE="$2"; shift 2 ;;
         --disk)        DISK="$2"; shift 2 ;;
         --mem)         MEM="$2"; shift 2 ;;
-        --break)       BREAK="$2"; NO_BREAK=0; shift 2 ;;
+        --break)       BREAK="$2"; NO_BREAK=0; USER_BREAK=1; shift 2 ;;
         --break-cond)  BREAK_COND="$2"; shift 2 ;;
         --no-break)    NO_BREAK=1; shift ;;
         --inspect)     INSPECT_CMDS+=("$2"); shift 2 ;;
@@ -86,11 +101,15 @@ while [[ $# -gt 0 ]]; do
         --json)        JSON=1; shift ;;
         --keep-logs)   KEEP_LOGS=1; shift ;;
         --kernel-opts) KERNEL_OPTS="$2"; shift 2 ;;
+        --ramdisk)     RAMDISK="$2"; shift 2 ;;
+        --vmlinux)     VMLINUX="$2"; shift 2 ;;
+        --run-secs)    RUN_SECS="$2"; shift 2 ;;
         -h|--help)     usage ;;
         *)             echo "agent_run: unknown arg: $1" >&2; usage ;;
     esac
 done
 
+USER_INSPECT=${#INSPECT_CMDS[@]}   # >0 => operator supplied --inspect
 if [[ ${#INSPECT_CMDS[@]} -eq 0 ]]; then
     INSPECT_CMDS=(
         'echo === breakpoint hit ===\n'
@@ -114,11 +133,15 @@ command -v gdb >/dev/null      || preflight_fail "gdb not in PATH"
 command -v qemu-system-x86_64 >/dev/null || preflight_fail "qemu-system-x86_64 not in PATH"
 command -v timeout >/dev/null  || preflight_fail "GNU coreutils 'timeout' not in PATH"
 
-# Verify KiAgentExit symbol resolves — without it the whole exit-path
-# strategy is broken.  Cheap check, < 100 ms.
-if ! gdb -batch -nx "$NTOSKRNL_DWF" -ex 'info address KiAgentExit' 2>/dev/null \
-        | grep -q 'is a function at address'; then
-    preflight_fail "KiAgentExit symbol not resolvable in $NTOSKRNL_DWF (rebuild ntoskrnl)"
+# Verify KiAgentExit symbol resolves — without it the break-then-exit
+# strategy is broken.  Cheap check, < 100 ms.  Skipped in --run-secs
+# (free-run) mode, which detaches and lets the harness stop qemu instead
+# of jumping to KiAgentExit.
+if [[ -z "$RUN_SECS" ]]; then
+    if ! gdb -batch -nx "$NTOSKRNL_DWF" -ex 'info address KiAgentExit' 2>/dev/null \
+            | grep -q 'is a function at address'; then
+        preflight_fail "KiAgentExit symbol not resolvable in $NTOSKRNL_DWF (rebuild ntoskrnl)"
+    fi
 fi
 
 # Pick a free gdb port.  Tries PORT_BASE..PORT_BASE+15.
@@ -172,51 +195,72 @@ trap 'exit 143' TERM HUP
 # but without going through the wrapper.  This duplicates a small
 # amount of logic but keeps the harness self-contained.
 
-case "$DISK" in
-    nvme)        STORAGE="-drive file=$REPO/build/disk/esp.img,format=raw,if=none,id=d0 -device nvme,drive=d0,serial=micront" ;;
-    ide)
-        if [[ "$MACHINE" = q35 ]]; then
-            STORAGE="-device piix3-ide,id=ide0 -drive file=$REPO/build/disk/esp.img,format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ide0.0,unit=0"
-        else
-            STORAGE="-drive file=$REPO/build/disk/esp.img,format=raw,if=ide"
-        fi
-        ;;
-    virtio-blk)  STORAGE="-drive file=$REPO/build/disk/esp.img,format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0" ;;
-    *)           preflight_fail "unsupported --disk $DISK (want nvme/ide/virtio-blk)" ;;
-esac
+# Common tail shared by both boot modes: serial -> log file, debug-exit
+# (so KiAgentExit/bugcheck terminate qemu), gdb stub frozen at reset
+# (-S), pidfile + no stdin/monitor/display so a hung guest can't block us.
+COMMON_TAIL=( -serial file:"$QEMU_LOG"
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04
+    -no-reboot -display none -monitor none
+    -gdb "tcp::$GDB_PORT" -S -pidfile "$QEMU_PIDFILE" )
 
-[[ -f "$REPO/build/disk/esp.img" ]] || preflight_fail "missing $REPO/build/disk/esp.img (run src/build.sh)"
+if [[ -n "$RAMDISK" ]]; then
+    # PVH path: vmlinuz + RAM-disk initrd via -kernel/-initrd, no firmware
+    # and no disk controller (mirrors `boot.sh --ramdisk`).  microvm adds
+    # the legacy PIC/PIT/RTC it omits by default; pc/q35 take their chipset.
+    # No virtio device set here — the RAM disk (ramscsi) is the boot volume,
+    # so the chipset doesn't matter for what we're debugging.
+    [[ -f "$RAMDISK" ]] || preflight_fail "missing ramdisk $RAMDISK (run 'make -C src smoke-ramdisk-disk')"
+    [[ -f "$VMLINUX" ]] || preflight_fail "missing vmlinux $VMLINUX (run 'src/build.sh vmlinux')"
+    case "$MACHINE" in
+        microvm) MFLAGS=(-machine microvm,pic=on,pit=on,rtc=on) ;;
+        pc|q35)  MFLAGS=(-machine "$MACHINE") ;;
+        *)       preflight_fail "unsupported --machine $MACHINE for --ramdisk (pc/q35/microvm)" ;;
+    esac
+    echo ">>> qemu: PVH ramdisk machine=$MACHINE port=$GDB_PORT" >&2
+    setsid qemu-system-x86_64 \
+        "${MFLAGS[@]}" -m "$MEM" \
+        -kernel "$VMLINUX" -initrd "$RAMDISK" -append "$KERNEL_OPTS" \
+        "${COMMON_TAIL[@]}" \
+        < /dev/null > "$WORK/qemu.stdout" 2>&1 &
+else
+    # UEFI path: OVMF firmware + esp.img on the chosen disk controller.
+    case "$DISK" in
+        nvme)        STORAGE=(-drive file="$REPO/build/disk/esp.img",format=raw,if=none,id=d0 -device nvme,drive=d0,serial=micront) ;;
+        ide)
+            if [[ "$MACHINE" = q35 ]]; then
+                STORAGE=(-device piix3-ide,id=ide0 -drive file="$REPO/build/disk/esp.img",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ide0.0,unit=0)
+            else
+                STORAGE=(-drive file="$REPO/build/disk/esp.img",format=raw,if=ide)
+            fi
+            ;;
+        virtio-blk)  STORAGE=(-drive file="$REPO/build/disk/esp.img",format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0) ;;
+        *)           preflight_fail "unsupported --disk $DISK (want nvme/ide/virtio-blk)" ;;
+    esac
 
-OVMF_VARS="$WORK/OVMF_VARS_4M.fd"
-cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OVMF_VARS"
+    [[ -f "$REPO/build/disk/esp.img" ]] || preflight_fail "missing $REPO/build/disk/esp.img (run src/build.sh)"
 
-echo ">>> qemu: machine=$MACHINE disk=$DISK port=$GDB_PORT" >&2
+    OVMF_VARS="$WORK/OVMF_VARS_4M.fd"
+    cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OVMF_VARS"
 
-# LoadOptions plumbing: only attach the fw_cfg blob when --kernel-opts
-# was supplied.  qemu rejects `string=` (empty), so an absent flag is
-# represented by omitting the option entirely — boot-efi's reader
-# treats a missing file the same as an empty one.
-KOPTS_FLAG=()
-if [[ -n "$KERNEL_OPTS" ]]; then
-    KOPTS_FLAG=(-fw_cfg "name=opt/micront/loadopts,string=$KERNEL_OPTS")
+    # LoadOptions plumbing: only attach the fw_cfg blob when --kernel-opts
+    # was supplied.  qemu rejects `string=` (empty), so an absent flag is
+    # represented by omitting the option entirely — the loader's reader
+    # treats a missing file the same as an empty one.
+    KOPTS_FLAG=()
+    if [[ -n "$KERNEL_OPTS" ]]; then
+        KOPTS_FLAG=(-fw_cfg "name=opt/micront/loadopts,string=$KERNEL_OPTS")
+    fi
+
+    echo ">>> qemu: UEFI machine=$MACHINE disk=$DISK port=$GDB_PORT" >&2
+    setsid qemu-system-x86_64 \
+        -machine "$MACHINE" -m "$MEM" \
+        -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+        -drive if=pflash,format=raw,file="$OVMF_VARS" \
+        "${STORAGE[@]}" \
+        "${KOPTS_FLAG[@]}" \
+        "${COMMON_TAIL[@]}" \
+        < /dev/null > "$WORK/qemu.stdout" 2>&1 &
 fi
-
-setsid qemu-system-x86_64 \
-    -machine "$MACHINE" \
-    -m "$MEM" \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-    -drive if=pflash,format=raw,file="$OVMF_VARS" \
-    $STORAGE \
-    -serial file:"$QEMU_LOG" \
-    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    "${KOPTS_FLAG[@]}" \
-    -no-reboot \
-    -display none \
-    -monitor none \
-    -gdb "tcp::$GDB_PORT" \
-    -S \
-    -pidfile "$QEMU_PIDFILE" \
-    < /dev/null > "$WORK/qemu.stdout" 2>&1 &
 
 # Get the PGID (which equals the leading PID under setsid).
 QEMU_LEADER=$!
@@ -255,10 +299,39 @@ done
     echo "set print pretty on"
     echo "symbol-file $NTOSKRNL_DWF"
     echo "add-symbol-file $HAL_DWF"
+    if [[ -n "$RAMDISK" && -f "$VMLINUX" ]]; then
+        echo "add-symbol-file $VMLINUX"     # PVH loader (built with -g DWARF)
+    fi
     echo "source $SRC/tools/gdb.init"
     echo "source $SRC/tools/gdb_nt.py"
     echo "target remote :$GDB_PORT"
-    if [[ $NO_BREAK = 0 ]]; then
+    if [[ -n "$RUN_SECS" ]]; then
+        # Free-run for a hang of unknown location: let the guest run, an
+        # external timer SIGINTs gdb after RUN_SECS, then we snapshot the
+        # spin point.  $eip >= 0x80000000 => kernel/KSEG0, else user-mode.
+        # If --break was given, arm it: the free-run then stops either at
+        # the breakpoint (it fired) or via the SIGINT timer (it didn't) —
+        # a clean "does this ISR ever run?" probe.
+        if [[ $USER_BREAK = 1 ]]; then
+            echo "echo \\n=== hbreak $BREAK (free-run; bp-or-${RUN_SECS}s) ===\\n"
+            echo "hbreak $BREAK"
+        fi
+        echo "echo \\n=== free-run; SIGINT after ${RUN_SECS}s, then snapshot ===\\n"
+        echo "continue"
+        echo "echo \\n=== interrupted — spin point ===\\n"
+        # $pc/$sp are gdb's arch-generic convenience regs — valid whether
+        # the stub presents 32- or 64-bit names (qemu-system-x86_64's stub
+        # uses rip/rsp even for a 32-bit guest, so \$eip is invalid).
+        echo "p/x \$pc"
+        echo "p/x \$sp"
+        echo "x/i \$pc"
+        echo "bt 30"
+        if [[ $USER_INSPECT -gt 0 ]]; then
+            for cmd in "${INSPECT_CMDS[@]}"; do
+                echo "$cmd"
+            done
+        fi
+    elif [[ $NO_BREAK = 0 ]]; then
         # Two flows:
         #
         #   no --break-cond   ->  hbreak then tbreak (advance-past-prologue
@@ -293,11 +366,19 @@ done
             echo "$cmd"
         done
     fi
-    echo "echo \\n=== jump KiAgentExit (qemu will terminate, rc=1) ===\\n"
-    echo "set \$pc = (unsigned long)KiAgentExit"
-    echo "continue"
-    echo "echo === gdb script complete ===\\n"
-    echo "quit"
+    if [[ -n "$RUN_SECS" ]]; then
+        # In free-run mode we may be stopped in user space, where the
+        # KiAgentExit jump (a kernel VA) wouldn't take — just detach and
+        # let the harness's terminate-qemu logic stop the guest.
+        echo "echo \\n=== detaching; harness will stop qemu ===\\n"
+        echo "quit"
+    else
+        echo "echo \\n=== jump KiAgentExit (qemu will terminate, rc=1) ===\\n"
+        echo "set \$pc = (unsigned long)KiAgentExit"
+        echo "continue"
+        echo "echo === gdb script complete ===\\n"
+        echo "quit"
+    fi
 } > "$GDB_SCRIPT"
 
 # ----- run gdb under timeout --------------------------------------------
@@ -306,8 +387,20 @@ START=$SECONDS
 # to capture that rc — but `set -e` would make the script bail before
 # we read $?, so wrap in a conditional.
 GDB_RC=0
-timeout --kill-after=5 "$GDB_TIMEOUT" \
-    gdb -batch -nx -x "$GDB_SCRIPT" > "$GDB_LOG" 2>&1 || GDB_RC=$?
+if [[ -n "$RUN_SECS" ]]; then
+    # Free-run: the script's `continue` blocks; a background timer SIGINTs
+    # gdb after RUN_SECS so it stops the (hung) guest and runs the
+    # snapshot commands.  A second timer hard-stops gdb at GDB_TIMEOUT.
+    gdb -batch -nx -x "$GDB_SCRIPT" > "$GDB_LOG" 2>&1 &
+    GDB_PID=$!
+    ( sleep "$RUN_SECS";    kill -INT  "$GDB_PID" 2>/dev/null ) & INT_PID=$!
+    ( sleep "$GDB_TIMEOUT"; kill -TERM "$GDB_PID" 2>/dev/null ) & WALL_PID=$!
+    wait "$GDB_PID" || GDB_RC=$?
+    kill "$INT_PID" "$WALL_PID" 2>/dev/null || true
+else
+    timeout --kill-after=5 "$GDB_TIMEOUT" \
+        gdb -batch -nx -x "$GDB_SCRIPT" > "$GDB_LOG" 2>&1 || GDB_RC=$?
+fi
 GDB_DURATION=$((SECONDS - START))
 
 # ----- ensure qemu actually terminates ----------------------------------
@@ -374,6 +467,7 @@ else
     echo "gdb_rc=$GDB_RC  ${GDB_RC:+(124=timeout)}"
     echo "killed=${KILLED:-none}"
     echo "gdb_duration_s=$GDB_DURATION"
+    echo "mode=$([[ -n "$RAMDISK" ]] && echo ramdisk || echo uefi)  run_secs=${RUN_SECS:-none}"
     echo "break=$BREAK"
     echo "machine=$MACHINE  disk=$DISK  port=$GDB_PORT"
     echo "qemu_log=$QEMU_LOG"

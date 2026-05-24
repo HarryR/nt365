@@ -94,6 +94,15 @@ endif
 ifdef DISK
 BOOT_FLAGS += --disk $(DISK)
 endif
+# KVM=1 — run under hardware virtualization (-accel kvm -cpu host) instead
+# of TCG.  Clock + IRQ delivery then go through KVM's in-kernel LAPIC/IOAPIC
+# (kernel_irqchip) — the production cloud path.  Default (unset) is TCG, the
+# only accelerator CI can use.  Composes with MACHINE / DISK / smoketest:
+#   make smoketest KVM=1                     # EFI/disk smoke under KVM
+#   make smoke-ramdisk MACHINE=microvm KVM=1 # PVH ramdisk under KVM
+ifdef KVM
+BOOT_FLAGS += --kvm
+endif
 # GDB=1 — pause qemu on the gdbstub on :1234 so `make gdb` (in another
 # shell) can attach.  Composes with selftest / smoketest:
 #   make boot GDB=1                      # interactive

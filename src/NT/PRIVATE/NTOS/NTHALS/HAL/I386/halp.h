@@ -310,6 +310,28 @@ HalpMapPhysicalMemory(
     IN ULONG NumberPages
     );
 
+/* ---- LAPIC + IOAPIC interrupt delivery (apic.c) ----------------------
+ * When HalpApicPresent, ixintr.c routes mask/EOI through the IOAPIC/LAPIC
+ * instead of the 8259 (which it keeps as the no-APIC fallback). */
+extern BOOLEAN HalpApicPresent;
+
+VOID HalpInitApic(VOID);
+VOID HalpLapicEoi(VOID);
+VOID HalpIoApicEoi(IN UCHAR Vector);
+VOID HalpIoApicSetEntry(IN UCHAR Gsi, IN UCHAR Vector,
+                        IN BOOLEAN Level, IN BOOLEAN ActiveLow,
+                        IN BOOLEAN Masked);
+VOID HalpIoApicMask(IN UCHAR Gsi, IN BOOLEAN Masked);
+
+/* The LAPIC spurious-interrupt vector (0xFF) handler — a bare iret stub
+ * in clock.asm; installed in the IDT by HalInitSystem. */
+VOID HalpApicSpurious(VOID);
+
+/* CPUID wrapper (apic.c reuses it for the APIC-presence probe). */
+VOID HalpCpuid(IN ULONG Leaf, IN ULONG Subleaf,
+               OUT PULONG OutEax, OUT PULONG OutEbx,
+               OUT PULONG OutEcx, OUT PULONG OutEdx);
+
 PVOID
 HalpMapPhysicalMemoryWriteThrough(
     IN PVOID	PhysicalAddress,

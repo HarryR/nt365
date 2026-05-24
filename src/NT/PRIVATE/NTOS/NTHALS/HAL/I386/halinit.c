@@ -161,8 +161,29 @@ HalInitSystem(
             HalpInitTscClock(LoaderBlock);
         }
 
-        /* Unmask IRQ 0 (timer) and IRQ 2 (cascade) on master PIC */
-        HalpWritePort(PIC1_DATA, 0xFA);  /* mask = 11111010 = all masked except IRQ0 + IRQ2 */
+        /* Bring up the LAPIC + IOAPIC.  Sets HalpApicPresent unless CPUID
+         * reports no local APIC (then we stay on the 8259). */
+        HalpInitApic();
+
+        if (HalpApicPresent) {
+            /* Install the LAPIC spurious-interrupt vector (0xFF) handler. */
+            PKIDTENTRY idt = KeGetPcr()->IDT;
+            ULONG sp = (ULONG)&HalpApicSpurious;
+            idt[0xFF].Offset         = (USHORT)(sp & 0xFFFF);
+            idt[0xFF].Selector       = 0x08;   /* KGDT_R0_CODE */
+            idt[0xFF].Access         = 0x8E00;
+            idt[0xFF].ExtendedOffset = (USHORT)(sp >> 16);
+
+            /* Route the PIT clock to the CPU through the IOAPIC: on a PC the
+             * timer (ISA IRQ0) is the override on GSI 2, edge/active-high.
+             * The 8259 stays fully masked (from Phase 0) so nothing is
+             * double-delivered. */
+            HalpIoApicSetEntry(2, CLOCK_VECTOR, FALSE, FALSE, FALSE);
+        } else {
+            /* No APIC: drive the clock the legacy way — unmask IRQ0 (timer)
+             * + IRQ2 (cascade) on the master 8259. */
+            HalpWritePort(PIC1_DATA, 0xFA);  /* 11111010 = all but IRQ0+IRQ2 */
+        }
 
         /* Tell the kernel our tick length (100000 * 100ns = 10ms).
          * Without this, KeTimeAdjustment stays 0 → KeUpdateSystemTime

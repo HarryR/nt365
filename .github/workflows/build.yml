@@ -151,13 +151,14 @@ jobs:
         # Bake the smoke ramdisk once (smoke.lua entry) then boot it across
         # machines.  Unlike the UEFI matrix there's NO disk-backend axis:
         # the boot volume is always the RAM disk (ramscsi), independent of
-        # chipset.  microvm is deferred — it currently hangs in user-mode
-        # FP-exception dispatch (a kernel/HAL issue orthogonal to the boot
-        # path); add it to `machines` once that's fixed.
+        # chipset.  microvm boots the same image as q35/pc now that the HAL
+        # delivers interrupts through the LAPIC + IOAPIC (apic.c) instead of
+        # relying on the 8259's INTR reaching the core — which microvm never
+        # wires up, so the clock tick was lost and the box idled forever.
         run: |
           make -C src smoke-ramdisk-disk
           fail=0
-          machines="q35 pc"
+          machines="q35 pc microvm"
           for machine in $machines; do
             log="smoke-pvh-$machine.log"
             echo "=== smoke PVH: machine=$machine ==="

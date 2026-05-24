@@ -11,8 +11,11 @@ Implemented:
 - [x] Kernel-level code coverage during selftest [![Coverage Status](https://coveralls.io/repos/github/HarryR/nt365/badge.svg?branch=main)](https://coveralls.io/github/HarryR/nt365?branch=main)
 - [x] `gdb` powered kernel & driver debugging
 - [x] 64-bit UEFI bootloader (`BOOTX64.EFI`, OVMF on qemu)
+- [x] Firmware-less PVH boot (`qemu -kernel` + RAM-disk initrd, mounted via `ramscsi`)
 - [x] 32-bit userland (no VDM, V86, WoW16 or 16-bit paths)
 - [x] PCI-native HAL (BAR relocation above 4 GiB, no PC/AT assumptions)
+- [x] LAPIC + IOAPIC interrupt delivery (graceful 8259 fallback) — boots
+  default `microvm` and runs under KVM (in-kernel irqchip)
 - [x] Fast `SYSENTER`/`SYSEXIT` & Zw* kernel service dispatch
 - [x] VirtIO transport (modern PCI, shared `virtio.lib`)
   - [x] virtio-blk
@@ -28,7 +31,7 @@ Implemented:
 
 Coming next:
 
-- [ ] LAPIC + IOAPIC + HPET HAL (replace i8259 + i8254)
+- [ ] HPET + LAPIC-timer clock (retire the i8254 PIT tick)
 - [ ] SMP
 - [ ] GPT partitions (currently MBR; partition format is FAT16 or NTFS)
 - [ ] Modern display path (Bochs VBE miniport works; need GOP-handoff loader path)
@@ -41,17 +44,19 @@ only). This is the equivalent of Linux's `/sbin/init`. There is no
 `smss.exe`, no `csrss.exe`, no `winlogon`, no GDI / USER. Everything
 the system does post-kernel — driver loading, PnP, the test harness,
 anything that would have lived in a service — is Lua under
-`\SystemRoot\lua\`. FFI bindings to the NT syscall surface live under
-`lua/nt/dll/`.
+`\SystemRoot\pkg\`. FFI bindings to the NT syscall surface live under
+`pkg/nt/dll/`.
 
 ## Repository layout
 
 ```
 src/NT/PRIVATE/         original NT source (kernel, drivers, sdktools)
 src/NT/PUBLIC/          shipped headers + import libs + bootstrap binaries
-src/boot-efi/           UEFI loader (gnu-efi, x86_64; long-mode → 32-bit kernel)
+src/boot/               shared boot core (PE loader, mmu, lpb, hwtree, FAT reader)
+src/boot/efi/           UEFI loader (gnu-efi, x86_64; long-mode → 32-bit kernel)
+src/boot/vmlinuz/       PVH loader (32-bit; qemu -kernel + RAM-disk initrd, no firmware)
 src/cr/                 native-NT LuaJIT runtime (run.exe + lua.dll + librt)
-src/pkg/                Lua tree staged at \SystemRoot\lua\ on disk
+src/pkg/                Lua tree staged at \SystemRoot\pkg\ on disk
 src/pkg/ntosbe/         NT OS Build Environment (build + hive + layered disk composition)
 src/cmd-stub/           minimal cmd.exe replacement for NMAKE
 src/tools/              utility scripts (gdb_nt, agent_run, decode_av, dumphive, …)
@@ -92,7 +97,8 @@ Three toolchains coexist:
   native-NT subsystem).
 
 `build.sh` builds artifacts only — kernel, drivers, userland, `cr`,
-`BOOTX64.EFI`.  Composing a bootable disk image is a separate step: the
+`BOOTX64.EFI`, and the PVH loader (`vmlinux`).  Composing a bootable disk
+image is a separate step: the
 `make` targets below each bake their own (see **Run**).
 
 ## Run
@@ -100,7 +106,9 @@ Three toolchains coexist:
 ```sh
 make -C src boot                 # canonical: q35 + NVMe (modern PCIe)
 make -C src boot MACHINE=pc DISK=ide   # legacy fallback shape
+make -C src boot-ramdisk         # firmware-less PVH (q35/pc/microvm)
 make -C src smoketest            # ~10 s "did it boot?" smoke
+make -C src smoke-ramdisk        # PVH smoke
 make -C src selftest             # boot the kernel + fuzz test suites
 make -C src selfhost             # boot the in-OS self-build (rebuilds itself)
 ```
@@ -120,6 +128,7 @@ boot.sh --gdb                        # freeze CPU, listen on :1234 for gdb
 boot.sh --trace                      # -d int,cpu_reset,in_asm → ./qemu.log
 boot.sh --vga                        # add a VGA window
 boot.sh --mem 256                    # bump guest RAM (default 128 MiB)
+boot.sh --kvm                        # KVM accel (in-kernel LAPIC/IOAPIC; needs /dev/kvm)
 ```
 
 ## Iteration

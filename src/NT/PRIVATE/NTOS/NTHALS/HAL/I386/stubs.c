@@ -94,7 +94,7 @@ HalpCalibrateTscViaPIT(VOID)
  * defensive against compiler scheduling assumptions.  Pass NULL for
  * any output you don't care about.
  */
-static VOID
+VOID
 HalpCpuid(
     IN  ULONG  Leaf,
     IN  ULONG  Subleaf,
@@ -841,8 +841,28 @@ HalReturnToFirmware(
     IN FIRMWARE_REENTRY Routine
     )
 {
+    /* A 6-byte IDTR image (limit 0, base 0): loading it makes every
+     * exception undeliverable, so the next fault escalates straight to a
+     * triple fault -> CPU reset. */
+    static UCHAR NullIdt[6] = { 0, 0, 0, 0, 0, 0 };
+
     HalpSerialPrint("HAL: ReturnToFirmware!\r\n");
-    HalpWritePort(0x64, 0xFE);     /* Reset via 8042 keyboard controller */
+
+    /* Legacy + modern I/O reset paths: the 8042 pulse resets pc/q35 (and
+     * real PCs) immediately, so we never fall past it there.  microvm has
+     * neither an 8042 nor a 0xCF9 reset register, so both are no-ops and we
+     * fall through to the triple fault below. */
+    HalpWritePort(0x64,  0xFE);    /* 8042 keyboard-controller CPU reset */
+    HalpWritePort(0xCF9, 0x0E);    /* ICH/PCH reset control register */
+
+    /* Universal fallback (incl. microvm): zero-length IDT + an exception
+     * -> triple fault -> reset.  qemu with -no-reboot exits here. */
+    _asm {
+        cli
+        lidt    fword ptr NullIdt
+        int     3
+    }
+
     _asm { cli }
     _asm { hlt }
 }

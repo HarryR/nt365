@@ -56,6 +56,36 @@ kill, escalating TERM/KILL) is load-bearing for the
 no-hang-no-zombie guarantee that makes this rideable by future
 agents.
 
+### PVH / ramdisk + hang hunting
+
+For the firmware-less path (`vmlinuz` + RAM disk via `ramscsi`), boot
+that shape instead of OVMF + disk with `--ramdisk` (and `--vmlinux`,
+default `src/boot/vmlinuz/vmlinux`); `--machine` takes `microvm` too:
+
+```sh
+src/tools/agent_run.sh \
+    --ramdisk build/disk-smoke-ramdisk/initrd.img \
+    --machine microvm --break Phase1Initialization
+```
+
+When a boot **hangs** and you don't know where, `--run-secs N` free-runs
+the guest, SIGINTs gdb after N seconds, then dumps `$pc`/`$sp` + a
+backtrace at the spin point.  `$pc >= 0x80000000` is kernel/KSEG0, below
+that is user-mode.  Add `--break SYM` to also answer "does this ISR ever
+run?" — it stops at the bp if it fired, or at the SIGINT if it didn't:
+
+```sh
+# is the clock interrupt even firing on this machine?  (q35 hits it;
+# microvm never does — its PIT IRQ0 doesn't reach the CPU.)
+src/tools/agent_run.sh --ramdisk build/disk-smoke-ramdisk/initrd.img \
+    --machine microvm --break HalpClockInterrupt --run-secs 25
+```
+
+`--run-secs` skips the `KiAgentExit` exit dance (it detaches and lets the
+harness stop qemu), so it works even when that symbol is absent.  Note:
+qemu-system-x86_64's gdb stub uses 64-bit register names even for the
+32-bit guest — use `$pc`/`$sp` (arch-generic), not `$eip`.
+
 If you need finer-grained control than agent_run.sh exposes, the
 underlying primitives are documented as individual recipes below.
 
