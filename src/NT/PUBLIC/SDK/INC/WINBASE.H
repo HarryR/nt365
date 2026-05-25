@@ -1426,6 +1426,15 @@ GetShortPathNameW(
 #endif // !UNICODE
 
 WINBASEAPI
+DWORD
+WINAPI
+GetLongPathNameW(
+    LPCWSTR lpszShortPath,
+    LPWSTR  lpszLongPath,
+    DWORD   cchBuffer
+    );
+
+WINBASEAPI
 BOOL
 WINAPI
 GetProcessAffinityMask(
@@ -4544,6 +4553,14 @@ GetWindowsDirectoryW(
 #else
 #define GetWindowsDirectory  GetWindowsDirectoryA
 #endif // !UNICODE
+
+WINBASEAPI
+UINT
+WINAPI
+GetSystemWindowsDirectoryW(
+    LPWSTR lpBuffer,
+    UINT uSize
+    );
 
 WINBASEAPI
 BOOL

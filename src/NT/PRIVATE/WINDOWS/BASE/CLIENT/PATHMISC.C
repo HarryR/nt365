@@ -283,6 +283,57 @@ Return Value:
 }
 
 
+UINT
+APIENTRY
+GetSystemWindowsDirectoryW(
+    LPWSTR lpBuffer,
+    UINT uSize
+    )
+
+/*++
+
+Routine Description:
+
+    This function obtains the pathname of the system Windows directory.
+
+    On a Terminal Server this is the shared Windows directory rather than
+    the per-user one; MicroNT has no per-user redirection, so it is the
+    same directory as GetWindowsDirectoryW.
+
+Arguments:
+
+    lpBuffer - Points to the buffer that is to receive the
+        null-terminated character string containing the pathname.
+
+    uSize - Specifies the maximum size (in wchars) of the buffer.  This
+        value should be set to at least MAX_PATH to allow sufficient room in
+        the buffer for the pathname.
+
+Return Value:
+
+    The return value is the length of the string copied to lpBuffer, not
+    including the terminating null character.  If the return value is
+    greater than uSize, the return value is the size of the buffer
+    required to hold the pathname.  The return value is zero if the
+    function failed.
+
+--*/
+
+{
+
+    if ( uSize*2 < BaseWindowsDirectory.MaximumLength ) {
+        return BaseWindowsDirectory.MaximumLength/2;
+    }
+    RtlCopyMemory(
+        lpBuffer,
+        BaseWindowsDirectory.Buffer,
+        BaseWindowsDirectory.Length
+        );
+    lpBuffer[(BaseWindowsDirectory.Length>>1)] = UNICODE_NULL;
+    return BaseWindowsDirectory.Length/2;
+}
+
+
 
 UINT
 APIENTRY
@@ -2348,4 +2399,538 @@ SetVolumeLabelW(
             }
         }
     return rv;
+}
+
+/*++
+
+  GetLongPathNameW and its path-name helpers, ported verbatim from the
+  Server 2003 RTM shell-path code (base/win32/client/vdm.c).  In stock NT
+  these lived alongside the (stripped) VDM support; the helpers are pure
+  path-string logic with no VDM dependency.  Ordered so each is defined
+  before its first use.  Only change from the original: the GetLongPathNameW
+  heap allocations drop the VDM debug heap tag.
+
+--*/
+
+/**
+    This function determines if the given name is a valid short name.
+    This function only does "obvious" testing since there are not precise
+    ways to cover all the file systems(each file system has its own
+    file name domain(for example, FAT allows all extended chars and space char
+    while NTFS **may** not).
+    The main purpose is to help the caller decide if a long to short name
+    conversion is necessary. When in doubt, this function simply tells the
+    caller that the given name is NOT a short name so that caller would
+    do whatever it takes to convert the name.
+    This function applies strict rules in deciding if the given name
+    is a valid short name. For example, a name containing any extended chars
+    is treated as invalid; a name with embedded space chars is also treated
+    as invalid.
+    A name is a valid short name if ALL the following conditions are met:
+    (1). total length <= 13.
+    (2). 0 < base name length <= 8.
+    (3). extention name length <= 3.
+    (4). only one '.' is allowed and must not be the first char.
+    (5). every char must be legal defined by the IllegalMask array.
+
+    null path, "." and ".." are treated valid.
+
+    Input: LPCWSTR Name -  points to the name to be checked. It does not
+                           have to be NULL terminated.
+
+           int Length - Length of the name, not including teminated NULL char.
+
+    output: TRUE - if the given name is a short file name.
+            FALSE - if the given name is not a short file name
+**/
+
+// bit set -> char is illegal
+DWORD   IllegalMask[] =
+
+{
+    // code 0x00 - 0x1F --> all illegal
+    0xFFFFFFFF,
+    // code 0x20 - 0x3f --> 0x20,0x22,0x2A-0x2C,0x2F and 0x3A-0x3F are illegal
+    0xFC009C05,
+    // code 0x40 - 0x5F --> 0x5B-0x5D are illegal
+    0x38000000,
+    // code 0x60 - 0x7F --> 0x7C is illegal
+    0x10000000
+};
+
+BOOL
+IsShortName_U(
+    LPCWSTR Name,
+    int     Length
+    )
+{
+    int Index;
+    BOOL ExtensionFound;
+    DWORD      dwStatus;
+    UNICODE_STRING UnicodeName;
+    ANSI_STRING AnsiString;
+    UCHAR      AnsiBuffer[MAX_PATH];
+    UCHAR      Char;
+
+    ASSERT(Name);
+
+    // total length must less than 13(8.3 = 8 + 1 + 3 = 12)
+    if (Length > 12)
+        return FALSE;
+    //  "" or "." or ".."
+    if (!Length)
+        return TRUE;
+    if (L'.' == *Name)
+    {
+        // "." or ".."
+        if (1 == Length || (2 == Length && L'.' == Name[1]))
+            return TRUE;
+        else
+            // '.' can not be the first char(base name length is 0)
+            return FALSE;
+    }
+
+    UnicodeName.Buffer = (LPWSTR)Name;
+    UnicodeName.Length =
+    UnicodeName.MaximumLength = (USHORT)(Length * sizeof(WCHAR));
+
+    AnsiString.Buffer = AnsiBuffer;
+    AnsiString.Length = 0;
+    AnsiString.MaximumLength = MAX_PATH; // make a dangerous assumption
+
+    dwStatus = BasepUnicodeStringTo8BitString(&AnsiString,
+                                              &UnicodeName,
+                                              FALSE);
+    if (! NT_SUCCESS(dwStatus)) {
+         return(FALSE);
+    }
+
+    // all trivial cases are tested, now we have to walk through the name
+    ExtensionFound = FALSE;
+    for (Index = 0; Index < AnsiString.Length; Index++)
+    {
+        Char = AnsiString.Buffer[Index];
+
+        // Skip over and Dbcs characters
+        if (IsDBCSLeadByte(Char)) {
+            //
+            //  1) if we're looking at base part ( !ExtensionPresent ) and the 8th byte
+            //     is in the dbcs leading byte range, it's error ( Index == 7 ). If the
+            //     length of base part is more than 8 ( Index > 7 ), it's definitely error.
+            //
+            //  2) if the last byte ( Index == DbcsName.Length - 1 ) is in the dbcs leading
+            //     byte range, it's error
+            //
+            if ((!ExtensionFound && (Index >= 7)) ||
+                (Index == AnsiString.Length - 1)) {
+                return FALSE;
+            }
+            Index += 1;
+            continue;
+        }
+
+        // make sure the char is legal
+        if (Char > 0x7F || IllegalMask[Char / 32] & (1 << (Char % 32)))
+            return FALSE;
+
+        if ('.' == Char)
+        {
+            // (1) can have only one '.'
+            // (2) can not have more than 3 chars following.
+            if (ExtensionFound || Length - (Index + 1) > 3)
+            {
+                return FALSE;
+            }
+            ExtensionFound = TRUE;
+        }
+        // base length > 8 chars
+        if (Index >= 8 && !ExtensionFound)
+            return FALSE;
+    }
+    return TRUE;
+
+}
+/**
+    This function determines if the given name is a valid long name.
+    This function only does "obvious" testing since there are not precise
+    ways to cover all the file systems(each file system has its own
+    file name domain(for example, FAT allows all extended chars and space char
+    while NTFS **may** not)
+    This function helps the caller to determine if a short to long name
+    conversion is necessary. When in doubt, this function simply tells the
+    caller that the given name is NOT a long name so that caller would
+    do whatever it takes to convert the name.
+    A name is a valid long name if one of the following conditions is met:
+    (1). total length >= 13.
+    (2). 0 == base name length ||  base name length > 8.
+    (3). extention name length > 3.
+    (4). '.' is the first char.
+    (5). muitlple '.'
+
+
+    null path, "." and ".." are treat as valid long name.
+
+    Input: LPCWSTR Name -  points to the name to be checked. It does not
+                           have to be NULL terminated.
+
+           int Length - Length of the name, not including teminated NULL char.
+
+    output: TRUE - if the given name is a long file name.
+            FALSE - if the given name is not a long file name
+**/
+
+
+BOOL
+IsLongName_U(
+    LPCWSTR Name,
+    int Length
+    )
+{
+    int Index;
+    BOOL ExtensionFound;
+    // (1) NULL path
+    // (2) total length > 12
+    // (3) . is the first char (cover "." and "..")
+    if (!Length || Length > 12 || L'.' == *Name)
+        return TRUE;
+    ExtensionFound = FALSE;
+    for (Index = 0; Index < Length; Index++)
+    {
+        if (L'.' == Name[Index])
+        {
+            // multiple . or extension longer than 3
+            if (ExtensionFound || Length - (Index + 1) > 3)
+                return TRUE;
+            ExtensionFound = TRUE;
+        }
+        // base length longer than 8
+        if (Index >= 8 && !ExtensionFound)
+            return TRUE;
+    }
+    return FALSE;
+}
+/**
+    Search for SFN(Short File Name) or LFN(Long File Name) in the
+    given path depends on FindLFN.
+
+    Input: LPWSTR Path
+                The given path name. Does not have to be fully qualified.
+                However, path type separaters are not allowed.
+           LPWSTR* ppFirst
+                To return the pointer points to the first char
+                of the name found.
+           LPWSTR* ppLast
+                To return the pointer points the char right after
+                the last char of the name found.
+           BOOL FindLFN
+                TRUE to search for LFN, otherwise, search for SFN
+
+    Output:
+            TRUE
+                if the target file name type is found, ppFirst and
+                ppLast are filled with pointers.
+            FALSE
+                if the target file name type not found.
+
+    Remark: "\\." and "\\.." are special cases. When encountered, they
+            are ignored and the function continue to search
+
+
+**/
+BOOL
+FindLFNorSFN_U(
+    LPWSTR  Path,
+    LPWSTR* ppFirst,
+    LPWSTR* ppLast,
+    BOOL    FindLFN
+    )
+{
+    LPWSTR pFirst, pLast;
+    BOOL TargetFound;
+
+    ASSERT(Path);
+
+    pFirst = Path;
+
+    TargetFound = FALSE;
+
+    while(TRUE) {
+        //skip over leading path separator
+        // it is legal to have multiple path separators in between
+        // name such as "foobar\\\\\\multiplepathchar"
+        while (*pFirst != UNICODE_NULL  && (*pFirst == L'\\' || *pFirst == L'/'))
+            pFirst++;
+        if (*pFirst == UNICODE_NULL)
+            break;
+        pLast = pFirst + 1;
+        while (*pLast != UNICODE_NULL && *pLast != L'\\' && *pLast != L'/')
+            pLast++;
+        if (FindLFN)
+            TargetFound = !IsShortName_U(pFirst, (int)(pLast - pFirst));
+        else
+            TargetFound = !IsLongName_U(pFirst, (int)(pLast - pFirst));
+        if (TargetFound) {
+            if(ppFirst && ppLast) {
+                *ppFirst = pFirst;
+                // pLast point to the last char of the path/file name
+                *ppLast = pLast;
+                }
+            break;
+            }
+        if (*pLast == UNICODE_NULL)
+            break;
+        pFirst = pLast + 1;
+        }
+    return TargetFound;
+}
+LPCWSTR
+SkipPathTypeIndicator_U(
+    LPCWSTR Path
+    )
+{
+    RTL_PATH_TYPE   RtlPathType;
+    LPCWSTR         pFirst;
+    DWORD           Count;
+
+    RtlPathType = RtlDetermineDosPathNameType_U(Path);
+    switch (RtlPathType) {
+        // form: "\\server_name\share_name\rest_of_the_path"
+        case RtlPathTypeUncAbsolute:
+        case RtlPathTypeLocalDevice:
+            pFirst = Path + 2;
+            Count = 2;
+            // guard for UNICODE_NULL is necessary because
+            // RtlDetermineDosPathNameType_U doesn't really
+            // verify an UNC name.
+            while (Count && *pFirst != UNICODE_NULL) {
+                if (*pFirst == L'\\' || *pFirst == L'/')
+                    Count--;
+                pFirst++;
+                }
+            break;
+
+        // form: "\\."
+        case RtlPathTypeRootLocalDevice:
+            pFirst = NULL;
+            break;
+
+        // form: "D:\rest_of_the_path"
+        case RtlPathTypeDriveAbsolute:
+            pFirst = Path + 3;
+            break;
+
+        // form: "D:rest_of_the_path"
+        case RtlPathTypeDriveRelative:
+            pFirst = Path + 2;
+            break;
+
+        // form: "\rest_of_the_path"
+        case RtlPathTypeRooted:
+            pFirst = Path + 1;
+            break;
+
+        // form: "rest_of_the_path"
+        case RtlPathTypeRelative:
+            pFirst = Path;
+            break;
+
+        default:
+            pFirst = NULL;
+            break;
+        }
+    return pFirst;
+}
+DWORD
+APIENTRY
+GetLongPathNameW(
+    IN  LPCWSTR lpszShortPath,
+    IN  LPWSTR  lpszLongPath,
+    IN  DWORD   cchBuffer
+)
+{
+
+    LPCWSTR pcs;
+    DWORD ReturnLen, Length;
+    LPWSTR pSrc, pSrcCopy, pFirst, pLast, Buffer, pDst;
+    WCHAR   wch;
+    HANDLE          FindHandle;
+    WIN32_FIND_DATAW        FindData;
+    UINT PrevErrorMode;
+
+    if (!ARGUMENT_PRESENT(lpszShortPath)) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+        }
+    //
+    // override the error mode since we will be touching the media.
+    // This is to prevent file system's pop-up when the given path does not
+    // exist or the media is not available.
+    // we are doing this because we can not depend on the caller's current
+    // error mode. NOTE: the old error mode must be restored.
+    PrevErrorMode = SetErrorMode(SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS);
+
+    try {
+
+        Buffer = NULL;
+        pSrcCopy = NULL;
+        // first make sure the given path exist.
+        //
+        if (0xFFFFFFFF == GetFileAttributesW(lpszShortPath))
+        {
+            // last error has been set by GetFileAttributes
+            ReturnLen = 0;
+            goto glnTryExit;
+        }
+        pcs = SkipPathTypeIndicator_U(lpszShortPath);
+        if (!pcs || *pcs == UNICODE_NULL || !FindLFNorSFN_U((LPWSTR)pcs, &pFirst, &pLast, FALSE))
+            {
+            // The path is ok and does not need conversion at all.
+            // Check if we need to do copy
+            ReturnLen = wcslen(lpszShortPath);
+            if (cchBuffer > ReturnLen && ARGUMENT_PRESENT(lpszLongPath))
+                {
+                if (lpszLongPath != lpszShortPath)
+                    RtlMoveMemory(lpszLongPath, lpszShortPath,
+                                      (ReturnLen + 1)* sizeof(WCHAR)
+                                      );
+                }
+            else {
+                // No buffer or buffer too small, the return size
+                // has to count the terminated NULL char
+                ReturnLen++;
+                }
+            goto glnTryExit;
+            }
+
+
+        // conversions  are necessary, make a local copy of the string
+        // because we have to party on it.
+
+        ASSERT(!pSrcCopy);
+
+        Length = wcslen(lpszShortPath) + 1;
+        pSrcCopy = RtlAllocateHeap(RtlProcessHeap(), 0,
+                                   Length * sizeof(WCHAR)
+                                   );
+        if (!pSrcCopy) {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            goto glnTryExit;
+            }
+        RtlMoveMemory(pSrcCopy, lpszShortPath, Length * sizeof(WCHAR));
+        // pFirst points to the first char of the very first SFN in the path
+        // pLast points to the char right after the last char of the very
+        // first SFN in the path. *pLast could be UNICODE_NULL
+        pFirst = pSrcCopy + (pFirst - lpszShortPath);
+        pLast = pSrcCopy + (pLast - lpszShortPath);
+        //
+        // We allow lpszShortPath be overlapped with lpszLongPath so
+        // allocate a local buffer if necessary:
+        // (1) the caller does provide a legitimate buffer and
+        // (2) the buffer overlaps with lpszShortName
+
+        pDst = lpszLongPath;
+        if (cchBuffer && ARGUMENT_PRESENT(lpszLongPath) &&
+            (lpszLongPath >= lpszShortPath && lpszLongPath < lpszShortPath + Length ||
+             lpszLongPath < lpszShortPath && lpszLongPath + cchBuffer >= lpszShortPath))
+            {
+            ASSERT(!Buffer);
+
+            Buffer = RtlAllocateHeap(RtlProcessHeap(), 0,
+                                           cchBuffer * sizeof(WCHAR));
+            if (!Buffer){
+                SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+                goto glnTryExit;
+                }
+            pDst = Buffer;
+            }
+
+        pSrc = pSrcCopy;
+        ReturnLen = 0;
+        do {
+            // there are three pointers involve in the conversion loop:
+            // pSrc, pFirst and pLast. Their relationship
+            // is:
+            //
+            // "c:\long~1.1\\foo.bar\\long~2.2\\bar"
+            //  ^          ^          ^       ^
+            //  |          |          |       |
+            //  |          pSrc       pFirst  pLast
+            //  pSrcCopy
+            //
+            // pSrcCopy always points to the very first char of the entire
+            // path.
+            //
+            // chars between pSrc(included) and pFirst(not included)
+            // do not need conversion so we simply copy them.
+            // chars between pFirst(included) and pLast(not included)
+            // need conversion.
+            //
+            Length = (ULONG)(pFirst - pSrc);
+            ReturnLen += Length;
+            if (Length && cchBuffer > ReturnLen && ARGUMENT_PRESENT(lpszShortPath))
+                {
+                RtlMoveMemory(pDst, pSrc, Length * sizeof(WCHAR));
+                pDst += Length;
+                }
+            // now try to convert the name, chars between pFirst and (pLast - 1)
+            wch = *pLast;
+            *pLast = UNICODE_NULL;
+            FindHandle = FindFirstFileW(pSrcCopy, &FindData);
+            *pLast = wch;
+            if (FindHandle != INVALID_HANDLE_VALUE){
+                FindClose(FindHandle);
+                // if no long name, copy the original name
+                // starts with pFirst(included) and ends with pLast(excluded)
+                if (!(Length = wcslen(FindData.cFileName)))
+                    Length = (ULONG)(pLast - pFirst);
+                else
+                    pFirst = FindData.cFileName;
+                ReturnLen += Length;
+                if (cchBuffer > ReturnLen && ARGUMENT_PRESENT(lpszLongPath))
+                    {
+                    RtlMoveMemory(pDst, pFirst, Length * sizeof(WCHAR));
+                    pDst += Length;
+                    }
+                }
+            else {
+                // invalid path, reset the length, mark the error and
+                // bail out of the loop. We will be copying the source
+                // to destination later.
+                //
+                ReturnLen = 0;
+                break;
+                }
+            pSrc = pLast;
+            if (*pSrc == UNICODE_NULL)
+                break;
+            } while (FindLFNorSFN_U(pSrc, &pFirst, &pLast, FALSE));
+
+        if (ReturnLen) {
+            //copy the rest of the path from pSrc. This may only contain
+            //a single NULL char
+            Length = wcslen(pSrc);
+            ReturnLen += Length;
+            if (cchBuffer > ReturnLen && ARGUMENT_PRESENT(lpszLongPath))
+                {
+                RtlMoveMemory(pDst, pSrc, (Length + 1) * sizeof(WCHAR));
+                if (Buffer)
+                    RtlMoveMemory(lpszLongPath, Buffer, (ReturnLen + 1) * sizeof(WCHAR));
+                }
+            else
+                ReturnLen++;
+            }
+
+glnTryExit:
+        ;
+        }
+        finally {
+            if (pSrcCopy)
+                RtlFreeHeap(RtlProcessHeap(), 0, pSrcCopy);
+            if (Buffer)
+                RtlFreeHeap(RtlProcessHeap(), 0, Buffer);
+            }
+
+    // restore error mode.
+    SetErrorMode(PrevErrorMode);
+    return ReturnLen;
 }

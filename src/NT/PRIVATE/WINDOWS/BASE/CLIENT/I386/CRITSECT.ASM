@@ -43,6 +43,7 @@ _BasepLockPrefixTable    label dword
         dd offset FLAT:Lock3
         dd offset FLAT:Lock4
         dd offset FLAT:Lock5
+        dd offset FLAT:Lock6
         dd 0
 _DATA   ENDS
 
@@ -192,6 +193,60 @@ cPublicFpo 2,0
         stdRET  _InterlockedExchange
 
 stdENDP _InterlockedExchange
+
+        page , 132
+        subttl  "InterlockedCompareExchange"
+
+;++
+;
+; PVOID
+; InterlockedCompareExchange (
+;       IN OUT PVOID *Destination,
+;       IN PVOID Exchange,
+;       IN PVOID Comperand
+;       )
+;
+; Routine Description:
+;
+;    This function performs an interlocked compare of the destination value
+;    with the comperand value.  If the destination value is equal to the
+;    comperand value, then the exchange value is stored in the destination.
+;    Otherwise, no operation is performed.
+;
+; Arguments:
+;
+;    Destination - Supplies a pointer to the destination value.
+;
+;    Exchange - Supplies the exchange value.
+;
+;    Comperand - Supplies the comperand value.
+;
+; Return Value:
+;
+;    (eax) - The initial destination value.
+;
+;--
+
+cPublicProc _InterlockedCompareExchange, 3
+cPublicFpo 3,0
+
+        mov     ecx, [esp + 4]              ; get destination address
+        mov     edx, [esp + 8]              ; get exchange value
+        mov     eax, [esp + 12]             ; get comperand value
+;
+; ml 6.11 predates the 486 cmpxchg mnemonic, so emit the opcode bytes:
+;   F0          lock prefix (NOP'd on UP via _BasepLockPrefixTable; Lock6
+;               must label this byte)
+;   0F B1 /r    cmpxchg r/m32, r32 ; ModRM 11h = mod 00 ([ecx]) / reg edx /
+;               r/m ecx  ->  lock cmpxchg dword ptr [ecx], edx
+;
+Lock6:
+        db      0F0h
+        db      00Fh, 0B1h, 011h
+
+        stdRET  _InterlockedCompareExchange
+
+stdENDP _InterlockedCompareExchange
 
         EXTRNP  _RtlpWaitForCriticalSection,1
         EXTRNP  _RtlpUnWaitCriticalSection,1

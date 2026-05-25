@@ -280,6 +280,7 @@ EXPORTS
     GetProfileSectionW
     GetProfileStringA
     GetProfileStringW
+    GetLongPathNameW
     GetShortPathNameA
     GetShortPathNameW
     GetStartupInfoA
@@ -293,6 +294,7 @@ EXPORTS
     GetSystemDefaultLCID
     GetSystemDirectoryA
     GetSystemDirectoryW
+    GetSystemWindowsDirectoryW
     GetSystemInfo
     GetSystemTime
     GetSystemTimeAsFileTime
@@ -359,6 +361,7 @@ EXPORTS
     HeapWalk
     InitAtomTable
     InitializeCriticalSection
+    InterlockedCompareExchange
     InterlockedDecrement
     InterlockedExchange
     InterlockedIncrement
