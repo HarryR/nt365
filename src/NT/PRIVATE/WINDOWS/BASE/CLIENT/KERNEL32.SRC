@@ -295,6 +295,7 @@ EXPORTS
     GetSystemDirectoryW
     GetSystemInfo
     GetSystemTime
+    GetSystemTimeAsFileTime
     GetTapeParameters
     GetTapePosition
     GetTapeStatus

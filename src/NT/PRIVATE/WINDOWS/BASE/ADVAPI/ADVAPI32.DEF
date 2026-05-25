@@ -1,0 +1,69 @@
+LIBRARY ADVAPI32
+
+DESCRIPTION 'MicroNT Advanced Windows 32 Base API'
+
+EXPORTS
+
+;
+; MicroNT-owned advapi32.  Skeleton stage.  Registry (Reg*) is exported
+; here as the winreg collapse lands under REG/; crypto and anything else
+; follows on demand.  LSA / eventlog / SCM / security / Win3.1 surfaces
+; are intentionally dropped (no lsass / services.exe on MicroNT).
+;
+
+;   --- Registry (added as each op is collapsed to direct ntdll) ---
+;   RegCloseKey
+;   RegOpenKeyExA / RegOpenKeyExW / RegOpenKeyA / RegOpenKeyW
+;   RegCreateKeyExA / RegCreateKeyExW / RegCreateKeyA / RegCreateKeyW
+;   RegQueryValueExA / RegQueryValueExW / RegQueryValueA / RegQueryValueW
+;   RegEnumKeyExA / RegEnumKeyExW / RegEnumValueA / RegEnumValueW
+;   RegSetValueExA / RegSetValueExW / RegDeleteKeyA / RegDeleteValueA
+;   RegFlushKey / RegQueryInfoKeyA / RegQueryInfoKeyW
+
+    RegCloseKey
+    RegOpenKeyExA
+    RegOpenKeyExW
+    RegOpenKeyA
+    RegOpenKeyW
+    RegCreateKeyExA
+    RegCreateKeyExW
+    RegCreateKeyA
+    RegCreateKeyW
+    RegQueryValueExW
+    RegQueryValueExA
+    RegEnumKeyExA
+    RegEnumKeyExW
+    RegEnumKeyA
+    RegEnumKeyW
+    RegEnumValueA
+    RegEnumValueW
+    RegQueryInfoKeyA
+    RegQueryInfoKeyW
+    RegSetValueExA
+    RegSetValueExW
+    RegQueryValueA
+    RegQueryValueW
+    RegSetValueA
+    RegSetValueW
+    RegDeleteKeyA
+    RegDeleteKeyW
+    RegDeleteValueA
+    RegDeleteValueW
+    RegFlushKey
+    RegGetKeySecurity
+    RegSetKeySecurity
+    RegConnectRegistryA
+    RegConnectRegistryW
+    RegNotifyChangeKeyValue
+    RegSaveKeyA
+    RegSaveKeyW
+    RegRestoreKeyA
+    RegRestoreKeyW
+    RegReplaceKeyA
+    RegReplaceKeyW
+    RegLoadKeyA
+    RegLoadKeyW
+    RegUnLoadKeyA
+    RegUnLoadKeyW
+
+    IsTextUnicode

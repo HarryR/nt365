@@ -1,0 +1,50 @@
+!IF 0
+
+Copyright (c) 1989  Microsoft Corporation
+
+Module Name:
+
+    sources.
+
+Abstract:
+
+    user32.dll -- MicroNT-owned.  Only the self-contained client-side USER
+    surface is carried: string handling (strings.c / wstrings.c), character
+    classification and ANSI<->Unicode translation (chartran.c), rectangle
+    helpers (rect.c), wsprintf (wsprintf.c) and string-resource loading
+    (clres.c).  Everything that talks to the window server (csrss) -- window
+    management, messaging, menus, dialogs, the edit control, DDE -- is left
+    out (MicroNT has no win32k / csrss USER server).
+
+!ENDIF
+
+MAJORCOMP=windows
+MINORCOMP=base
+
+TARGETNAME=user32
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=DYNLINK
+DLLENTRY=DllInitialize
+
+LINKLIBS=$(BASEDIR)\public\sdk\lib\*\kernel32.lib \
+         $(BASEDIR)\public\sdk\lib\*\ntdll.lib \
+         $(BASEDIR)\public\sdk\lib\*\libcntpr.lib
+
+INCLUDES=..\inc;..\..\inc;..\..\..\inc
+
+C_DEFINES=$(C_DEFINES) -DUNICODE -D_USER32_
+
+NTDEBUGTYPE=coff
+
+SOURCES= init.c \
+         chartran.c \
+         strings.c \
+         wstrings.c \
+         oemxlate.c \
+         rect.c \
+         wsprintf.c \
+         clres.c
+
+UMTYPE=console
+
+DLLDEF=user32.def

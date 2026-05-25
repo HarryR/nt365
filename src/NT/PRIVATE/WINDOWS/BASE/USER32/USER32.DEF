@@ -1,0 +1,69 @@
+LIBRARY USER32
+
+DESCRIPTION 'MicroNT Windows USER32 base utility API'
+
+EXPORTS
+
+;
+; MicroNT-owned user32.dll.  Only the self-contained client-side surface is
+; exported: rectangle helpers, character/string handling, wsprintf, and
+; string-resource loading.  Window / message / menu / dialog / DDE entry
+; points are intentionally absent (no csrss USER server on MicroNT).
+;
+
+;   --- rectangles (rect.c) ---
+    SetRect
+    SetRectEmpty
+    CopyRect
+    IsRectEmpty
+    PtInRect
+    OffsetRect
+    InflateRect
+    IntersectRect
+    UnionRect
+    EqualRect
+    SubtractRect
+
+;   --- character / string, ANSI (strings.c) ---
+    CharLowerA
+    CharUpperA
+    CharNextA
+    CharPrevA
+    CharLowerBuffA
+    CharUpperBuffA
+    IsCharLowerA
+    IsCharUpperA
+    IsCharAlphaA
+    IsCharAlphaNumericA
+
+;   --- character / string, wide (wstrings.c) ---
+    CharLowerW
+    CharUpperW
+    CharNextW
+    CharPrevW
+    CharLowerBuffW
+    CharUpperBuffW
+    IsCharLowerW
+    IsCharUpperW
+    IsCharAlphaW
+    IsCharAlphaNumericW
+
+;   --- ANSI/Unicode <-> OEM translation (oemxlate.c) ---
+    CharToOemA
+    CharToOemW
+    CharToOemBuffA
+    CharToOemBuffW
+    OemToCharA
+    OemToCharW
+    OemToCharBuffA
+    OemToCharBuffW
+
+;   --- formatted output (wsprintf.c) ---
+    wsprintfA
+    wsprintfW
+    wvsprintfA
+    wvsprintfW
+
+;   --- string resources (clres.c) ---
+    LoadStringA
+    LoadStringW

@@ -550,6 +550,43 @@ Return Value:
             tmp[k++] = '\n';
             tmp[k] = 0;
             HalDisplayString(tmp);
+
+            /*
+             * MicroNT: for an access violation, also dump the top of the
+             * faulting user stack.  The fault EIP alone (e.g. a shared
+             * wcscpy / RtlCopy) does not reveal who called it -- the return
+             * address on the stack does, and its module range (python25 ~
+             * 0x1e0xxxxx, msvcr71 ~ 0x7c34xxxx, kernel32 ~ 0x606xxxxx,
+             * ntdll ~ 0x6010xxxx) identifies the caller.  Read-only and
+             * probe-guarded so a bad Esp can't fault the kernel.
+             */
+            if (PreviousMode == UserMode &&
+                ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION) {
+                try {
+                    PULONG sp = (PULONG)ContextRecord->Esp;
+                    ULONG  sw[8];
+                    int    n;
+                    ProbeForRead(sp, sizeof(sw), sizeof(ULONG));
+                    for (n = 0; n < 8; n++) {
+                        sw[n] = sp[n];
+                    }
+                    k = 0;
+                    for (p = 0; "UMODE STK:"[p]; p++) {
+                        tmp[k++] = "UMODE STK:"[p];
+                    }
+                    for (n = 0; n < 8; n++) {
+                        tmp[k++] = ' ';
+                        for (j = 28; j >= 0; j -= 4) {
+                            tmp[k++] = _hx[(sw[n] >> j) & 0xF];
+                        }
+                    }
+                    tmp[k++] = '\n';
+                    tmp[k] = 0;
+                    HalDisplayString(tmp);
+                } except (EXCEPTION_EXECUTE_HANDLER) {
+                    ;
+                }
+            }
         }
     }
 

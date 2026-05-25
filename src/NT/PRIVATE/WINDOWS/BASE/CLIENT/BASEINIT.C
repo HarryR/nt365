@@ -174,7 +174,23 @@ Return Value:
         BaseWindowsMajorVersion = VER_PRODUCTMAJORVERSION;
         BaseWindowsMinorVersion = VER_PRODUCTMINORVERSION;
         BaseBuildNumber         = VER_PRODUCTBUILD;
-        BaseCSDVersion          = VER_PRODUCTBUILD_QFE;
+        //
+        // CSDVersion is the service-pack ("Corrective Service Disk") string
+        // GetVersionEx{A,W} copy out via wcscpy.  MicroNT repurposes it to
+        // surface the build identity (branch + git commit, from ntverp.h's
+        // VER_PRODUCTBETA_STR) so anything that calls GetVersionEx sees it.
+        // It MUST be a wide string: VER_PRODUCTBETA_STR is an ANSI literal
+        // and TEXT() here would follow UNICODE (undefined in BASE/CLIENT),
+        // so widen it unconditionally.  (The previous code assigned the
+        // numeric VER_PRODUCTBUILD_QFE to this PWSTR, so BaseCSDVersion
+        // became (PWSTR)<qfe> and GetVersionEx wcscpy'd from a near-null
+        // pointer -- a CRT startup calling GetVersionExA faulted.)
+        //
+#define BASE_WIDEN2(x) L##x
+#define BASE_WIDEN(x)  BASE_WIDEN2(x)
+        BaseCSDVersion          = BASE_WIDEN(VER_PRODUCTBETA_STR);
+#undef  BASE_WIDEN
+#undef  BASE_WIDEN2
 
         RtlInitUnicodeString( &BaseWindowsDirectory,
                               L"C:" );

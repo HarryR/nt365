@@ -1,0 +1,56 @@
+!IF 0
+
+Copyright (c) 1989  Microsoft Corporation
+
+Module Name:
+
+    sources.
+
+Abstract:
+
+    advapi32.dll -- MicroNT-owned.  The NT 3.5 winreg client/server/RPC
+    registry is being collapsed into direct-ntdll Reg* under REG/ (no
+    winreg.dll, no RPC, no LOCAL defines).  LSA / eventlog / SCM / Win3.1
+    surfaces are stripped (MicroNT has no lsass / services.exe).
+
+    Skeleton stage: init + IsTextUnicode only; registry ops land
+    incrementally into SOURCES below as they are collapsed.
+
+!ENDIF
+
+MAJORCOMP=windows
+MINORCOMP=base
+
+TARGETNAME=advapi32
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=DYNLINK
+DLLENTRY=DllInitialize
+
+LINKLIBS=$(BASEDIR)\public\sdk\lib\*\kernel32.lib \
+         $(BASEDIR)\public\sdk\lib\*\ntdll.lib \
+         $(BASEDIR)\public\sdk\lib\*\libcntpr.lib
+
+INCLUDES=..\inc;..\..\inc;..\..\..\inc
+
+C_DEFINES=$(C_DEFINES) -D_ADVAPI32_ -D_NTSYSTEM_
+
+NTDEBUGTYPE=coff
+
+SOURCES= init.c \
+         isuni.c \
+         regpredef.c \
+         regclose.c \
+         regopen.c \
+         regcreate.c \
+         regqval.c \
+         regenum.c \
+         regenval.c \
+         regqinfo.c \
+         regset.c \
+         regdel.c \
+         regv31.c \
+         regmisc.c
+
+UMTYPE=console
+
+DLLDEF=advapi32.def

@@ -2607,6 +2607,13 @@ GetSystemTime(
     );
 
 WINBASEAPI
+VOID
+WINAPI
+GetSystemTimeAsFileTime(
+    LPFILETIME lpSystemTimeAsFileTime
+    );
+
+WINBASEAPI
 BOOL
 WINAPI
 SetSystemTime(

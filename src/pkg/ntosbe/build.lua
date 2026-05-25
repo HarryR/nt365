@@ -469,6 +469,52 @@ function M.main(opts)
         WIN .. "/BASE/obj", WIN .. "/obj",
     }
 
+    -- ----- WINDOWS/BASE/ADVAPI — advapi32.dll (MicroNT-owned).  The NT 3.5
+    -- winreg client/server/RPC registry is collapsed into direct-ntdll Reg*
+    -- under ADVAPI/REG (no winreg.dll/RPC/LOCAL).  Needs kernel32.lib +
+    -- ntdll.lib (built earlier in USERLAND_TARGETS).  Output:
+    -- PUBLIC/SDK/LIB/i386/{advapi32.lib, advapi32.dll}.
+    targets.windows_advapi = function()
+        local since = platform.now()
+        local rc = run_nmake(WIN .. "/BASE/ADVAPI",
+                         "WINDOWS/BASE/ADVAPI - advapi32.dll",
+                         { "makedll=1" })
+        if rc ~= 0 then return rc end
+        return splitsym_dir(PUB_LIB, since)
+    end
+    clean_dirs.windows_advapi = { WIN .. "/BASE/ADVAPI", WIN .. "/BASE/ADVAPI/obj" }
+
+    -- ----- WINDOWS/BASE/USER32 — user32.dll (MicroNT-owned).  Only the
+    -- self-contained client-side USER surface: rectangles, character/string
+    -- handling, wsprintf, string-resource loading.  The window-server
+    -- (csrss) surface is left out.  Needs kernel32.lib + ntdll.lib.  Output:
+    -- PUBLIC/SDK/LIB/i386/{user32.lib, user32.dll}.
+    targets.windows_user32 = function()
+        local since = platform.now()
+        local rc = run_nmake(WIN .. "/BASE/USER32",
+                         "WINDOWS/BASE/USER32 - user32.dll",
+                         { "makedll=1" })
+        if rc ~= 0 then return rc end
+        return splitsym_dir(PUB_LIB, since)
+    end
+    clean_dirs.windows_user32 = { WIN .. "/BASE/USER32", WIN .. "/BASE/USER32/obj" }
+
+    -- ----- WINDOWS/BASE/SHELL32 — shell32.dll (MicroNT-owned).  Headless
+    -- shell surface only: the ShellExecute/FindExecutable launch core
+    -- (registry-association resolve + CreateProcess, no DDE/WOW/shell-hook),
+    -- CommandLineToArgvW, the Str*/She* helper families, and environment
+    -- substitution.  Links kernel32 + user32 + advapi32 + ntdll.  Output:
+    -- PUBLIC/SDK/LIB/i386/{shell32.lib, shell32.dll}.
+    targets.windows_shell32 = function()
+        local since = platform.now()
+        local rc = run_nmake(WIN .. "/BASE/SHELL32",
+                         "WINDOWS/BASE/SHELL32 - shell32.dll",
+                         { "makedll=1" })
+        if rc ~= 0 then return rc end
+        return splitsym_dir(PUB_LIB, since)
+    end
+    clean_dirs.windows_shell32 = { WIN .. "/BASE/SHELL32", WIN .. "/BASE/SHELL32/obj" }
+
     -- ----- WINDOWS/CMD — NT 3.5 cmd.exe lifted from stuff/.
     -- NMAKE shells inline commands (@if exist, &&, |, redirections)
     -- through COMSPEC; without a working cmd.exe those _spawn calls
@@ -1058,7 +1104,8 @@ function M.main(opts)
     }
 
     local USERLAND_TARGETS = {
-        "rtl_user", "ntdll", "urtl", "windows_base_client", "cmd",
+        "rtl_user", "ntdll", "urtl", "windows_base_client", "windows_advapi",
+        "windows_user32", "windows_shell32", "cmd",
     }
 
     local function build_group(name, list)

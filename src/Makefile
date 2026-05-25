@@ -130,6 +130,10 @@ else
 BOOT_REDIRECT :=
 endif
 
+ifdef NETDUMP
+BOOT_FLAGS += --netdump
+endif
+
 boot: disk
 	$(SRC)/boot.sh --disk-image $(BUILD)/esp.img $(BOOT_FLAGS) $(BOOT_REDIRECT)
 

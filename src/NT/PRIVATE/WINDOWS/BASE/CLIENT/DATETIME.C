@@ -165,6 +165,46 @@ Return Value:
     lpSystemTime->wMilliseconds = TimeFields.Milliseconds;
 }
 
+VOID
+WINAPI
+GetSystemTimeAsFileTime(
+    LPFILETIME lpSystemTimeAsFileTime
+    )
+
+/*++
+
+Routine Description:
+
+    The current system date and time (UTC based) can be returned using
+    GetSystemTimeAsFileTime.
+
+Arguments:
+
+    lpSystemTimeAsFileTime - Returns the current system date and time formatted as
+        a FILETIME structure
+
+Return Value:
+
+    None.
+
+--*/
+
+{
+    LARGE_INTEGER SystemTime;
+
+    //
+    // Read system time from shared region.
+    //
+
+    do {
+        SystemTime.HighPart = USER_SHARED_DATA->SystemTime.High1Time;
+        SystemTime.LowPart = USER_SHARED_DATA->SystemTime.LowPart;
+    } while (SystemTime.HighPart != USER_SHARED_DATA->SystemTime.High2Time);
+
+    lpSystemTimeAsFileTime->dwLowDateTime = SystemTime.LowPart;
+    lpSystemTimeAsFileTime->dwHighDateTime = SystemTime.HighPart;
+}
+
 BOOL
 WINAPI
 SetSystemTime(

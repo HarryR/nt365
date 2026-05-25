@@ -143,6 +143,9 @@ function M.files(paths)
         { dest = "System32/sorttbls.nls", src = nls .. "/SORTTBLS.NLS" },
         { dest = "System32/ntdll.dll",    src = paths.sdk_lib .. "/ntdll.dll"    },
         { dest = "System32/kernel32.dll", src = paths.sdk_lib .. "/kernel32.dll" },
+        { dest = "System32/advapi32.dll", src = paths.sdk_lib .. "/advapi32.dll" },
+        { dest = "System32/user32.dll",   src = paths.sdk_lib .. "/user32.dll"   },
+        { dest = "System32/shell32.dll",  src = paths.sdk_lib .. "/shell32.dll"  },
 
         -- Base system drivers — loaded post-boot by IoLoadDriver from
         -- \SystemRoot\System32\Drivers, so they stay on the root volume.

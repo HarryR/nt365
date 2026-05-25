@@ -1,0 +1,51 @@
+!IF 0
+
+Copyright (c) 1989  Microsoft Corporation
+
+Module Name:
+
+    sources.
+
+Abstract:
+
+    shell32.dll -- MicroNT-owned.  Only the headless shell surface is built:
+    the ShellExecute / FindExecutable launch core (rewritten to resolve the
+    registry association and CreateProcess directly -- no DDE, WOW, shell
+    hook, or message-box UI), command-line parsing (argvw.c), the Str* and
+    She* helper families (lstrfns.c / psdocurd.c, verbatim from the NT 3.5
+    shell), and environment substitution (expenv.c).  Icon extraction, the
+    about box, drag-drop, and the find-executable dialog are left out (gdi /
+    window / comdlg bound -- MicroNT has no csrss USER server or GDI client).
+
+!ENDIF
+
+MAJORCOMP=windows
+MINORCOMP=base
+
+TARGETNAME=shell32
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=DYNLINK
+DLLENTRY=DllInitialize
+
+LINKLIBS=$(BASEDIR)\public\sdk\lib\*\kernel32.lib \
+         $(BASEDIR)\public\sdk\lib\*\user32.lib \
+         $(BASEDIR)\public\sdk\lib\*\advapi32.lib \
+         $(BASEDIR)\public\sdk\lib\*\ntdll.lib \
+         $(BASEDIR)\public\sdk\lib\*\libcntpr.lib
+
+INCLUDES=.;..\..\inc;..\..\..\inc
+
+C_DEFINES=$(C_DEFINES) -DWIN32 -DUNICODE -D_UNICODE
+
+NTDEBUGTYPE=coff
+
+SOURCES= init.c \
+         exec.c \
+         argvw.c \
+         lstrfns.c \
+         psdocurd.c \
+         expenv.c
+
+UMTYPE=console
+
+DLLDEF=shell32.def

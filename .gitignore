@@ -52,6 +52,8 @@ src/NT/PUBLIC/SDK/LIB/I386/hal.lib
 src/NT/PUBLIC/SDK/LIB/I386/hal.exp
 src/NT/PUBLIC/SDK/LIB/I386/tmp.lib
 src/NT/PUBLIC/SDK/LIB/I386/tmp.exp
+src/NT/PUBLIC/SDK/LIB/I386/advapi32.lib
+src/NT/PUBLIC/SDK/LIB/I386/user32.lib
 # ntdll, kernel32, advapi32 DLLs + .exp are generated each build.
 # The .LIB import stubs (kernel32.lib, ntdll.lib) are SEED files —
 # early-bootstrap tools (cmd-stub, wibo-tools setup) link against them

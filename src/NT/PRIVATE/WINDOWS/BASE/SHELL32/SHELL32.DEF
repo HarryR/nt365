@@ -1,0 +1,71 @@
+LIBRARY SHELL32
+
+DESCRIPTION 'MicroNT Windows Shell API Library'
+
+EXPORTS
+
+;
+; MicroNT-owned shell32.dll.  Only the headless surface is carried: the
+; ShellExecute launch core (registry-association resolve + CreateProcess, no
+; DDE / WOW / shell-hook), command-line parsing, the Str* and She* helper
+; families, and environment-string substitution.  Icon extraction, the about
+; box, drag-drop, and the find-executable dialog (all gdi / window / comdlg
+; bound) are intentionally absent.
+;
+
+;   --- launch (exec.c) ---
+    ShellExecuteA
+    ShellExecuteW
+    FindExecutableA
+    FindExecutableW
+
+;   --- command line (argvw.c) ---
+    CommandLineToArgvW
+
+;   --- string helpers (lstrfns.c) ---
+    StrChrA
+    StrChrW
+    StrRChrA
+    StrRChrW
+    StrChrIA
+    StrChrIW
+    StrRChrIA
+    StrRChrIW
+    StrCmpNA
+    StrCmpNW
+    StrCmpNIA
+    StrCmpNIW
+    StrCpyNA
+    StrCpyNW
+    StrNCmpA
+    StrNCmpW
+    StrNCmpIA
+    StrNCmpIW
+    StrNCpyA
+    StrNCpyW
+    StrStrA
+    StrStrW
+    StrRStrA
+    StrRStrW
+    StrStrIA
+    StrStrIW
+    StrRStrIA
+    StrRStrIW
+
+;   --- path / drive helpers (psdocurd.c) ---
+    SheGetCurDrive
+    SheSetCurDrive
+    SheFullPathA
+    SheFullPathW
+    SheGetDirA
+    SheGetDirW
+    SheChangeDirA
+    SheChangeDirW
+    SheChangeDirExA
+    SheChangeDirExW
+    SheGetDirExW
+    SheGetPathOffsetW
+
+;   --- environment substitution (expenv.c) ---
+    DoEnvironmentSubstA
+    DoEnvironmentSubstW
