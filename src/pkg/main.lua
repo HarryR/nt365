@@ -18,9 +18,10 @@
 -- package.path + io/os globals come from the runtime preamble
 -- (\SystemRoot\System32\preamble.lua).
 
-local dhcp = require('nt.net.dhcp')
-local afd  = require('nt.net.afd')
-local ke   = require('nt.dll.ke')
+local dhcp   = require('nt.net.dhcp')
+local afd    = require('nt.net.afd')
+local ke     = require('nt.dll.ke')
+local thread = require('nt.thread')  -- spawns the harderr daemon below
 
 -- HOST defaults to the DHCP-learned default gateway, which under QEMU
 -- user-mode networking is the slirp router (10.0.2.2) and reaches a
@@ -87,6 +88,80 @@ print("AGENT: boot")
 
 -- Boot prelude — \NLS\ sections, \DosDevices\C: symlink, etc.  Idempotent.
 require('nt.boot').run()
+
+-- ------------------------------------------------------------------
+-- Hard-error port daemon.
+--
+-- Without a registered default hard-error port, any user-mode raise of
+-- an NT_ERROR (typical example: LoadLibrary on a missing static dep)
+-- halts the kernel via ExpSystemErrorHandler(CallShutdown=TRUE).  See
+-- docs-wip/HALT-ON-USER-ERROR.md.  Registering ourselves here means
+-- the kernel LPCs us instead -- we log + reply RTC, the raising
+-- process gets STATUS_DLL_NOT_FOUND (etc.) back as a normal error,
+-- everyone's happy.
+--
+-- The daemon runs in a sibling cr_thread so the main accept-and-run
+-- loop below isn't blocked on recv().  Both threads share this NT
+-- process: that means HARDERR.C:404-417's recursion guard fires if
+-- WE raise a hard error -- the kernel would bugcheck the box rather
+-- than LPC back to us.  In practice:
+--
+--   * Hard errors come from CHILD processes (ps.spawn'd binaries like
+--     python.exe, lua.exe with a missing DLL, etc.).  Those are fine
+--     -- the guard tests the calling process, not ours.
+--   * Arriving Lua chunks (line `pcall(chunk, sock)` below) run
+--     in-process.  Chunks that need to exercise possibly-failing
+--     LoadLibrary / similar MUST do it via ps.spawn so the failure
+--     hits a child, not us.  This is already the agenthost.py /
+--     stager convention.
+--
+-- The daemon listens forever.  It survives any single recv hiccup by
+-- looping the pcall; only a port-closed status breaks out.
+-- ------------------------------------------------------------------
+
+local HARDERR_DAEMON = [[
+local harderr = require('nt.harderr')
+local bit     = require('bit')
+
+local port = harderr.listen("\\HardErrorPort", { default = true })
+print("HARDERR: daemon listening on \\HardErrorPort")
+
+while true do
+    local ok, msg = pcall(function() return port:recv() end)
+    if not ok then
+        print("HARDERR: recv failed: " .. tostring(msg))
+        break
+    end
+
+    -- Log a single-line summary.  msg.params already decoded -- string
+    -- entries for slots flagged in UnicodeStringParameterMask, numbers
+    -- for the rest.  Status as 8-digit hex matches kernel STOP-banner
+    -- formatting.
+    local parts = {
+        string.format("HARDERR: pid=%d tid=%d status=%08x",
+                      msg.pid, msg.tid, msg.status),
+    }
+    for i, p in ipairs(msg.params) do
+        if type(p) == 'string' then
+            parts[#parts + 1] = string.format("p%d=%q", i, p)
+        else
+            parts[#parts + 1] = string.format("p%d=0x%08x", i, p)
+        end
+    end
+    print(table.concat(parts, " "))
+
+    -- ResponseReturnToCaller = let the raising process handle the
+    -- failure normally.  Python's `try: import _ssl except
+    -- ImportError` and similar fallbacks all depend on this answer.
+    port:reply(msg, harderr.RESPONSE.RETURN_TO_CALLER)
+end
+
+port:close()
+return "harderr daemon exited"
+]]
+
+local harderr_thread = thread.run(HARDERR_DAEMON, "")
+print("AGENT: harderr daemon thread up")
 
 -- Bring the interface up.  Under the QEMU dev setup slirp serves DHCP
 -- (gateway 10.0.2.2).  Retry a few times before giving up.
