@@ -38,6 +38,14 @@ require('test.cm')
 require('test.fs')
 require('test.mm')
 require('test.lpc')
+-- harderr: single-process unit tests deliberately do NOT call
+-- NtSetDefaultHardErrorPort (would set ExpReadyForErrors permanently
+-- and break harderr_xproc).  The xproc suite owns the one-and-only
+-- registration in this boot, so it must come BEFORE anything else
+-- that might want to register the default port (nothing else does
+-- today, so order between the two is loose).
+require('test.harderr')
+require('test.harderr_xproc')
 require('test.sys')
 require('test.tree')
 require('test.thread')

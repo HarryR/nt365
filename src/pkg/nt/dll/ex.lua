@@ -120,6 +120,33 @@ NTSTATUS __stdcall NtQueryMutant   (HANDLE h, int cls, void *info, ULONG len, UL
 NTSTATUS __stdcall NtQuerySemaphore(HANDLE h, int cls, void *info, ULONG len, ULONG *ret);
 NTSTATUS __stdcall NtQueryTimer    (HANDLE h, int cls, void *info, ULONG len, ULONG *ret);
 NTSTATUS __stdcall NtQuerySection  (HANDLE h, int cls, void *info, ULONG len, ULONG *ret);
+
+/* HARDERR.C -- hard-error routing */
+NTSTATUS __stdcall NtSetDefaultHardErrorPort(HANDLE DefaultHardErrorPort);
+NTSTATUS __stdcall NtRaiseHardError(NTSTATUS ErrorStatus,
+                                    ULONG NumberOfParameters,
+                                    ULONG UnicodeStringParameterMask,
+                                    ULONG *Parameters,
+                                    ULONG ValidResponseOptions,
+                                    ULONG *Response);
+
+/* LUID.C -- locally-unique-id allocator.  LUID is cdef'd in nt.dll.se;
+ * we leave the parameter opaque to avoid pulling se.lua into ex's cdef
+ * (would create a load-order coupling).  The wrapper lazy-requires se
+ * and casts. */
+NTSTATUS __stdcall NtAllocateLocallyUniqueId(void *Luid);
+
+/* DELAY.C / EX init -- direct write to HalDisplayString */
+NTSTATUS __stdcall NtDisplayString(UNICODE_STRING *String);
+
+/* NTXCAPI -- user-mode exception raise (lives next to EX in spirit).
+ * Takes EXCEPTION_RECORD + CONTEXT pointers; left opaque here so this
+ * module doesn't have to drag in the full CONTEXT cdef (architecture-
+ * sensitive, ~700 bytes on x86 with floating-point state).  Callers
+ * cast their cdata of the appropriate type to void * at the call site. */
+NTSTATUS __stdcall NtRaiseException(void *ExceptionRecord,
+                                    void *ContextRecord,
+                                    unsigned char FirstChance);
 ]]
 
 local M = {}
@@ -441,6 +468,134 @@ function M.event_pair(opts)
 end
 
 M.EventPair = EventPair
+
+-- ------------------------------------------------------------------
+-- HARDERR.C -- hard-error routing.
+--
+-- NtRaiseHardError ships a HARDERROR_MSG (defined in nt.dll.lpc next
+-- to PORT_MESSAGE) via LpcRequestWaitReplyPort to whatever process
+-- registered the default port.  The high-level daemon plumbing lives
+-- in nt.harderr; the raw Nt* surface lives here.
+--
+-- IMPORTANT: NtRaiseHardError must NEVER be called from the process
+-- that called NtSetDefaultHardErrorPort with NT_ERROR(status) -- the
+-- kernel's recursion guard (HARDERR.C:404-417) takes the
+-- ExpSystemErrorHandler(CallShutdown=TRUE) path in that case and
+-- halts the box via the qemu debug-exit port.  Cross-process is fine.
+-- ------------------------------------------------------------------
+
+-- Values from NTEXAPI.H typedef enum _HARDERROR_RESPONSE.
+M.HARDERROR_RESPONSE = {
+    RETURN_TO_CALLER = 0,
+    NOT_HANDLED      = 1,
+    ABORT            = 2,
+    CANCEL           = 3,
+    IGNORE           = 4,
+    NO               = 5,
+    OK               = 6,
+    RETRY            = 7,
+    YES              = 8,
+}
+
+-- Values from NTEXAPI.H typedef enum _HARDERROR_RESPONSE_OPTION.
+M.HARDERROR_OPTION = {
+    ABORT_RETRY_IGNORE = 0,
+    OK                 = 1,
+    OK_CANCEL          = 2,
+    RETRY_CANCEL       = 3,
+    YES_NO             = 4,
+    YES_NO_CANCEL      = 5,
+    SHUTDOWN_SYSTEM    = 6,
+}
+
+-- MAXIMUM_HARDERROR_PARAMETERS (NTEXAPI.H).
+M.HARDERROR_MAX_PARAMETERS = 4
+
+-- Register `port` (a handle from lpc.NtCreatePort) as the system-wide
+-- default hard-error port.  After this, any process that calls
+-- NtRaiseHardError without its own ExceptionPort lands here.
+--
+-- Requires SeTcbPrivilege (HARDERR.C:807).  Only one port may be set
+-- per system; ExpReadyForErrors flips TRUE permanently.  See the note
+-- above about the recursion guard.
+function M.NtSetDefaultHardErrorPort(port)
+    local st = ntdll.NtSetDefaultHardErrorPort(handle.raw(port))
+    if err.is_error(st) then err.raise('NtSetDefaultHardErrorPort', st) end
+end
+
+-- Raise a hard error against the current process.  `status` is the
+-- NTSTATUS to report; `parameters` is a Lua array of ULONGs (each may
+-- be a scalar or a pointer to a UNICODE_STRING -- bit i of
+-- `unicode_mask` flags Parameters[i] as a string pointer).
+-- `valid_options` selects the HARDERROR_OPTION choices the receiver
+-- may pick from.  Returns the HARDERROR_RESPONSE the receiver replied.
+--
+-- Caveat: from the daemon's own process with NT_ERROR(status) this
+-- bugchecks the kernel (see module header).  Always exercise from a
+-- spawned child process (see pkg/test/harderr_xproc.lua).
+function M.NtRaiseHardError(status, parameters, unicode_mask, valid_options)
+    local n = parameters and #parameters or 0
+    if n > M.HARDERROR_MAX_PARAMETERS then
+        error("NtRaiseHardError: too many parameters (" .. n .. " > "
+              .. M.HARDERROR_MAX_PARAMETERS .. ")", 2)
+    end
+    local p = nil
+    if n > 0 then
+        p = ffi.new('ULONG[?]', n)
+        for i = 1, n do p[i-1] = parameters[i] end
+    end
+    local response = ffi.new('ULONG[1]')
+    local st = ntdll.NtRaiseHardError(status, n, unicode_mask or 0,
+                                      p, valid_options or M.HARDERROR_OPTION.OK,
+                                      response)
+    if err.is_error(st) then err.raise('NtRaiseHardError', st) end
+    return tonumber(response[0])
+end
+
+-- ------------------------------------------------------------------
+-- LUID.C -- locally-unique-id allocator.
+-- ------------------------------------------------------------------
+
+-- Returns a freshly-allocated LUID (a cdata of type 'LUID' from
+-- nt.dll.se).  Each call returns a monotonically-increasing 64-bit
+-- value -- useful for unique handle IDs, cookies, log line numbers.
+function M.NtAllocateLocallyUniqueId()
+    local se = require('nt.dll.se')   -- lazy: LUID lives here
+    local luid = ffi.new('LUID')
+    local st = ntdll.NtAllocateLocallyUniqueId(luid)
+    if err.is_error(st) then err.raise('NtAllocateLocallyUniqueId', st) end
+    return luid
+end
+
+-- ------------------------------------------------------------------
+-- DELAY.C / EX init -- direct write to HalDisplayString.
+-- ------------------------------------------------------------------
+
+-- Write `text` straight to the kernel's HAL display string -- the
+-- same path KdpStub uses for boot-log output.  Unlike printf+stdio
+-- this bypasses CRT buffering and the parent process's handle
+-- redirection, so it's load-bearing for diagnostic output from
+-- daemons that don't own a console.
+function M.NtDisplayString(text)
+    local ns = require('nt.dll.str').to_utf16(text)
+    local st = ntdll.NtDisplayString(ffi.cast('UNICODE_STRING *', ns))
+    if err.is_error(st) then err.raise('NtDisplayString', st) end
+end
+
+-- ------------------------------------------------------------------
+-- NTXCAPI -- user-mode exception raise.
+-- ------------------------------------------------------------------
+
+-- Minimal raw binding.  Caller supplies cdata pointers to its own
+-- EXCEPTION_RECORD / CONTEXT structures (cast to void * by the FFI).
+-- Use this to exercise the KiDispatchException path from Lua; full
+-- structured-exception wrappers can land in nt.dll.ke later if a
+-- caller actually drives RaiseException for production.
+function M.NtRaiseException(exception_record, context_record, first_chance)
+    local st = ntdll.NtRaiseException(exception_record, context_record,
+                                      first_chance and 1 or 0)
+    if err.is_error(st) then err.raise('NtRaiseException', st) end
+end
 
 -- ------------------------------------------------------------------
 -- IoCompletion raw wrappers

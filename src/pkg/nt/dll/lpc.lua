@@ -98,6 +98,23 @@ typedef struct _PORT_DATA_INFORMATION {
     PORT_DATA_ENTRY DataEntries[1];
 } PORT_DATA_INFORMATION;
 
+/* HARDERROR_MSG — the LPC message NTOS/EX/HARDERR.C sends to whoever
+ * registered the default hard-error port via NtSetDefaultHardErrorPort.
+ * Message type LPC_ERROR_EVENT (=9), TotalLength = sizeof(HARDERROR_MSG)
+ * = 68 bytes under pack(4).  Parameters[i] is a ULONG that may be a
+ * scalar or a PUNICODE_STRING -- bit i of UnicodeStringParameterMask
+ * tells you which.  MAXIMUM_HARDERROR_PARAMETERS is 4 (NTEXAPI.H). */
+typedef struct _HARDERROR_MSG {
+    PORT_MESSAGE  h;
+    NTSTATUS      Status;
+    LARGE_INTEGER ErrorTime;
+    ULONG         ValidResponseOptions;
+    ULONG         Response;
+    ULONG         NumberOfParameters;
+    ULONG         UnicodeStringParameterMask;
+    ULONG         Parameters[4];
+} HARDERROR_MSG;
+
 /* SECURITY_QUALITY_OF_SERVICE — defined in nt.dll (init.lua), shared
  * with nt.dll.se. */
 
