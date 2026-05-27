@@ -183,3 +183,95 @@ t.test("TCP outbound HTTP HEAD to example.com:80", function()
          "response doesn't look like HTTP: " ..
          resp:sub(1, math.min(80, #resp)))
 end)
+
+-- ------------------------------------------------------------------
+-- 5. AFD information ioctls — IOCTL_AFD_GET/SET_INFORMATION.
+--
+-- Covers AFD/MISC.C:AfdGetInformation, AfdSetInformation, and
+-- AfdSetInLineMode (which fires only for connected stream endpoints
+-- when INLINE_MODE is set).
+-- ------------------------------------------------------------------
+
+t.test("GET AFD_MAX_SEND_SIZE is positive on TCP and UDP", function()
+    local s = afd.tcp()
+    local n_tcp = afd.get_info(s, afd.MAX_SEND_SIZE)
+    s:close()
+    t.ok(n_tcp > 0, "TCP MaxSendSize should be > 0, got " .. tostring(n_tcp))
+
+    local u = afd.udp()
+    local n_udp = afd.get_info(u, afd.MAX_SEND_SIZE)
+    u:close()
+    t.ok(n_udp > 0, "UDP MaxDatagramSize should be > 0, got " .. tostring(n_udp))
+end)
+
+t.test("GET AFD_RECEIVE_WINDOW_SIZE / SEND_WINDOW_SIZE return defaults", function()
+    local s = afd.tcp()
+    local rwnd = afd.get_info(s, afd.RECEIVE_WINDOW_SIZE)
+    local swnd = afd.get_info(s, afd.SEND_WINDOW_SIZE)
+    s:close()
+    t.ok(rwnd > 0, "default RECEIVE_WINDOW_SIZE should be > 0, got " .. rwnd)
+    t.ok(swnd > 0, "default SEND_WINDOW_SIZE should be > 0, got " .. swnd)
+end)
+
+t.test("GET AFD_SENDS_PENDING on a fresh endpoint is 0", function()
+    -- Fresh TCP endpoint is unconnected; AfdGetInformation returns 0
+    -- because endpoint->Type != AfdBlockTypeVcConnecting yet.
+    local s = afd.tcp()
+    local n = afd.get_info(s, afd.SENDS_PENDING)
+    s:close()
+    t.eq(n, 0)
+end)
+
+t.test("SET AFD_NONBLOCKING_MODE accepts BOOLEAN values", function()
+    -- The flag toggles endpoint->NonBlocking; observable behaviour
+    -- (immediate STATUS_DEVICE_NOT_READY on starved recv) needs a
+    -- wrapper that doesn't auto-wait, which we don't expose yet.
+    -- The smoke is: the ioctl path runs cleanly for 0 and 1.
+    local s = afd.tcp()
+    afd.set_info(s, afd.NONBLOCKING_MODE, 1)
+    afd.set_info(s, afd.NONBLOCKING_MODE, 0)
+    s:close()
+    t.ok(true, "set_info NONBLOCKING_MODE round-tripped")
+end)
+
+t.test("SET AFD_INLINE_MODE on connected TCP exercises AfdSetInLineMode", function()
+    -- AfdSetInLineMode (MISC.C:879) only runs when the endpoint is in
+    -- AfdBlockTypeVcConnecting state, i.e. after the TCP connection
+    -- handshake has populated the connection block.  Loopback gives
+    -- us that state without any external dependency.
+    local server = afd.tcp()
+    afd.bind(server, "127.0.0.1", 0)
+    afd.listen(server, 1)
+    local _, port = afd.getsockname(server)
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+
+    -- Server-side accepted endpoint is the connected one we want.
+    local conn = afd.accept(server, LOOPBACK_TIMEOUT)
+
+    -- Toggle INLINE_MODE on the connected endpoint — drops into
+    -- AfdSetInLineMode, which issues IOCTL_TDI_SET_EVENT_HANDLER
+    -- against the TDI provider to register the inline mode.
+    afd.set_info(conn, afd.INLINE_MODE, 1)
+    afd.set_info(conn, afd.INLINE_MODE, 0)
+
+    conn:close()
+    client:close()
+    server:close()
+    t.ok(true, "set_info INLINE_MODE on connected TCP round-tripped")
+end)
+
+t.test("SET / GET AFD_RECEIVE_WINDOW_SIZE roundtrip on UDP", function()
+    -- The window-size SET path requires AfdBlockTypeDatagram or
+    -- AfdBlockTypeVcConnecting; a fresh UDP endpoint is the former.
+    -- The GET path always returns the global default, so we observe
+    -- the SET's success implicitly by not getting an error.
+    local u = afd.udp()
+    afd.bind(u, "127.0.0.1", 0)
+    afd.set_info(u, afd.RECEIVE_WINDOW_SIZE, 32 * 1024)
+    afd.set_info(u, afd.SEND_WINDOW_SIZE,    32 * 1024)
+    u:close()
+    t.ok(true, "window-size sets round-tripped on UDP")
+end)

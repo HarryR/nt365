@@ -181,6 +181,22 @@ typedef struct _AFD_RECV_DG_CTRL {
     unsigned char  pad[34];
 } AFD_RECV_DG_CTRL;
 
+/* AFD_INFORMATION — payload for IOCTL_AFD_GET/SET_INFORMATION.
+ * The kernel struct is { ULONG; union { BOOLEAN; ULONG; LARGE_INTEGER } }.
+ * Under /Zp8 the union (containing LARGE_INTEGER) is 8-byte aligned, so
+ * the kernel sees sizeof(AFD_INFORMATION) == 16 with InformationType at
+ * offset 0 and the union at offset 8.  The kernel's input/output buffer
+ * checks compare against sizeof(*afdInfo), so we must match that exact
+ * layout.  We flatten the union into two ULONGs because every documented
+ * info class reads/writes the low 32 bits (BOOLEAN aliases the low byte,
+ * LARGE_INTEGER.HighPart is unused by the classes AFD exposes). */
+typedef struct _AFD_INFORMATION {
+    unsigned long InformationType;       /* offset 0 */
+    unsigned long Pad_AlignUnionToEight; /* offset 4 — kernel ignores  */
+    unsigned long Information_Ulong;     /* offset 8 — union low dword */
+    unsigned long Information_HighPart;  /* offset 12 — union high dword */
+} AFD_INFORMATION;
+
 typedef struct _AFD_CONNECT_BUFFER {
     /* TDI_REQUEST_CONNECT header. */
     TDI_REQUEST                Request;
@@ -223,6 +239,18 @@ local IOCTL_AFD_START_LISTEN       = 0x12004
 local IOCTL_AFD_WAIT_FOR_LISTEN    = 0x12008
 local IOCTL_AFD_ACCEPT             = 0x1200C
 local IOCTL_AFD_GET_ADDRESS        = 0x1201A   -- METHOD_OUT_DIRECT (= 2 in low bits)
+local IOCTL_AFD_SET_INFORMATION    = 0x12024   -- _AFD_CONTROL_CODE(9,  METHOD_BUFFERED)
+local IOCTL_AFD_GET_INFORMATION    = 0x12064   -- _AFD_CONTROL_CODE(25, METHOD_BUFFERED)
+
+-- AFD_INFORMATION.InformationType values.  Boolean classes read/write
+-- the low byte of Ulong; range classes use the whole Ulong.
+local AFD_INLINE_MODE          = 0x01   -- BOOLEAN; SET routes via AfdSetInLineMode on connected TCP
+local AFD_NONBLOCKING_MODE     = 0x02   -- BOOLEAN
+local AFD_MAX_SEND_SIZE        = 0x03   -- ULONG   (read-only)
+local AFD_SENDS_PENDING        = 0x04   -- ULONG   (read-only)
+local AFD_MAX_PATH_SEND_SIZE   = 0x05   -- ULONG   (read-only; takes optional remote addr)
+local AFD_RECEIVE_WINDOW_SIZE  = 0x06   -- ULONG
+local AFD_SEND_WINDOW_SIZE     = 0x07   -- ULONG
 
 local IOCTL_TDI_CONNECT            = 0x210004
 
@@ -773,6 +801,37 @@ local function udp_recvfrom(sock, max_bytes, timeout_secs)
 end
 
 -- ------------------------------------------------------------------
+-- AFD information ioctls — get/set per-endpoint flags + window sizes.
+--
+-- The kernel side reads `Information.Ulong` for both range classes
+-- (windows, max send) and Boolean classes (NonBlocking, InLine);
+-- the union shares its first 4 bytes with the Boolean's low byte, so
+-- writing the integer 0/1 reads back as BOOLEAN cleanly.
+-- AFD_INLINE_MODE on a connected TCP endpoint is the path that drops
+-- into AfdSetInLineMode (MISC.C:879).
+-- ------------------------------------------------------------------
+
+local function get_info(sock, info_class, timeout_secs)
+    local info = ffi.new('AFD_INFORMATION')
+    info.InformationType = info_class
+    ioctl(sock, IOCTL_AFD_GET_INFORMATION,
+          info, ffi.sizeof('AFD_INFORMATION'),
+          info, ffi.sizeof('AFD_INFORMATION'),
+          timeout_secs)
+    return tonumber(info.Information_Ulong)
+end
+
+local function set_info(sock, info_class, value, timeout_secs)
+    local info = ffi.new('AFD_INFORMATION')
+    info.InformationType    = info_class
+    info.Information_Ulong  = value
+    ioctl(sock, IOCTL_AFD_SET_INFORMATION,
+          info, ffi.sizeof('AFD_INFORMATION'),
+          nil, 0,
+          timeout_secs)
+end
+
+-- ------------------------------------------------------------------
 -- Public surface.
 -- ------------------------------------------------------------------
 return {
@@ -788,6 +847,16 @@ return {
     udp_sendto   = udp_sendto,
     udp_recvfrom = udp_recvfrom,
     getsockname = getsockname,
+    get_info    = get_info,
+    set_info    = set_info,
+    -- AFD information classes — pass as info_class to get_info / set_info.
+    INLINE_MODE         = AFD_INLINE_MODE,
+    NONBLOCKING_MODE    = AFD_NONBLOCKING_MODE,
+    MAX_SEND_SIZE       = AFD_MAX_SEND_SIZE,
+    SENDS_PENDING       = AFD_SENDS_PENDING,
+    MAX_PATH_SEND_SIZE  = AFD_MAX_PATH_SEND_SIZE,
+    RECEIVE_WINDOW_SIZE = AFD_RECEIVE_WINDOW_SIZE,
+    SEND_WINDOW_SIZE    = AFD_SEND_WINDOW_SIZE,
     -- Helpers that occasionally come in handy outside this module.
     parse_ipv4  = parse_ipv4,
     format_ipv4 = format_ipv4,
