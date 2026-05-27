@@ -1239,3 +1239,45 @@ Tracked separately from per-finding TBDs because they cut across findings.
   Net diff: ~866 lines deleted across 14 AFD files + 1 TDI header.
   Selftest passes; coverage rises in `NTOS/AFD` (dead-code denominator
   shrinks again).
+
+- 2026-05-27 — **Decision: strip IP multicast / IGMP.** Seventh in the
+  wholesale-feature-removal series. No multicast use case on the cloud
+  workload host — no in-tree caller of `IP_ADD_MEMBERSHIP` or
+  `IP_DROP_MEMBERSHIP`, no application protocol needing group delivery.
+  IGMP itself was the largest single chunk of IP-layer code still
+  carrying a network-facing parser surface (group reports / queries),
+  which we have no reason to keep alive. Three layers touched. IP layer:
+  `IGMP.C` (608 LOC) and `IGMP.H` (33 LOC) deleted wholesale + dropped
+  from `SOURCES`; `IGMPInit` / `IGMPTimer` / `InitIGMPForNTE` /
+  `StopIGMPForNTE` / `IPSetMCastAddr` / the `IGMPLevel` global + its
+  registry read all gone from `INIT.C` and `NTIP.C`; `ipi_setmcastaddr`
+  slot dropped from `IPInfo` (`IP.H`); `nte_igmplist` field dropped
+  from `NetTableEntry` (`IPDEF.H`); `ici_igmplevel` dropped from
+  `IPConfigInfo` (`IPINIT.H`); the CLASSD-multicast branches of
+  `IsBCastOnNTE` / `GetAddrType` / `FindRoute` collapsed (multicast
+  destinations now uniformly return `DEST_INVALID`); the
+  `if (IGMPLevel != 0) AddRoute(CLASSD_MASK, …)` multicast-route init
+  removed from `IPRouteInit`. ARP layer: `ARPSetMCastList`,
+  `ARPFindMCast`, `ARPDelMCast`, `ARPAddMCast` deleted wholesale
+  (~240 LOC); `LLIP_ADDR_MCAST` arms of `ARPAddAddr` / `ARPDelAddr`
+  collapsed to fall-through-FALSE; `ARPMCastAddr` struct +
+  `ai_mcast` / `ai_mcastcnt` fields gone from `ARPDEF.H`;
+  `ARP_MCAST_MASK` macro retired; `IsBCastOnIF` no longer treats
+  CLASSD as broadcast; the `802_3` / FDDI CLASSD branches in
+  `ARPSendBCast` (multicast frame header assembly with the
+  `ENetMcst` / `FDDIMcst` templates) deleted. TDI layer: TCP/IP
+  AddrObj loses `ao_mcastopt` / `ao_mcastaddr` / `ao_mcastlist`
+  fields (`ADDR.H`); `AOMCastAddr` struct gone; `FindAOMCastAddr` +
+  the four `AO_OPTION_MCASTTTL` / `AO_OPTION_MCASTIF` /
+  `AO_OPTION_ADD_MCAST` / `AO_OPTION_DEL_MCAST` arms in
+  `SetAOOptions` deleted from `ADDR.C`; the multicast cleanup loops
+  in `InvalidateAddrs` and `DelAddrObj`; the multicast init in
+  `TdiOpenAddress`; the UDP CLASSD send branch in `UDP.C` (which
+  selected the multicast opt/source-addr pair). Public:
+  `TDI_SERVICE_MULTICAST_SUPPORTED` flag removed from
+  `PRIVATE/INC/TDI.H`. `LLIP_ADDR_MCAST` and `DEST_MCAST` constants
+  remain defined (no consumer, no harm). `CLASSD_ADDR` macro
+  remains and is still used as a defensive validation in the
+  proxy-ARP add path. Net diff: ~13.2k bytes of source across 12
+  files (TCP/IP IP + TCP + headers + PRF profile). Selftest passes;
+  coverage rises across NTOS/TDI/TCPIP.

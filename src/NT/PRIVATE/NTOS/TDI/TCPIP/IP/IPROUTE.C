@@ -19,7 +19,6 @@
 #include	"iproute.h"
 #include	"iprtdef.h"
 #include	"ipxmit.h"
-#include	"igmp.h"
 
 extern  NetTableEntry   *NetTableList;       // Pointer to the net table.
 
@@ -252,34 +251,14 @@ IsBCastOnNTE(IPAddr Address, NetTableEntry *NTE)
 	    if (IP_ADDR_EQUAL(Address, (NTE->nte_addr & Mask) | (BCastAddr & ~Mask)))
 	        return DEST_SN_BCAST;
 	
-	    // See if it's an all subnet's broadcast.
+	    // See if it's an all subnet's broadcast. Multicast is dropped:
+	    // we have no use case and the IGMP path is stripped.
 		if (!CLASSD_ADDR(Address)) {
 		    Mask = IPNetMask(Address);
 		
 		    if (IP_ADDR_EQUAL(Address,
 		    	(NTE->nte_addr & Mask) | (BCastAddr & ~Mask)))
 		        return DEST_BCAST;
-		} else {
-			// This is a class D address. If we're allowed to receive
-			// mcast datagrams, check our list.
-		
-			if (IGMPLevel == 2) {
-				IGMPAddr		*AddrPtr;
-				CTELockHandle	Handle;
-				
-				CTEGetLock(&NTE->nte_lock, &Handle);
-				AddrPtr = NTE->nte_igmplist;
-				while (AddrPtr != NULL) {
-					if (IP_ADDR_EQUAL(Address, AddrPtr->iga_addr))
-						break;
-					else
-						AddrPtr = AddrPtr->iga_next;
-				}
-				
-				CTEFreeLock(&NTE->nte_lock, Handle);
-				if (AddrPtr != NULL)
-					return DEST_MCAST;
-			}
 		}
 	}
 
@@ -339,14 +318,9 @@ GetAddrType(IPAddr Address)
         if (IP_LOOPBACK(Address))
             return DEST_LOCAL;
 
-		// If we're doing IGMP, see if it's a Class D address. If it it,
-		// return that.
-		if (CLASSD_ADDR(Address)) {
-			if (IGMPLevel != 0)
-				return DEST_REM_MCAST;
-			else
-				return DEST_INVALID;
-		}
+		// Multicast is not supported: drop class D destinations.
+		if (CLASSD_ADDR(Address))
+			return DEST_INVALID;
 				
         Mask = IPNetMask(Address);
 
@@ -460,14 +434,9 @@ GetLocalNTE(IPAddr Address, NetTableEntry **NTE)
         return DEST_LOCAL;
 	}
 
-	// If it's a class D address and we're receiveing multicasts, handle it
-	// here.
-	if (CLASSD_ADDR(Address)) {
-		if (IGMPLevel != 0)
-			return DEST_REM_MCAST;
-		else
-			return DEST_INVALID;
-	}
+	// Multicast is not supported: drop class D destinations.
+	if (CLASSD_ADDR(Address))
+		return DEST_INVALID;
 	
     // It's not local. Check to see if maybe it's a net broadcast for a net
     // of which we're not a member. If so, return remote bcast. We can't check
@@ -2351,13 +2320,6 @@ AddNTERoutes(NetTableEntry *NTE)
 	if (Status != IP_SUCCESS)
 		return FALSE;
 	
-	// If we're doing IGMP, add the route to the multicast address.
-	if (IGMPLevel != 0) {
-	    if (AddRoute(CLASSD_MASK, CLASSD_MASK, IPADDR_LOCAL, NTE->nte_if,
-			NTE->nte_mss, 1, IRE_PROTO_LOCAL, ATYPE_PERM) != IP_SUCCESS)
-			return FALSE;
-	}
-		
 	// And finally the route to the subnet.
     SNMask = NTE->nte_mask;
     if (AddRoute(NTE->nte_addr & SNMask, SNMask, IPADDR_LOCAL, NTE->nte_if,

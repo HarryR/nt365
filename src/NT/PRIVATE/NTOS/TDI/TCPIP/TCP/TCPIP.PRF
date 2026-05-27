@@ -2,7 +2,6 @@ TCBTimeout@8
 ARPTimeout@8
 ICMPTimer@4
 IPTimeout@8
-IGMPTimer@4
 IndicateData@16
 TCPSendComplete@8
 GetSendReq@0
@@ -119,10 +118,7 @@ ARPGetEList@12
 InitAdapter@4
 TdiOpenAddress@16
 TdiSetEvent@16
-ARPAddMCast@8
 ARPAddAddr@16
-ARPFindMCast@12
-ARPSetMCastList@4
 AddRoute@32
 GrowARPHeaders@4
 IPQueryInfo@16
@@ -143,13 +139,10 @@ IPGetLocalMTU@8
 InitTCBFromConn@12
 ARPInit@0
 LockedAddRoute@32
-InitIGMPForNTE@4
 InvalidateRCEChain@4
 DoNDISRequest@24
 ARPRequestComplete@12
 LoopAddAddr@16
-FindIGMPAddr@12
-IGMPAddrChange@12
 InitLoopback@4
 InitRouting@4
 TCPRequestComplete@12
@@ -206,7 +199,6 @@ IPConvertStringToAddress@8
 LoopQInfo@20
 InitRegDWORDParameter@16
 CompleteConnReq@12
-IGMPInit@0
 AllocTCB@0
 NotifyOfDisc@12
 SendARPReply@28

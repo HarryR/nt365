@@ -21,7 +21,6 @@
 #include    "llinfo.h"
 #include    "tdistat.h"
 #include	"iproute.h"
-#include	"igmp.h"
 	
 extern Interface		*IFList;
 extern NetTableEntry	*NetTableList;

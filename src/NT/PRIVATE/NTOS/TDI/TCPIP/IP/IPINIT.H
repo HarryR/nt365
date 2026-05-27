@@ -73,7 +73,6 @@ struct IPConfigInfo {
     uint    ici_fwpackets;          // Total number of FW packets to have.
 	uint	ici_deadgwdetect;		// True if we're doing dead GW detection.
 	uint	ici_pmtudiscovery;		// True if we're doing Path MTU discovery.
-	uint	ici_igmplevel;			// Level of IGMP we're doing.
 	uint	ici_ttl;				// Default TTL.
 	uint	ici_tos;				// Default TOS;
     int     ici_numnets;            // Number of nets present.

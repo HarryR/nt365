@@ -670,7 +670,6 @@ InvalidateAddrs(IPAddr Addr)
 	AddrObj			*AO;
 	UDPSendReq		*SendReq;
 	UDPRcvReq		*RcvReq;
-	AOMCastAddr		*MA;
 
 	INITQ(&SendQ);
 	INITQ(&RcvQ);
@@ -718,18 +717,6 @@ InvalidateAddrs(IPAddr Addr)
         			DEQUEUE(&AO->ao_rcvq, RcvReq, UDPRcvReq, urr_q);
         			CTEStructAssert(RcvReq, urr);
 					ENQUEUE(&RcvQ, &RcvReq->urr_q);
-				}
-				
-				// Free any multicast addresses he may have. IP will have
-				// deleted them at that level before we get here, so all we need
-				// to do if free the memory.
-				MA = AO->ao_mcastlist;
-				while (MA != NULL) {
-					AOMCastAddr		*Temp;
-					
-					Temp = MA;
-					MA = MA->ama_next;
-					CTEFreeMem(MA);
 				}
 				
 			}
@@ -960,11 +947,6 @@ TdiOpenAddress(PTDI_REQUEST Request, TRANSPORT_ADDRESS UNALIGNED *AddrList,
         CTEMemSet(NewAO, 0, sizeof(AddrObj));
         (*LocalNetInfo.ipi_initopts)(&NewAO->ao_opt);
 
-        (*LocalNetInfo.ipi_initopts)(&NewAO->ao_mcastopt);
-
-        NewAO->ao_mcastopt.ioi_ttl = 1;
-		NewAO->ao_mcastaddr = NULL_IP_ADDR;
-		
         CTEInitLock(&NewAO->ao_lock);
         CTEInitEvent(&NewAO->ao_event, RequestEventProc);
         INITQ(&NewAO->ao_sendq);
@@ -1025,7 +1007,6 @@ DeleteAO(AddrObj *DeletedAO)
     TCB             *TCBHead = NULL, *CurrentTCB;
     TCPConn         *Conn;
 #endif
-	AOMCastAddr		*AMA;
 
     CTEStructAssert(DeletedAO, ao);
     CTEAssert(!AO_VALID(DeletedAO));
@@ -1135,18 +1116,6 @@ DeleteAO(AddrObj *DeletedAO)
     // Free any IP options we have.
     (*LocalNetInfo.ipi_freeopts)(&DeletedAO->ao_opt);
 	
-	// Free any associated multicast addresses.
-	
-	AMA = DeletedAO->ao_mcastlist;
-	while (AMA != NULL) {
-		AOMCastAddr		*Temp;
-		
-		(*LocalNetInfo.ipi_setmcastaddr)(AMA->ama_addr, AMA->ama_if, FALSE);
-		Temp = AMA;
-		AMA = AMA->ama_next;
-		CTEFreeMem(Temp);
-	}
-
     CTEFreeMem(DeletedAO);
 
 #ifndef UDP_ONLY
@@ -1308,38 +1277,6 @@ TdiCloseAddress(PTDI_REQUEST Request)
 
 }
 
-//*	FindAOMCastAddr - Find a multicast address on an AddrObj.
-//
-//	A utility routine to find a multicast address on an AddrObj. We also return
-//	a pointer to it's predecessor, for use in deleting.
-//
-//	Input:	AO			- AddrObj to search.
-//			Addr		- MCast address to search for.
-//			IF			- IPAddress of interface
-//			PrevAMA		- Pointer to where to return predecessor.
-//
-//	Returns: Pointer to matching AMA structure, or NULL if there is none.
-//
-AOMCastAddr *
-FindAOMCastAddr(AddrObj *AO, IPAddr Addr, IPAddr IF, AOMCastAddr **PrevAMA)
-{
-	AOMCastAddr				*FoundAMA, *Temp;
-	
-	Temp = STRUCT_OF(AOMCastAddr, &AO->ao_mcastlist, ama_next);
-	FoundAMA = AO->ao_mcastlist;
-	
-	while (FoundAMA != NULL) {
-		if (IP_ADDR_EQUAL(Addr, FoundAMA->ama_addr) &&
-			IP_ADDR_EQUAL(IF, FoundAMA->ama_if))
-			break;
-		Temp = FoundAMA;
-		FoundAMA = FoundAMA->ama_next;
-	}
-	
-	*PrevAMA = Temp;
-	return FoundAMA;
-}
-
 //* SetAOOptions - Set AddrObj options.
 //
 //  The set options worker routine, called when we've validated the buffer
@@ -1356,7 +1293,6 @@ SetAOOptions(AddrObj *OptionAO, uint ID, uint Length, uchar *Options)
     IP_STATUS       IPStatus;   // Status of IP option set request.
 	CTELockHandle	Handle;
 	TDI_STATUS		Status;
-	AOMCastAddr		*AMA, *PrevAMA;
 
     CTEAssert(AO_BUSY(OptionAO));
 
@@ -1393,83 +1329,6 @@ SetAOOptions(AddrObj *OptionAO, uint ID, uint Length, uchar *Options)
 			break;
 		case AO_OPTION_TTL:
 			OptionAO->ao_opt.ioi_ttl = Options[0];
-			break;
-		case AO_OPTION_MCASTTTL:
-			OptionAO->ao_mcastopt.ioi_ttl = Options[0];
-			break;
-		case AO_OPTION_MCASTIF:
-			if (Length >= sizeof(UDPMCastIFReq)) {
-				UDPMCastIFReq		*Req;
-				IPAddr				Addr;
-				
-				Req = (UDPMCastIFReq *)Options;
-				Addr = Req->umi_addr;
-				if (!IP_ADDR_EQUAL(Addr, NULL_IP_ADDR) &&
-					(*LocalNetInfo.ipi_getaddrtype)(Addr) != DEST_LOCAL)
-					return TDI_BAD_OPTION;
-				OptionAO->ao_mcastaddr = Addr;
-			} else
-				Status = TDI_BAD_OPTION;
-			break;
-		case AO_OPTION_ADD_MCAST:
-		case AO_OPTION_DEL_MCAST:
-			if (Length >= sizeof(UDPMCastReq)) {
-				UDPMCastReq		*Req = (UDPMCastReq *)Options;
-				
-				AMA = FindAOMCastAddr(OptionAO, Req->umr_addr, Req->umr_if,
-					&PrevAMA);
-				
-				if (ID == AO_OPTION_ADD_MCAST) {
-					if (AMA != NULL) {
-						Status = TDI_BAD_OPTION;
-						break;
-					}
-					AMA = CTEAllocMem(sizeof(AOMCastAddr));
-					if (AMA == NULL) {
-						// Couldn't get the resource we need.
-						Status = TDI_NO_RESOURCES;
-						break;
-					}
-					
-					AMA->ama_next = OptionAO->ao_mcastlist;
-					OptionAO->ao_mcastlist = AMA;
-					
-					AMA->ama_addr = Req->umr_addr;
-					AMA->ama_if = Req->umr_if;
-					
-				} else {
-					// This is a delete request. Fail it if it's not there.
-					if (AMA == NULL) {
-						Status = TDI_BAD_OPTION;
-						break;
-					}
-					
-					PrevAMA->ama_next = AMA->ama_next;
-					CTEFreeMem(AMA);
-				}
-				
-				IPStatus = (*LocalNetInfo.ipi_setmcastaddr)(Req->umr_addr,
-					Req->umr_if, ID == AO_OPTION_ADD_MCAST ? TRUE : FALSE);
-				
-				if (IPStatus != TDI_SUCCESS) {
-					// Some problem adding or deleting. If we were adding, we
-					// need to free the one we just added.
-					if (ID == AO_OPTION_ADD_MCAST) {
-						AMA = FindAOMCastAddr(OptionAO, Req->umr_addr,
-							Req->umr_if, &PrevAMA);
-						if (AMA != NULL) {
-							PrevAMA->ama_next = AMA->ama_next;
-							CTEFreeMem(AMA);
-						} else
-							DEBUGCHK;
-					}
-					
-					Status = (IPStatus == IP_NO_RESOURCES ? TDI_NO_RESOURCES :
-						TDI_BAD_OPTION);
-				}
-										
-			} else
-				Status = TDI_BAD_OPTION;
 			break;
 		default:
 			Status = TDI_BAD_OPTION;

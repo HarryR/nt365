@@ -41,9 +41,6 @@ struct AddrObj {
 	uchar					ao_pad[2];	// PAD PAD PAD
     ushort                  ao_usecnt;  // Count of 'uses' on AO.
     ushort                  ao_inst;    // 'Instance' number of this AO.
-	IPOptInfo				ao_mcastopt;// MCast opt info.
-	IPAddr					ao_mcastaddr;	// Source address for MCast from 
-										// this addr object..
     struct TCPConn          *ao_tc;     // List of associated Connections..
     CTEEvent                ao_event;   // Event to use for this AO.
     PConnectEvent           ao_connect; // Connect event handle.
@@ -56,8 +53,6 @@ struct AddrObj {
     PVOID                   ao_rcvcontext; // Receive context.
     PRcvDGEvent             ao_rcvdg;   // Receive DG event handler
     PVOID                   ao_rcvdgcontext; // Receive DG context.
-	struct AOMCastAddr		*ao_mcastlist;	// List of active multicast 
-										// addresses.
 }; /* AddrObj */
 
 typedef struct AddrObj  AddrObj;
@@ -132,12 +127,6 @@ struct AORequest {
 }; /* AORequest */
 
 typedef struct AORequest AORequest;
-
-typedef struct AOMCastAddr {
-	struct AOMCastAddr	*ama_next;		// Next in list.
-	IPAddr				ama_addr;		// The address.
-	IPAddr				ama_if;			// The interface.
-} AOMCastAddr;
 
 //* External declarations for exported functions.
 

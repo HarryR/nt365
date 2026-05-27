@@ -699,7 +699,6 @@ typedef struct _TDI_PROVIDER_INFO {
 #define TDI_SERVICE_ERROR_FREE_DELIVERY 0x00000008 // error free delivery supported.
 #define TDI_SERVICE_SECURITY_LEVEL      0x00000010 // security wrapper supported.
 #define TDI_SERVICE_BROADCAST_SUPPORTED 0x00000020 // broadcast datagrams supported.
-#define TDI_SERVICE_MULTICAST_SUPPORTED 0x00000040 // multicast datagrams supported.
 #define TDI_SERVICE_DELAYED_ACCEPTANCE  0x00000080 // use of TDI_ACCEPT_OR_REJECT is supported.
 #define TDI_SERVICE_EXPEDITED_DATA      0x00000100 // expedited data supported.
 #define TDI_SERVICE_ROUTE_DIRECTED      0x00000400 // directed packets may go further than MC.

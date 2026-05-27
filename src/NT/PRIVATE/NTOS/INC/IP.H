@@ -116,7 +116,6 @@ struct IPInfo {
 				uint *Size, void *Context);
 	long    	(*ipi_setinfo)(struct TDIObjectID *ID, void *Buffer, uint Size);
 	long        (*ipi_getelist)(void *, uint *);
-	IP_STATUS	(*ipi_setmcastaddr)(IPAddr, IPAddr, uint);
 }; /* IPInfo */
 
 typedef struct IPInfo IPInfo;

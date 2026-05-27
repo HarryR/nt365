@@ -911,7 +911,7 @@ IsBCastOnIF(ARPInterface *Interface, IPAddr Addr)
     BCast = Interface->ai_bcast;
 
     // First check for global broadcast.
-    if (IP_ADDR_EQUAL(BCast, Addr) || CLASSD_ADDR(Addr))
+    if (IP_ADDR_EQUAL(BCast, Addr))
 		return TRUE;
 
     // Now walk the local addresses, and check for net/subnet bcast on each
@@ -991,7 +991,6 @@ ARPSendBCast(ARPInterface *Interface, IPAddr Dest, PNDIS_PACKET Packet,
 
 			ARPBuffer = GetARPBuffer(Interface, &BufAddr, Size);
             if (ARPBuffer != NULL) {
-				uint UNALIGNED *Temp;
 
 				// Got the buffer we need.
 				switch (Interface->ai_media) {
@@ -999,13 +998,7 @@ ARPSendBCast(ARPInterface *Interface, IPAddr Dest, PNDIS_PACKET Packet,
 					case NdisMedium802_3:
 
 						Hdr = (ENetHeader *)BufAddr;
-						if (!CLASSD_ADDR(Dest))
-							CTEMemCopy(Hdr, ENetBcst, ARP_802_ADDR_LENGTH);
-						else {
-							CTEMemCopy(Hdr, ENetMcst, ARP_802_ADDR_LENGTH);
-							Temp = (uint UNALIGNED *)&Hdr->eh_daddr[2];
-							*Temp |= (Dest & ARP_MCAST_MASK);
-						}
+						CTEMemCopy(Hdr, ENetBcst, ARP_802_ADDR_LENGTH);
 
 						CTEMemCopy(Hdr->eh_saddr, Interface->ai_addr,
 							ARP_802_ADDR_LENGTH);
@@ -1057,15 +1050,8 @@ ARPSendBCast(ARPInterface *Interface, IPAddr Dest, PNDIS_PACKET Packet,
 					case NdisMediumFddi:
 						FHdr = (FDDIHeader *)BufAddr;
 
-						if (!CLASSD_ADDR(Dest))
-							CTEMemCopy(FHdr, FDDIBcst,
+						CTEMemCopy(FHdr, FDDIBcst,
                                 offsetof(FDDIHeader, fh_saddr));
-						else {
-                            CTEMemCopy(FHdr, FDDIMcst,
-								offsetof(FDDIHeader, fh_saddr));
-							Temp = (uint UNALIGNED *)&FHdr->fh_daddr[2];
-							*Temp |= (Dest & ARP_MCAST_MASK);
-						}
 
 						CTEMemCopy(FHdr->fh_saddr, Interface->ai_addr,
 							ARP_802_ADDR_LENGTH);
@@ -1541,244 +1527,6 @@ ARPInvalidate(void *Context, RouteCacheEntry *RCE)
 
 }
 
-//*     ARPSetMCastList - Set the multicast address list for the adapter.
-//
-//      Called to try and set the multicast reception list for the adapter.
-//      We allocate a buffer big enough to hold the new address list, and format
-//      the address list into the buffer. Then we submit the NDIS request to set
-//      the list. If we can't set the list because the multicast address list is
-//      full we'll put the card into all multicast mode.
-//
-//      Input:  Interface               - Interface on which to set list.
-//
-//      Returns: NDIS_STATUS of attempt.
-//
-NDIS_STATUS
-ARPSetMCastList(ARPInterface *Interface)
-{
-        CTELockHandle           Handle;
-        uchar                  *MCastBuffer, *CurrentPtr;
-        uint                    MCastSize;
-        NDIS_STATUS             Status;
-        uint                    i;
-        ARPMCastAddr           *AddrPtr;
-        IPAddr UNALIGNED       *Temp;
-
-        CTEGetLock(&Interface->ai_lock, &Handle);
-        MCastSize = Interface->ai_mcastcnt * ARP_802_ADDR_LENGTH;
-        if (MCastSize != 0)
-                MCastBuffer = CTEAllocMem(MCastSize);
-        else
-                MCastBuffer = NULL;
-
-        if (MCastBuffer != NULL || MCastSize == 0) {
-                // Got the buffer. Loop through, building the list.
-                AddrPtr = Interface->ai_mcast;
-
-                CurrentPtr = MCastBuffer;
-
-                for (i = 0; i < Interface->ai_mcastcnt; i++) {
-                        CTEAssert(AddrPtr != NULL);
-
-                        if (Interface->ai_media == NdisMedium802_3) {
-
-                                CTEMemCopy(CurrentPtr, ENetMcst, ARP_802_ADDR_LENGTH);
-                                Temp = (IPAddr UNALIGNED *)(CurrentPtr + 2);
-                                *Temp |= AddrPtr->ama_addr;
-                        } else
-                                if (Interface->ai_media == NdisMediumFddi) {
-                                     CTEMemCopy(CurrentPtr, ((FDDIHeader *)FDDIMcst)->fh_daddr,
-                                                ARP_802_ADDR_LENGTH);
-                                     Temp = (IPAddr UNALIGNED *)(CurrentPtr + 2);
-                                    *Temp |= AddrPtr->ama_addr;
-                                } else
-                                        DEBUGCHK;
-
-                        CurrentPtr += ARP_802_ADDR_LENGTH;
-                        AddrPtr = AddrPtr->ama_next;
-                }
-
-                CTEFreeLock(&Interface->ai_lock, Handle);
-
-                // We're built the list. Now give it to the driver to handle.
-                if (Interface->ai_media == NdisMedium802_3) {
-                        Status = DoNDISRequest(Interface, NdisRequestSetInformation,
-                        OID_802_3_MULTICAST_LIST, MCastBuffer, MCastSize, NULL);
-                } else
-                        if (Interface->ai_media == NdisMediumFddi) {
-                                Status = DoNDISRequest(Interface, NdisRequestSetInformation,
-                                OID_FDDI_LONG_MULTICAST_LIST, MCastBuffer, MCastSize, NULL);
-                        } else
-                                DEBUGCHK;
-
-                if (MCastBuffer != NULL) {
-                    CTEFreeMem(MCastBuffer);
-                }
-
-                if (Status == NDIS_STATUS_MULTICAST_FULL) {
-                        // Multicast list is full. Try to set the filter to all multicasts.
-                        Interface->ai_pfilter |= NDIS_PACKET_TYPE_ALL_MULTICAST;
-
-                        Status = DoNDISRequest(Interface, NdisRequestSetInformation,
-                                OID_GEN_CURRENT_PACKET_FILTER,  &Interface->ai_pfilter,
-                                sizeof(uint), NULL);
-                }
-
-        } else {
-                CTEFreeLock(&Interface->ai_lock, Handle);
-                Status = NDIS_STATUS_RESOURCES;
-        }
-
-        return Status;
-
-}
-
-//*     ARPFindMCast - Find a multicast address structure on our list.
-//
-//      Called as a utility to find a multicast address structure. If we find
-//      it, we return a pointer to it and it's predecessor. Otherwise we return
-//      NULL. We assume the caller holds the lock on the interface already.
-//
-//      Input:  Interface               - Interface to search.
-//                      Addr                    - Addr to find.
-//                      Prev                    - Where to return previous pointer.
-//
-//      Returns: Pointer if we find one, NULL otherwise.
-//
-ARPMCastAddr *
-ARPFindMCast(ARPInterface *Interface, IPAddr Addr, ARPMCastAddr **Prev)
-{
-        ARPMCastAddr            *AddrPtr, *PrevPtr;
-
-        PrevPtr = STRUCT_OF(ARPMCastAddr, &Interface->ai_mcast, ama_next);
-        AddrPtr = PrevPtr->ama_next;
-        while (AddrPtr != NULL) {
-                if (IP_ADDR_EQUAL(AddrPtr->ama_addr, Addr))
-                        break;
-                else {
-                        PrevPtr = AddrPtr;
-                        AddrPtr = PrevPtr->ama_next;
-                }
-        }
-
-        *Prev = PrevPtr;
-        return AddrPtr;
-}
-
-//*     ARPDelMCast - Delete a multicast address.
-//
-//      Called when we want to delete a multicast address. We look for a matching
-//      (masked) address. If we find one, we'll dec. the reference count and if
-//      it goes to 0 we'll pull him from the list and reset the multicast list.
-//
-//      Input:  Interface                       - Interface on which to act.
-//                      Addr                            - Address to be deleted.
-//
-//      Returns: TRUE if it worked, FALSE otherwise.
-//
-uint
-ARPDelMCast(ARPInterface *Interface, IPAddr Addr)
-{
-        ARPMCastAddr            *AddrPtr, *PrevPtr;
-        CTELockHandle           Handle;
-        uint                            Status = TRUE;
-
-        // When we support TR (RFC 1469) fully we'll need to change this.
-        if (Interface->ai_media == NdisMedium802_3 || Interface->ai_media ==
-                NdisMediumFddi) {
-                CTEGetLock(&Interface->ai_lock, &Handle);
-                AddrPtr = ARPFindMCast(Interface, Addr, &PrevPtr);
-                if (AddrPtr != NULL) {
-                        // We found one. Dec. his refcnt, and if it's 0 delete him.
-                        (AddrPtr->ama_refcnt)--;
-                        if (AddrPtr->ama_refcnt == 0) {
-                                // He's done.
-                                PrevPtr->ama_next = AddrPtr->ama_next;
-                                (Interface->ai_mcastcnt)--;
-                                CTEFreeLock(&Interface->ai_lock, Handle);
-                                CTEFreeMem(AddrPtr);
-                                ARPSetMCastList(Interface);
-                                CTEGetLock(&Interface->ai_lock, &Handle);
-                        }
-                } else
-                        Status = FALSE;
-
-                CTEFreeLock(&Interface->ai_lock, Handle);
-        }
-
-        return Status;
-}
-//*     ARPAddMCast - Add a multicast address.
-//
-//      Called when we want to start receiving a multicast address. We'll mask
-//      the address and look it up in our address list. If we find it, we'll just
-//      bump the reference count. Otherwise we'll try to create one and put him
-//      on the list. In that case we'll need to set the multicast address list for
-//      the adapter.
-//
-//      Input:  Interface               - Interface to set on.
-//                      Addr                    - Address to set.
-//
-//      Returns: TRUE if we succeed, FALSE if we fail.
-//
-uint
-ARPAddMCast(ARPInterface *Interface, IPAddr Addr)
-{
-        ARPMCastAddr            *AddrPtr, *PrevPtr;
-        CTELockHandle           Handle;
-        uint                            Status = TRUE;
-
-
-        if (Interface->ai_state != INTERFACE_UP)
-                return FALSE;
-
-        // BUGBUG Currently we don't do anything with token ring, since we send
-        // all mcasts as TR broadcasts. When we comply with RFC 1469 we'll need to
-        // fix this.
-        if (Interface->ai_media == NdisMedium802_3 || Interface->ai_media ==
-                NdisMediumFddi) {
-                // This is an interface that supports mcast addresses.
-                Addr &= ARP_MCAST_MASK;
-
-                CTEGetLock(&Interface->ai_lock, &Handle);
-                AddrPtr = ARPFindMCast(Interface, Addr, &PrevPtr);
-                if (AddrPtr != NULL) {
-                        // We found one, just bump refcnt.
-                        (AddrPtr->ama_refcnt)++;
-                } else {
-                        // Didn't find one. Allocate space for one, link him in, and
-                        // try to set the list.
-                        AddrPtr = CTEAllocMem(sizeof(ARPMCastAddr));
-                        if (AddrPtr != NULL) {
-                                // Got one. Link him in.
-                                AddrPtr->ama_addr = Addr;
-                                AddrPtr->ama_refcnt = 1;
-                                AddrPtr->ama_next = Interface->ai_mcast;
-                                Interface->ai_mcast = AddrPtr;
-                                (Interface->ai_mcastcnt)++;
-                                CTEFreeLock(&Interface->ai_lock, Handle);
-
-                                // Now try to set the list.
-                                if (ARPSetMCastList(Interface) != NDIS_STATUS_SUCCESS) {
-                                        // Couldn't set the list. Call the delete routine to delete
-                                        // the address we just tried to set.
-                                        Status = ARPDelMCast(Interface, Addr);
-                                        if (!Status)
-                                                DEBUGCHK;
-                                        Status = FALSE;
-                                }
-                                CTEGetLock(&Interface->ai_lock, &Handle);
-                        } else
-                                Status = FALSE;                 // Couldn't get memory.
-                }
-
-                // We've done out best. Free the lock and return.
-                CTEFreeLock(&Interface->ai_lock, Handle);
-        }
-
-        return Status;
-}
-
 //* ARPAddAddr - Add an address to the ARP table.
 //
 //  This routine is called by IP to add an address as a local address, or
@@ -1805,10 +1553,7 @@ ARPAddAddr(void *Context, uint Type, IPAddr Address, IPMask Mask)
 			Interface->ai_bcast = Address;
 			return TRUE;
 		} else
-			if (Type == LLIP_ADDR_MCAST) {
-				return ARPAddMCast(Interface, Address);
-			} else
-				return FALSE;
+			return FALSE;
     } else {                                // This is a local address.
         CTEGetLock(&Interface->ai_lock, &Handle);
 		if (Type != LLIP_ADDR_PARP) {
@@ -1929,10 +1674,7 @@ ARPDeleteAddr(void *Context, uint Type, IPAddr Address, IPMask Mask)
 		CTEFreeLock(&Interface->ai_lock, Handle);
 		return (DelPAddr != NULL);
 	} else
-		if (Type == LLIP_ADDR_MCAST)
-			return ARPDelMCast(Interface, Address);
-		else
-			return FALSE;
+		return FALSE;
 }
 
 //* ARPTimeout - ARP timeout routine.

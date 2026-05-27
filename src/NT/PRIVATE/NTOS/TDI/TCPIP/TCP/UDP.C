@@ -756,15 +756,8 @@ UDPSend(AddrObj *SrcAO, UDPSendReq *SendReq)
 		// the checksum and send the data.
 		CTEAssert(UDPBuffer != NULL);
 		
-		if (!CLASSD_ADDR(SendReq->usr_addr)) {
-			// This isn't a multicast send, so we'll use the ordinary
-			// information.
-			OrigSrc = SrcAO->ao_addr;
-			OptInfo = &SrcAO->ao_opt;
-		} else {
-			OrigSrc = SrcAO->ao_mcastaddr;
-			OptInfo = &SrcAO->ao_mcastopt;
-		}
+		OrigSrc = SrcAO->ao_addr;
+		OptInfo = &SrcAO->ao_opt;
 		
 		if (!(SrcAO->ao_flags & AO_DHCP_FLAG)) {
 			SrcAddr = (*LocalNetInfo.ipi_openrce)(SendReq->usr_addr,
@@ -922,10 +915,9 @@ TdiSendDatagram(PTDI_REQUEST Request, PTDI_CONNECTION_INFORMATION ConnInfo,
                 // destined UDP send is the DHCP client at lease
                 // acquisition.  Sockets without AO_DHCP_FLAG cannot
                 // address a broadcast destination — refuses the
-                // Fraggle reflector shape regardless of application-
-                // layer behaviour, and refuses inadvertent
-                // misconfigured broadcast sends from any other code
-                // path.  Multicast (CLASSD) is unaffected.
+                // reflector shape regardless of application-layer
+                // behaviour, and refuses inadvertent misconfigured
+                // broadcast sends from any other code path.
                 if (!(SrcAO->ao_flags & AO_DHCP_FLAG) &&
                     IS_BCAST_DEST(
                         (*LocalNetInfo.ipi_getaddrtype)(SendReq->usr_addr))) {

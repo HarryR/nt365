@@ -181,15 +181,6 @@ typedef struct ARPPArpAddr {
 	IPMask					apa_mask;		// And the mask.
 } ARPPArpAddr;
 
-//* List structure for a multicast IP address.
-typedef struct ARPMCastAddr {
-	struct ARPMCastAddr		*ama_next;		// Next in list.
-	IPAddr					ama_addr;		// The (masked) address.
-	uint					ama_refcnt;		// Reference count for this address.
-} ARPMCastAddr;
-
-#define	ARP_MCAST_MASK		0xffff7f00
-
 #define ARP_TIMER_TIME      1000L
 #define ARP_RESOLVE_TIMEOUT 1000L
 #define ARP_VALID_TIMEOUT   600000L
@@ -261,8 +252,6 @@ typedef struct ARPInterface {
 	uint					ai_atinst;		// AT instance number.
 	uint					ai_ifinst;		// IF instance number.
 	char					*ai_desc;		// Descriptor string.
-	ARPMCastAddr			*ai_mcast;		// Multicast list.
-	uint					ai_mcastcnt;	// Count of elements on mcast list.
 	void					*ai_bbbase;		// Base of big buffers.
 	uint					ai_curhdrs;		// Current number of headers.
 	uint					ai_maxhdrs;		// Maximum allowed number of headers.

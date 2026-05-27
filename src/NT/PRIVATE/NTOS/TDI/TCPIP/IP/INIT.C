@@ -21,7 +21,6 @@
 #include	"iproute.h"
 #include	"iprtdef.h"
 #include	"ipxmit.h"
-#include	"igmp.h"
 #include	"icmp.h"
 
 
@@ -51,7 +50,6 @@ extern IPAddr OpenRCE(IPAddr Address, IPAddr Src, RouteCacheEntry **RCE,
     uchar *Type, ushort *MSS, IPOptInfo *OptInfo);
 extern void CloseRCE(RouteCacheEntry *);
 extern void ICMPInit(uint);
-extern uint	IGMPInit(void);
 extern void ICMPTimer(NetTableEntry *);
 extern IP_STATUS SendICMPErr(IPAddr, IPHeader UNALIGNED *, uchar, uchar, ulong);
 extern void TDUserRcv(void *, PNDIS_PACKET, NDIS_STATUS, uint);
@@ -94,7 +92,6 @@ Interface		*FirstIF;			// First 'real' IF.
 ulong           NumIF;
 IPSNMPInfo      IPSInfo;
 uint			DHCPActivityCount = 0;
-uint			IGMPLevel;
 
 #ifdef NT
 
@@ -252,47 +249,6 @@ IPRegisterProtocol(uchar Protocol, void *RcvHandler, void *XmitHandler,
     CTEFreeLock(&PILock, Handle);
 #endif
     return PI;
-}
-
-//** IPSetMCastAddr - Set/Delete a multicast address.
-//
-//	Called by an upper layer protocol or client to set or delete an IP multicast
-//	address.
-//
-//	Input:	Address			- Address to be set/deleted.
-//			IF				- IP Address of interface to set/delete on.
-//			Action			- TRUE if we're setting, FALSE if we're deleting.
-//
-//	Returns: IP_STATUS of set/delete attempt.
-//
-IP_STATUS
-IPSetMCastAddr(IPAddr Address, IPAddr IF, uint Action)
-{
-	NetTableEntry	*LocalNTE;
-	
-	// Don't let him do this on the loopback address, since we don't have a
-	// route table entry for class D address on the loopback interface and
-	// we don't want a packet with a loopback source address to show up on
-	// the wire.
-	if (IP_LOOPBACK_ADDR(IF))
-		return IP_BAD_REQ;
-		
-	for (LocalNTE = NetTableList; LocalNTE != NULL;
-		LocalNTE = LocalNTE->nte_next) {
-		if (LocalNTE != LoopNTE && ((LocalNTE->nte_flags & NTE_VALID) &&
-			(IP_ADDR_EQUAL(IF, NULL_IP_ADDR) ||
-			 IP_ADDR_EQUAL(IF, LocalNTE->nte_addr))))
-			 break;
-	}
-	
-	if (LocalNTE == NULL) {
-		// Couldn't find a matching NTE.
-		return IP_BAD_REQ;
-	}
-	
-	return IGMPAddrChange(LocalNTE, Address, Action ? IGMP_ADD : IGMP_DELETE);
-	
-
 }
 
 //** IPGetAddrType - Return the type of a address.
@@ -482,7 +438,6 @@ IPGetInfo(IPInfo *Buffer, int Size)
     Buffer->ipi_qinfo = IPQueryInfo;
 	Buffer->ipi_setinfo = IPSetInfo;
 	Buffer->ipi_getelist = IPGetEList;
-	Buffer->ipi_setmcastaddr = IPSetMCastAddr;
 
     return IP_SUCCESS;
 
@@ -504,7 +459,6 @@ IPTimeout(CTEEvent *Timer, void *Context)
     NetTableEntry       *NTE = STRUCT_OF(NetTableEntry, Timer, nte_timer);
 
     ICMPTimer(NTE);
-	IGMPTimer(NTE);
 
     // Reassembly-timeout block stripped with IP reassembly per
     // IPSTACK-HARDENING.md.  Restart the periodic timer; Context==NTE
@@ -569,8 +523,6 @@ IPSetNTEAddr(ushort Context, IPAddr Addr, IPMask Mask)
 
 			CTEFreeLock(&RouteTableLock, Handle);
 
-			StopIGMPForNTE(NTE);
-			
 			// Now call the upper layers, and tell them that address is
 			// gone. We really need to do something about locking here.
 #ifdef CHICAGO
@@ -631,7 +583,6 @@ IPSetNTEAddr(ushort Context, IPAddr Addr, IPMask Mask)
 				// Couldn't add the routes. Recurively mark this NTE as down.
 				IPSetNTEAddr(NTE->nte_context, NULL_IP_ADDR, 0);
 			} else {
-				InitIGMPForNTE(NTE);
 #ifdef CHICAGO
 				NotifyAddrChange(NTE->nte_addr, NTE->nte_mask,
 					NTE->nte_pnpcontext, TRUE);
@@ -1356,8 +1307,6 @@ IPAddInterface(PNDIS_STRING ConfigName, void *PNPContext, void *Context,
 		if (IP_ADDR_EQUAL(NTE->nte_addr, NULL_IP_ADDR)) {
 			// Call DHCP to get an address for this guy.
 			RequestDHCPAddr(NTE->nte_context);
-		} else {
-			InitIGMPForNTE(NTE);
 		}
 	}
 	
@@ -1412,8 +1361,6 @@ IPDelInterface(void *Context)
 				NTE->nte_flags &= ~NTE_VALID;
 				CTEFreeLock(&RouteTableLock, Handle);
 
-				// Stop IGMP activity on him.				
-				StopIGMPForNTE(NTE);
 			
 				// Now call the upper layers, and tell them that address is
 				// gone.
@@ -1544,11 +1491,8 @@ IPInit()
 		
 	DeadGWDetect = ci->ici_deadgwdetect;
 	PMTUDiscovery = ci->ici_pmtudiscovery;
-	IGMPLevel = ci->ici_igmplevel;
 	DefaultTTL = MIN(ci->ici_ttl, 255);
 	DefaultTOS = ci->ici_tos & 0xfc;
-	if (IGMPLevel > 2)
-		IGMPLevel = 0;
 
     InitTimestamp();
 
@@ -1819,8 +1763,6 @@ IPInit()
 		CTERefillMem();
 
         ICMPInit(DEFAULT_ICMP_BUFFERS);
-		if (!IGMPInit())
-			IGMPLevel = 1;
 
 		// InitGateway() removed with the forwarding strip (H-020).
 		CTERefillMem();
@@ -1835,10 +1777,6 @@ IPInit()
 
         CTERefillMem();
 		
-		// Loop through, initialize IGMP for each NTE.
-		for (nt = NetTableList; nt != NULL; nt = nt->nte_next)
-			InitIGMPForNTE(nt);
-			
         return IP_INIT_SUCCESS;
     }
     else {

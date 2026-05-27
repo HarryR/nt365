@@ -127,7 +127,6 @@ struct NetTableEntry {
     CTETimer            nte_timer;	// Timer for this net.
 	ushort				nte_mss;
 	ushort				nte_icmpseq;// ICMP seq. #
-	struct IGMPAddr		*nte_igmplist;	// List of mcast addresses.
 }; /* NetTableEntry */
 
 typedef struct NetTableEntry NetTableEntry;

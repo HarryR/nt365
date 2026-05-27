@@ -41,7 +41,6 @@ C_DEFINES=-DNT
 SOURCES=\
     arp.c       \
     icmp.c      \
-    igmp.c      \
     info.c      \
     init.c      \
     iploop.c    \

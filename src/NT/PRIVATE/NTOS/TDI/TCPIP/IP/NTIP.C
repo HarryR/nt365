@@ -63,7 +63,6 @@ Notes:
 //
 // Configuration defaults
 //
-#define DEFAULT_IGMP_LEVEL 2
 #define DEFAULT_IP_NETS    8
 
 
@@ -489,13 +488,6 @@ Return Value:
 
         InitRegDWORDParameter(
             myRegKey,
-            L"IGMPLevel",
-            &(IPConfiguration->ici_igmplevel),
-            DEFAULT_IGMP_LEVEL
-            );
-
-        InitRegDWORDParameter(
-            myRegKey,
             L"EnableDeadGWDetect",
             &(IPConfiguration->ici_deadgwdetect),
             TRUE
@@ -540,7 +532,6 @@ Return Value:
         IPConfiguration->ici_gateway = 0;
         IPConfiguration->ici_fwbufsize = 0;
         IPConfiguration->ici_fwpackets = 0;
-        IPConfiguration->ici_igmplevel = DEFAULT_IGMP_LEVEL;
         IPConfiguration->ici_deadgwdetect = FALSE;
         IPConfiguration->ici_pmtudiscovery = FALSE;
         IPConfiguration->ici_ttl = DEFAULT_TTL;
