@@ -549,8 +549,30 @@ Return Value:
             //
 
             KeWaitReason[NextThread->WaitReason] -= 1;
-            RemoveEntryList(&WaitBlock->WaitListEntry);
+
+            //
+            // Walk every wait block (not just the matched one) and cancel
+            // the per-thread timer if it's inserted — same teardown
+            // KiUnwaitThread does on the slow path.  Stock NT 3.5 elided
+            // both steps as a single-wait-block / no-timeout optimization;
+            // a wait that combines a synchronization object with a
+            // KeWaitForSingleObject Timeout sets up a second wait block
+            // (on Thread->Timer.Header.WaitListHead) plus inserts the
+            // per-thread timer onto KiTimerTableListHead, both of which
+            // would otherwise be left dangling when the ETHREAD is later
+            // reclaimed.
+            //
+            {
+                PKWAIT_BLOCK CurBlock = NextThread->WaitBlockList;
+                do {
+                    RemoveEntryList(&CurBlock->WaitListEntry);
+                    CurBlock = CurBlock->NextWaitBlock;
+                } while (CurBlock != NextThread->WaitBlockList);
+            }
             RemoveEntryList(&NextThread->WaitListEntry);
+            if (NextThread->Timer.Inserted != FALSE) {
+                KiRemoveTreeTimer(&NextThread->Timer);
+            }
 
             //
             // Remove the current thread from the active matrix.
