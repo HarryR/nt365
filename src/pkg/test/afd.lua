@@ -455,6 +455,166 @@ t.test("SHUTDOWN: UDP 'send' / 'abort' update endpoint disconnect flags",
     t.ok(true, "UDP shutdown round-tripped")
 end)
 
+-- ------------------------------------------------------------------
+-- 8. TCP send/receive sequencing — paths that need a real
+-- producer/consumer in another thread.
+--
+-- Covers RECEIVE.C — AfdRestartReceive (the IRP-completion routine
+-- that fires when TdiReceive completes asynchronously for a recv
+-- that pended because no data was buffered), AfdQueryReceiveInformation
+-- — and SEND.C — AfdRestartSend, AfdSendPossibleEventHandler (the
+-- TDI indication when peer drains its window).
+--
+-- All three tests use the same pattern as the existing "TCP loopback
+-- exchange" test: cr_thread on the listener side, main thread on
+-- the client side.  This is the only reliable way to exercise async
+-- send/recv on loopback — single-thread TDI scheduling races
+-- non-deterministically as documented in the SHUTDOWN 'send' test.
+-- ------------------------------------------------------------------
+
+local thread = require('nt.thread')
+local nt_handle = require('nt.dll.handle')
+
+local function listener_handle_int(listener)
+    return tostring(tonumber(ffi.cast('intptr_t', nt_handle.raw(listener))))
+end
+
+t.test("RECEIVE: recv that pends until peer sends → AfdRestartReceive",
+       function()
+    -- Server delays before sending → client's recv issues a TdiReceive
+    -- that pends in AFD; when the data arrives the TdiReceive
+    -- completion fires AfdRestartReceive which completes the IRP.
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+    local _, port = afd.getsockname(listener)
+
+    local th = thread.run([[
+        local ffi    = require('ffi')
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local ke     = require('nt.dll.ke')
+        local listener = handle.borrow(ffi.cast('HANDLE', tonumber(PAYLOAD)))
+        local peer = afd.accept(listener, 2.0)
+        -- Long enough for the client's recv IRP to definitely pend.
+        ke.NtDelayExecution(false, ke.timeout(0.15))
+        afd.send(peer, "deferred", 1.0)
+        peer:close()
+        return "ok"
+    ]], listener_handle_int(listener))
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+    -- Post recv FIRST, before the child sends.  Pends in AFD until
+    -- AfdRestartReceive fires from the TdiReceive completion.
+    local got = afd.recv(client, 256, 2.0)
+    t.eq(got, "deferred")
+
+    client:close(); listener:close()
+    t.ok(th:wait(2.0))
+    t.eq(({th:result()})[1], "ok")
+    th:close()
+end)
+
+t.test("RECEIVE: peer sends before our recv → AfdReceiveEventHandler",
+       function()
+    -- Mirror of the test above: the child SENDS first, then the
+    -- main thread waits past the child's completion before issuing
+    -- recv.  Data is delivered to AFD's receive queue via the TDI
+    -- receive event handler; main's recv reads from buffer.
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+    local _, port = afd.getsockname(listener)
+
+    local th = thread.run([[
+        local ffi    = require('ffi')
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local listener = handle.borrow(ffi.cast('HANDLE', tonumber(PAYLOAD)))
+        local peer = afd.accept(listener, 2.0)
+        afd.send(peer, "early", 1.0)
+        peer:close()
+        return "ok"
+    ]], listener_handle_int(listener))
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+
+    -- Wait long enough that the child has definitely sent and closed.
+    t.ok(th:wait(2.0))
+    t.eq(({th:result()})[1], "ok")
+    th:close()
+
+    -- Data is sitting in our AFD-side receive buffer; recv returns
+    -- immediately from the buffered path (no TdiReceive needed).
+    local got = afd.recv(client, 256, LOOPBACK_TIMEOUT)
+    t.eq(got, "early")
+
+    client:close(); listener:close()
+end)
+
+t.test("SEND: large send pends and completes when peer drains the window",
+       function()
+    -- Shrink the server's receive window so we don't have to push
+    -- a 64KB+ buffer to make the send block.  AFD honours the value
+    -- on AfdBlockTypeVcConnecting endpoints (the accepted server
+    -- side post-handshake).  The client sends MORE bytes than the
+    -- window holds: AfdSend will issue partial TdiSend calls,
+    -- pending the IRP when the window fills; AfdSendPossibleEventHandler
+    -- fires when the peer drains it, and AfdRestartSend completes
+    -- the IRP.
+    local SMALL_WIN = 1024
+    local PAYLOAD   = string.rep("X", SMALL_WIN * 4)   -- 4× the window
+
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+    local _, port = afd.getsockname(listener)
+
+    local th = thread.run([[
+        local ffi    = require('ffi')
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local ke     = require('nt.dll.ke')
+        local listener = handle.borrow(ffi.cast('HANDLE', tonumber(PAYLOAD)))
+        local peer = afd.accept(listener, 2.0)
+        -- Shrink the receive window on the accepted (connected) endpoint.
+        afd.set_info(peer, afd.RECEIVE_WINDOW_SIZE, 1024)
+        -- Let the client's send fill the window (pend) before draining.
+        ke.NtDelayExecution(false, ke.timeout(0.15))
+        -- Drain everything — each recv frees window, the peer's
+        -- AfdSendPossibleEventHandler fires, AfdRestartSend completes
+        -- the pended send.
+        local total = 0
+        while total < 1024 * 4 do
+            local chunk = afd.recv(peer, 8192, 2.0)
+            if chunk == nil or #chunk == 0 then break end
+            total = total + #chunk
+        end
+        peer:close()
+        return tostring(total)
+    ]], listener_handle_int(listener))
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+    -- Big send; AFD pushes what it can, pends the rest.  Returns
+    -- only after the peer has drained enough that everything's
+    -- flushed.  2s ceiling for the full handshake.
+    afd.send(client, PAYLOAD, 2.0)
+
+    client:close(); listener:close()
+    t.ok(th:wait(3.0), "child timed out draining the window")
+    local s, v = th:result()
+    t.eq(s, "ok", "child errored: " .. tostring(v))
+    t.eq(tonumber(v), #PAYLOAD,
+         "child drained " .. v .. " bytes, expected " .. #PAYLOAD)
+    th:close()
+end)
+
 t.test("SHUTDOWN: rejects unknown 'how' values", function()
     local u = afd.udp()
     local ok, err = pcall(afd.shutdown, u, "halfways")
