@@ -1541,12 +1541,29 @@ Return Value:
             ComputeNewPriority();
 
             //
-            // Remove the wait block from the wait list of the server event,
-            // and remove the target thread from the wait list.
+            // Walk every wait block (not just the matched one) and cancel
+            // the per-thread timer if it's inserted — same teardown
+            // KiUnwaitThread does on the slow path.  Stock NT 3.5 elided
+            // both steps as a single-wait-block / no-timeout optimization;
+            // an LPC server reply-wait that combines its event with a
+            // KeWaitForSingleObject Timeout (e.g. NtReplyWaitReceivePortEx)
+            // sets up a second wait block (on Thread->Timer.Header.WaitListHead)
+            // plus inserts the per-thread timer onto KiTimerTableListHead,
+            // both of which would otherwise be left dangling when the timer
+            // later fires for a thread that's already running.  Same bug
+            // class as the fix in KeReleaseWaitForSemaphore at ~line 552.
             //
-
-            RemoveEntryList(&WaitBlock->WaitListEntry);
+            {
+                PKWAIT_BLOCK CurBlock = NextThread->WaitBlockList;
+                do {
+                    RemoveEntryList(&CurBlock->WaitListEntry);
+                    CurBlock = CurBlock->NextWaitBlock;
+                } while (CurBlock != NextThread->WaitBlockList);
+            }
             RemoveEntryList(&NextThread->WaitListEntry);
+            if (NextThread->Timer.Inserted != FALSE) {
+                KiRemoveTreeTimer(&NextThread->Timer);
+            }
 
             //
             // Remove the current thread from the active matrix.

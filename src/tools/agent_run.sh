@@ -79,6 +79,7 @@ KERNEL_OPTS=""
 RAMDISK=""             # set => PVH boot (vmlinuz + initrd), not OVMF + disk
 VMLINUX="$SRC/boot/vmlinuz/vmlinux"
 RUN_SECS=""            # free-run mode: continue, SIGINT after N s, then backtrace
+DISK_DIR="build/disk"  # which build/disk-* image to boot (--selftest etc.)
 
 usage() {
     sed -n '2,/^$/{s/^# \?//;p;}' "$0"
@@ -104,6 +105,8 @@ while [[ $# -gt 0 ]]; do
         --ramdisk)     RAMDISK="$2"; shift 2 ;;
         --vmlinux)     VMLINUX="$2"; shift 2 ;;
         --run-secs)    RUN_SECS="$2"; shift 2 ;;
+        --selftest)    DISK_DIR="build/disk-selftest"; shift ;;
+        --disk-dir)    DISK_DIR="$2"; shift 2 ;;
         -h|--help)     usage ;;
         *)             echo "agent_run: unknown arg: $1" >&2; usage ;;
     esac
@@ -234,19 +237,19 @@ if [[ -n "$RAMDISK" ]]; then
 else
     # UEFI path: OVMF firmware + esp.img on the chosen disk controller.
     case "$DISK" in
-        nvme)        STORAGE=(-drive file="$REPO/build/disk/esp.img",format=raw,if=none,id=d0 -device nvme,drive=d0,serial=micront) ;;
+        nvme)        STORAGE=(-drive file="$REPO/$DISK_DIR/esp.img",format=raw,if=none,id=d0 -device nvme,drive=d0,serial=micront) ;;
         ide)
             if [[ "$MACHINE" = q35 ]]; then
-                STORAGE=(-device piix3-ide,id=ide0 -drive file="$REPO/build/disk/esp.img",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ide0.0,unit=0)
+                STORAGE=(-device piix3-ide,id=ide0 -drive file="$REPO/$DISK_DIR/esp.img",format=raw,if=none,id=d0 -device ide-hd,drive=d0,bus=ide0.0,unit=0)
             else
-                STORAGE=(-drive file="$REPO/build/disk/esp.img",format=raw,if=ide)
+                STORAGE=(-drive file="$REPO/$DISK_DIR/esp.img",format=raw,if=ide)
             fi
             ;;
-        virtio-blk)  STORAGE=(-drive file="$REPO/build/disk/esp.img",format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0) ;;
+        virtio-blk)  STORAGE=(-drive file="$REPO/$DISK_DIR/esp.img",format=raw,if=none,id=d0 -device virtio-blk-pci,drive=d0) ;;
         *)           preflight_fail "unsupported --disk $DISK (want nvme/ide/virtio-blk)" ;;
     esac
 
-    [[ -f "$REPO/build/disk/esp.img" ]] || preflight_fail "missing $REPO/build/disk/esp.img (run src/build.sh)"
+    [[ -f "$REPO/$DISK_DIR/esp.img" ]] || preflight_fail "missing $REPO/$DISK_DIR/esp.img (run src/build.sh)"
 
     OVMF_VARS="$WORK/OVMF_VARS_4M.fd"
     cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OVMF_VARS"
