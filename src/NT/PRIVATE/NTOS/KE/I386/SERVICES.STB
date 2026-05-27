@@ -61,11 +61,19 @@ IFIDN <Name>, <SetLowWaitHighThread>
         int 2Ch
 ELSE
 ;
-; Direct-dispatch fast path for kernel-mode Zw* callers — see
-; _KiKernelDispatch in KE/I386/sysstubs.asm.  Tail-jmp; no IDT round-trip,
-; no trap frame.  stdRET below is unreachable on the fast path; preserved
-; for FPO/proc framing only.
+; Direct-dispatch fast path for kernel-mode Zw* callers.  Tail-jmp to
+; _KiKernelDispatch (hand-maintained in KE/I386/kikdisp.asm); no IDT
+; round-trip, no trap frame.  stdRET below is unreachable on the fast
+; path; preserved for FPO/proc framing only.
 ;
+; The extrn is declared inside the macro so it only enters the COFF
+; symbol table when this macro is actually invoked.  gensrv expands
+; SYSSTUBS_ENTRY1 only when generating kernel-side stubs (sysstubs.asm),
+; so the user-side ntdll usrstubs.asm — which defines the macro but
+; never expands it — stays free of the unresolved-extern.  MASM accepts
+; duplicate extrn declarations for the same symbol.
+;
+        extrn   _KiKernelDispatch:near
         mov     eax, ServiceNumber      ; (eax) = service number
         jmp     _KiKernelDispatch       ; tail-jmp; helper returns to caller
 ENDIF

@@ -206,6 +206,19 @@ NtReplyWaitReceivePort(
 NTSYSAPI
 NTSTATUS
 NTAPI
+NtReplyWaitReceivePortEx(
+    IN HANDLE PortHandle,
+    OUT PVOID *PortContext OPTIONAL,
+    IN PPORT_MESSAGE ReplyMessage OPTIONAL,
+    OUT PPORT_MESSAGE ReceiveMessage,
+    IN PLARGE_INTEGER Timeout OPTIONAL
+    );
+
+#define ZwReplyWaitReceivePortEx NtReplyWaitReceivePortEx
+
+NTSYSAPI
+NTSTATUS
+NTAPI
 NtImpersonateClientOfPort(
     IN HANDLE PortHandle,
     IN PPORT_MESSAGE Message

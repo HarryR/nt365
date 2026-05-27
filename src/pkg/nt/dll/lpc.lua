@@ -165,6 +165,12 @@ NTSTATUS __stdcall NtReplyWaitReceivePort(HANDLE PortHandle,
                                           PORT_MESSAGE *ReplyMessage,
                                           PORT_MESSAGE *ReceiveMessage);
 
+NTSTATUS __stdcall NtReplyWaitReceivePortEx(HANDLE PortHandle,
+                                             void **PortContext,
+                                             PORT_MESSAGE *ReplyMessage,
+                                             PORT_MESSAGE *ReceiveMessage,
+                                             LARGE_INTEGER *Timeout);
+
 NTSTATUS __stdcall NtImpersonateClientOfPort(HANDLE PortHandle,
                                              PORT_MESSAGE *Message);
 
@@ -309,6 +315,8 @@ function M.NtConnectPort(name, qos, client_view, server_view,
                                    connection_info,
                                    connection_info and ci_len or nil)
     if err.is_error(st) then err.raise('NtConnectPort', st) end
+    -- STATUS_USER_APC (0xC0) is not ERROR severity but leaves h[0]==NULL.
+    if h[0] == nil then err.raise('NtConnectPort', st) end
     return handle.wrap(h[0]), max_msg[0]
 end
 
@@ -384,6 +392,21 @@ function M.NtReplyWaitReceivePort(port, ctx_out, reply, recv)
                                             hdr_ptr(reply),
                                             hdr_ptr(recv))
     if err.is_error(st) then err.raise('NtReplyWaitReceivePort', st) end
+end
+
+-- Like NtReplyWaitReceivePort but accepts an optional LARGE_INTEGER
+-- timeout (from ke.timeout(seconds)). STATUS_TIMEOUT (0x102) is raised
+-- as a structured error so callers wrapped in pcall surface it cleanly
+-- rather than receiving an empty receive buffer.
+function M.NtReplyWaitReceivePortEx(port, ctx_out, reply, recv, timeout_li)
+    local st = ntdll.NtReplyWaitReceivePortEx(handle.raw(port),
+                                              ctx_out,
+                                              hdr_ptr(reply),
+                                              hdr_ptr(recv),
+                                              timeout_li or nil)
+    if err.is_error(st) or st == 0x102 then
+        err.raise('NtReplyWaitReceivePortEx', st)
+    end
 end
 
 function M.NtImpersonateClientOfPort(port, msg)

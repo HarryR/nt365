@@ -21,11 +21,12 @@ Revision History:
 #include "lpcp.h"
 
 NTSTATUS
-NtReplyWaitReceivePort(
+NtReplyWaitReceivePortEx(
     IN HANDLE PortHandle,
     OUT PVOID *PortContext OPTIONAL,
     IN PPORT_MESSAGE ReplyMessage OPTIONAL,
-    OUT PPORT_MESSAGE ReceiveMessage
+    OUT PPORT_MESSAGE ReceiveMessage,
+    IN PLARGE_INTEGER Timeout OPTIONAL
     )
 {
     PLPCP_PORT_OBJECT PortObject;
@@ -38,6 +39,7 @@ NtReplyWaitReceivePort(
     PLPCP_MESSAGE Msg;
     PETHREAD CurrentThread;
     PETHREAD WakeupThread;
+    LARGE_INTEGER TimeoutValue;
 
     CurrentThread = PsGetCurrentThread();
 
@@ -65,6 +67,11 @@ NtReplyWaitReceivePort(
                            sizeof( *ReceiveMessage ),
                            sizeof( ULONG )
                          );
+
+            if (ARGUMENT_PRESENT( Timeout )) {
+                TimeoutValue = ProbeAndReadLargeInteger( Timeout );
+                Timeout = &TimeoutValue;
+                }
             }
         except( EXCEPTION_EXECUTE_HANDLER ) {
             return( GetExceptionCode() );
@@ -272,7 +279,7 @@ NtReplyWaitReceivePort(
                                         WrLpcReceive,
                                         WaitMode,
                                         FALSE,
-                                        NULL
+                                        Timeout
                                       );
 
         }
@@ -392,4 +399,20 @@ NtReplyWaitReceivePort(
 
     ObDereferenceObject( PortObject );
     return( Status );
+}
+
+NTSTATUS
+NtReplyWaitReceivePort(
+    IN HANDLE PortHandle,
+    OUT PVOID *PortContext OPTIONAL,
+    IN PPORT_MESSAGE ReplyMessage OPTIONAL,
+    OUT PPORT_MESSAGE ReceiveMessage
+    )
+{
+    return NtReplyWaitReceivePortEx( PortHandle,
+                                     PortContext,
+                                     ReplyMessage,
+                                     ReceiveMessage,
+                                     NULL
+                                   );
 }

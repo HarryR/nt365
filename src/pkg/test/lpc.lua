@@ -75,15 +75,24 @@ local SERVER_CHUNK = [[
 local ffi    = require('ffi')
 local lpc    = require('nt.dll.lpc')
 local handle = require('nt.dll.handle')
+local ke     = require('nt.dll.ke')
 
 local porth, reply_text = PAYLOAD:match("^([^\n]*)\n(.*)$")
 
 local ok, result = pcall(function()
     local conn = handle.borrow(ffi.cast('HANDLE', tonumber(porth)))
 
-    -- 1. Block for a connection request.
-    local connreq = lpc.new_message()
-    lpc.NtListenPort(conn, connreq)
+    -- 6s watchdog < the 8s join timeout in the test main thread.
+    -- NtReplyWaitReceivePortEx raises STATUS_TIMEOUT if no message
+    -- arrives in time, which pcall catches — no deadlock.
+    local tmo = ke.timeout(6.0)
+
+    -- 1. Block for a connection request (NtListenPort loop with timeout).
+    local connreq
+    repeat
+        connreq = lpc.new_message()
+        lpc.NtReplyWaitReceivePortEx(conn, nil, nil, connreq, tmo)
+    until connreq.hdr.u2.s2.Type == lpc.LPC_CONNECTION_REQUEST
 
     -- 2. Accept it -> per-client communication port; wake the client.
     local commport = lpc.NtAcceptConnectPort(conn, nil, connreq, true, nil, nil)
@@ -92,7 +101,7 @@ local ok, result = pcall(function()
     -- 3. Block for the client's request (received on the connection
     --    port — the server's single receive funnel).
     local recv = lpc.new_message()
-    lpc.NtReplyWaitReceivePort(conn, nil, nil, recv)
+    lpc.NtReplyWaitReceivePortEx(conn, nil, nil, recv, tmo)
     local got = ffi.string(recv.data, recv.hdr.u1.s1.DataLength)
 
     -- 4. Reply by reusing the received message buffer: the kernel

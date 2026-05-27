@@ -533,9 +533,11 @@ Language=English
 
 MessageId=0x007C Facility=Kernel Severity=Fatal SymbolicName=BUGCODE_PSS_MESSAGE
 Language=English
-Restart and set the recovery options in the system control panel
-or the /CRASHDEBUG system start option. If this message reappears,
-contact your system administrator or technical support group.
+Oops, the system crashed! Please file a bug on GitHub at:
+
+ https://github.com/HarryR/nt365/issues
+
+Include as much info as possible, including the STOP message above.
 .
 
 MessageId=0x007D Facility=Kernel Severity=Fatal SymbolicName=INSTALL_MORE_MEMORY

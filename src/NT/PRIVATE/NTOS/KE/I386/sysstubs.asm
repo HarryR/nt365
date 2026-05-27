@@ -26,23 +26,6 @@ include ks386.inc
 include callconv.inc
 
 .386
-
-;
-; Externs for the direct-dispatch helper near the top of the _TEXT segment
-; (defined just before the SYSSTUBS_ENTRY1 invocations below).
-;
-        extrn   _KiArgumentTable:dword
-        extrn   _KiServiceTable:dword
-        extrn   _KiServiceLimit:dword
-
-;
-; Service numbers for state-modifying services that require a real
-; KTRAP_FRAME at [ebp+0] (see kkd_with_trap_frame in _KiKernelDispatch).
-; If the SYSSTUBS_ENTRY1 invocations below are reordered, update these.
-;
-NTCONTINUE_SVC          equ     14
-NTRAISEEXCEPTION_SVC    equ     113
-
 STUBS_BEGIN1 macro t
     TITLE t
 endm
@@ -78,11 +61,19 @@ IFIDN <Name>, <SetLowWaitHighThread>
         int 2Ch
 ELSE
 ;
-; Direct-dispatch fast path for kernel-mode Zw* callers — see
-; _KiKernelDispatch in KE/I386/sysstubs.asm.  Tail-jmp; no IDT round-trip,
-; no trap frame.  stdRET below is unreachable on the fast path; preserved
-; for FPO/proc framing only.
+; Direct-dispatch fast path for kernel-mode Zw* callers.  Tail-jmp to
+; _KiKernelDispatch (hand-maintained in KE/I386/kikdisp.asm); no IDT
+; round-trip, no trap frame.  stdRET below is unreachable on the fast
+; path; preserved for FPO/proc framing only.
 ;
+; The extrn is declared inside the macro so it only enters the COFF
+; symbol table when this macro is actually invoked.  gensrv expands
+; SYSSTUBS_ENTRY1 only when generating kernel-side stubs (sysstubs.asm),
+; so the user-side ntdll usrstubs.asm — which defines the macro but
+; never expands it — stays free of the unresolved-extern.  MASM accepts
+; duplicate extrn declarations for the same symbol.
+;
+        extrn   _KiKernelDispatch:near
         mov     eax, ServiceNumber      ; (eax) = service number
         jmp     _KiKernelDispatch       ; tail-jmp; helper returns to caller
 ENDIF
@@ -160,302 +151,7 @@ endm
         STUBS_BEGIN6 <"System Service Stub Procedures">
         STUBS_BEGIN7 <"System Service Stub Procedures">
         STUBS_BEGIN8 <"System Service Stub Procedures">
-
-;++
-;
-; _KiKernelDispatch — direct-dispatch helper for kernel-mode Zw* callers.
-;
-; Replaces the legacy trap-via-INT-2Eh path.  No IDT round-trip, no
-; ENTER_SYSCALL trap frame, no EXIT_ALL — just a small arg copy (the same
-; copy KiSystemServiceCopyArguments did inside the trap path) and a direct
-; stdcall to the service routine.
-;
-; Re-entrancy: each invocation builds its own kernel-stack frame, so a
-; service that recursively issues `Zw*` (driver code inside NtCreateFile
-; calling ZwOpenKey, etc.) gets a fresh dispatch via the same code without
-; colliding with our state.
-;
-; Defined here, before the SYSSTUBS_ENTRY1 invocations, so MASM resolves
-; the forward symbol in single-pass assembly.
-;
-; Entry (set by SYSSTUBS_ENTRY1's `mov eax,svc; jmp` before reaching us):
-;   eax       = service number (gensrv guarantees in-range)
-;   [esp]     = ret-to-Zw-caller (Zw stub did jmp, didn't push)
-;   [esp+4..] = caller's args
-;
-; Exit:
-;   eax = NTSTATUS from service
-;   stack popped past ret-addr + args (callee-pop stdcall semantics)
-;   ebx/esi/edi/ebp restored to caller's values
-;
-;--
-
-align 4
-        public _KiKernelDispatch
-_KiKernelDispatch proc
-
-;
-; Defensive bounds check.  gensrv only emits valid service numbers, so this
-; should be unreachable in correctly-built code; bug-check loudly if hit.
-;
-        cmp     eax, _KiServiceLimit
-        ja      kkd_bad_service
-
-;
-; Trap-frame contract for state-modifying services.  NtContinue and
-; NtRaiseException read [ebp+0] (their saved EBP, set by their own
-; `push ebp; mov ebp, esp` prolog) as a PKTRAP_FRAME and modify it via
-; KeContextToKframes.  EXIT_ALL on exit reads TsExceptionList,
-; TsPreviousPreviousMode, and the iret frame at TsEip/TsSegCs/TsEflags
-; (with FRAME_EDITED iret emulation when ESP needs to be edited).
-;
-; The fast path below skips the trap-frame build for ~190 other services
-; that don't need one.  Branch out for these two so kkd_with_trap_frame
-; can synthesize what KiSystemService's ENTER_SYSCALL would have built
-; for the legacy INT 2E path.
-;
-        cmp     eax, NTCONTINUE_SVC
-        je      kkd_with_trap_frame
-        cmp     eax, NTRAISEEXCEPTION_SVC
-        je      kkd_with_trap_frame
-
-;
-; Build a small frame: saved non-volatiles + two locals (ArgSize and
-; saved PCR.ExceptionList) so callee-pop stdcall + SEH-chain restore
-; both work after the service returns.
-;
-;   [ebp+0]   saved_ebp
-;   [ebp+4]   ret-to-caller-of-Zw
-;   [ebp+8..] caller's args
-;   [ebp-4]   saved_ebx
-;   [ebp-8]   saved_esi
-;   [ebp-12]  saved_edi
-;   [ebp-16]  ArgSize local
-;   [ebp-20]  saved PCR.ExceptionList
-;
-        push    ebp
-        mov     ebp, esp
-        push    ebx
-        push    esi
-        push    edi
-        sub     esp, 8
-
-;
-; Look up dispatch info while eax still holds the service number.  ECX
-; receives ArgSize; we stash it in the local for the post-call ret-pop
-; (volatiles are clobbered by the service call).  EDX holds the service
-; routine address; nothing between here and the call clobbers it.
-;
-        movzx   ecx, byte ptr _KiArgumentTable[eax]
-        mov     [ebp-16], ecx
-        mov     edx, _KiServiceTable[eax*4]
-
-;
-; Switch Thread.PreviousMode to KernelMode.  EBX (non-volatile per stdcall)
-; carries the old value across the service call; EDI carries the thread
-; pointer the same way.
-;
-        mov     edi, fs:[PcPrcbData+PbCurrentThread]
-        movzx   ebx, byte ptr [edi+ThPreviousMode]
-        mov     byte ptr [edi+ThPreviousMode], 0
-
-;
-; Break the SEH chain to match the legacy ENTER_SYSCALL contract:
-; PCR.ExceptionList = EXCEPTION_CHAIN_END means RtlDispatchException
-; finds no handler if the service routine raises, and the kernel
-; bug-checks with KMODE_EXCEPTION_NOT_HANDLED.
-;
-; By design — and by NT 3.5 documented contract — kernel-mode `Zw*`
-; callers must catch internally and return NTSTATUS.  A service that
-; raises through us is a contract violation and we want it to fail
-; loudly rather than unwind into the caller with a stale PreviousMode.
-;
-; Saved old chain head goes in the local so we restore it on the
-; normal-return path; on the raise path the bug-check happens before
-; anything observes the missing restore.
-;
-        mov     esi, fs:[PcExceptionList]
-        mov     [ebp-20], esi
-        mov     dword ptr fs:[PcExceptionList], EXCEPTION_CHAIN_END
-
-;
-; Copy args from caller's frame into a fresh slot just below esp, then call
-; the service.  After the call's ret-push, the service sees [esp+4..]=args
-; — exactly the layout a direct caller would have produced.
-;
-        sub     esp, ecx
-        lea     esi, [ebp+8]                    ; src = caller's first arg
-        mov     edi, esp                        ; dst = our allocation
-        shr     ecx, 2
-        rep     movsd
-
-;
-; rep movsd advanced edi past the dst region; reload it with the thread
-; pointer so we have it back after the service returns.
-;
-        mov     edi, fs:[PcPrcbData+PbCurrentThread]
-        call    edx
-
-;
-; Service did `ret 4*N` popping its arg copy + return address.  ESP is back
-; to ebp-20 (the saved-ExceptionList local).  EAX = NTSTATUS.  EDI still =
-; thread pointer, EBX still = old prev-mode (both preserved by stdcall).
-;
-        mov     byte ptr [edi+ThPreviousMode], bl
-        mov     esi, [ebp-20]                   ; restore PCR.ExceptionList
-        mov     fs:[PcExceptionList], esi
-        mov     ecx, [ebp-16]                   ; ecx = ArgSize for callee-pop
-
-;
-; Tear down the frame.
-;
-        add     esp, 8                          ; deallocate both locals
-        pop     edi
-        pop     esi
-        pop     ebx
-        pop     ebp
-
-;
-; Stack: [esp]=ret-to-Zw-caller, [esp+4..]=original args.  Pop ret-addr
-; into a volatile, skip args (callee-pop stdcall), jmp back.
-;
-        pop     edx
-        add     esp, ecx
-        jmp     edx
-
-kkd_bad_service:
-        int 3
-        jmp     kkd_bad_service
-
-;
-;------------------------------------------------------------------------
-; kkd_with_trap_frame — synthetic-trap-frame dispatch for state-modifying
-; services (NtContinue, NtRaiseException).
-;
-; Stock NT 3.5 kernel-mode INT 2E built a real KTRAP_FRAME on the kernel
-; stack via ENTER_SYSCALL.  These two services read [ebp+0] (the saved
-; EBP from their own prolog) as PKTRAP_FRAME and edit fields like TsEip
-; (KeContextToKframes), TsExceptionList (NtRaiseException explicitly,
-; NtContinue via EXIT_ALL), and TempEsp (KiEspToTrapFrame, when the
-; captured CONTEXT.Esp differs from trap-frame ESP — which it always
-; does for kernel-mode unwind, since we're called from RtlUnwind which
-; lives much deeper on the stack than the captured _gu_return frame).
-;
-; EXIT_ALL on exit:
-;   1. Restores PCR.ExceptionList from TsExceptionList — so the SEH
-;      chain head is whatever fs:[0] was at our entry, which for
-;      RtlUnwind ZwContinue is exactly TargetFrame (the unwind target).
-;   2. Restores Thread.PreviousMode from TsPreviousPreviousMode.
-;   3. Detects FRAME_EDITED bits cleared in TsSegCs (set by
-;      KiEspToTrapFrame when it stashed CsEsp into TsTempEsp) and
-;      runs the iret-emulation path: writes EIP/CS/EFLAGS to
-;      [TempEsp-12..TempEsp-1], pops non-volatiles from the trap frame,
-;      switches ESP to TempEsp-12, iretd → resumes at CsEip with
-;      ESP = CsEsp.
-;
-; This is exactly the mechanism stock NT used for kernel-mode INT 2E
-; unwind.  We just synthesize the trap frame at direct-call entry
-; instead of relying on hardware INT 2E + ENTER_SYSCALL.
-;
-; Entry:
-;   eax = service number (16 or 118, already bounds-checked)
-;   [esp]   = retaddr (Zw stub did jmp, didn't push)
-;   [esp+4..] = caller's args
-;
-; Exit: never returns directly; service jmps to KiServiceExit2.
-;------------------------------------------------------------------------
-;
-align 4
-kkd_with_trap_frame:
-
-;
-; Allocate trap frame on stack.  After: esp = trap_frame_base; original
-; args (above the retaddr) live at trap_frame_base+KTRAP_FRAME_LENGTH+4.
-;
-        sub     esp, KTRAP_FRAME_LENGTH
-
-;
-; Initialize the trap-frame fields EXIT_ALL/DISPATCH_USER_APC depend on
-; that KeContextToKframes will not overwrite from CONTEXT:
-;
-;   TsErrCode             = 0          (skipped past iret emulation)
-;   TsSegCs               = KGDT_R0_CODE — has FRAME_EDITED bits set
-;                            (bit 3), so KiEspToTrapFrame's first-edit
-;                            branch fires; KeContextToKframes will then
-;                            stash real CS in TsTempSegCs and clear the
-;                            FRAME_EDITED bits, marking the frame for
-;                            EXIT_ALL's iret emulation
-;   TsHardwareSegSs       = KGDT_R0_DATA (defensive; intra-priv iret
-;                            doesn't pop SS but EXIT_ALL touches SegCs)
-;   TsDbgArgMark          = 0BADB0D00h (DBG sanity check in EXIT_ALL)
-;
-; Other fields (TsEip, TsEFlags, TsEbp, TsEdi, TsEsi, TsEbx, TsEax,
-; TsEcx, TsEdx, segment regs, TsTempEsp, TsTempSegCs) are written by
-; KeContextToKframes from the CONTEXT record the service receives.
-;
-        mov     dword ptr [esp]+TsErrCode, 0
-        mov     dword ptr [esp]+TsSegCs, KGDT_R0_CODE
-        mov     dword ptr [esp]+TsHardwareSegSs, KGDT_R0_DATA
-if DBG
-        mov     dword ptr [esp]+TsDbgArgMark, 0BADB0D00h
-endif
-
-;
-; Capture & break the SEH chain (ENTER_SYSCALL contract).
-;   - EXIT_ALL restores PCR.ExceptionList from TsExceptionList on exit.
-;   - NtRaiseException explicitly restores it at its prolog
-;     (TRAP.ASM:5340) so KiDispatchException sees the real chain.
-;   - For NtContinue, no body re-restore happens; the chain head we save
-;     here equals TargetFrame at RtlUnwind ZwContinue, which is exactly
-;     what fs:[0] should be after the unwind completes.
-;
-        mov     ecx, fs:[PcExceptionList]
-        mov     [esp]+TsExceptionList, ecx
-        mov     dword ptr fs:[PcExceptionList], EXCEPTION_CHAIN_END
-
-;
-; Capture & switch Thread.PreviousMode to KernelMode (ENTER_SYSCALL
-; contract).  EXIT_ALL restores from TsPreviousPreviousMode (read as a
-; dword; only the low byte is used, but DBG checks the full dword
-; against -1).  movzx zero-extends the byte so the dword is never -1.
-;
-        mov     edi, fs:[PcPrcbData+PbCurrentThread]
-        movzx   ebx, byte ptr [edi+ThPreviousMode]
-        mov     [esp]+TsPreviousPreviousMode, ebx
-        mov     byte ptr [edi+ThPreviousMode], 0
-
-;
-; Set ebp to trap frame.  The service's `push ebp; mov ebp, esp` prolog
-; will save this as [their_ebp+0]; their NcTrapFrame macro then
-; dereferences it as PKTRAP_FRAME correctly.
-;
-        mov     ebp, esp
-
-;
-; Copy caller's args to a fresh slot below the trap frame, then call
-; the service.  Args are above the retaddr at trap_frame_base+
-; KTRAP_FRAME_LENGTH+4.
-;
-        movzx   ecx, byte ptr _KiArgumentTable[eax]
-        sub     esp, ecx
-        lea     esi, [ebp + KTRAP_FRAME_LENGTH + 4]
-        mov     edi, esp
-        shr     ecx, 2
-        rep     movsd
-
-        mov     edx, _KiServiceTable[eax*4]
-        call    edx                             ; NtContinue or NtRaiseException
-
-;
-; The service jmps to _KiServiceExit2 → EXIT_ALL → iret emulation and
-; never returns to us.  If we get here something is very wrong.
-;
-        int     3
-        jmp     short kkd_with_trap_frame
-
-_KiKernelDispatch endp
-
-SYSSTUBS_ENTRY1  0, AcceptConnectPort, 6
+SYSSTUBS_ENTRY1  0, AcceptConnectPort, 6 
 SYSSTUBS_ENTRY2  0, AcceptConnectPort, 6 
 SYSSTUBS_ENTRY3  0, AcceptConnectPort, 6 
 SYSSTUBS_ENTRY4  0, AcceptConnectPort, 6 
@@ -1463,453 +1159,461 @@ SYSSTUBS_ENTRY5  125, ReplyWaitReceivePort, 4
 SYSSTUBS_ENTRY6  125, ReplyWaitReceivePort, 4 
 SYSSTUBS_ENTRY7  125, ReplyWaitReceivePort, 4 
 SYSSTUBS_ENTRY8  125, ReplyWaitReceivePort, 4 
-SYSSTUBS_ENTRY1  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY2  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY3  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY4  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY5  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY6  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY7  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY8  126, ReplyWaitReplyPort, 2 
-SYSSTUBS_ENTRY1  127, RequestPort, 2 
-SYSSTUBS_ENTRY2  127, RequestPort, 2 
-SYSSTUBS_ENTRY3  127, RequestPort, 2 
-SYSSTUBS_ENTRY4  127, RequestPort, 2 
-SYSSTUBS_ENTRY5  127, RequestPort, 2 
-SYSSTUBS_ENTRY6  127, RequestPort, 2 
-SYSSTUBS_ENTRY7  127, RequestPort, 2 
-SYSSTUBS_ENTRY8  127, RequestPort, 2 
-SYSSTUBS_ENTRY1  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY2  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY3  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY4  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY5  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY6  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY7  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY8  128, RequestWaitReplyPort, 3 
-SYSSTUBS_ENTRY1  129, ResetEvent, 2 
-SYSSTUBS_ENTRY2  129, ResetEvent, 2 
-SYSSTUBS_ENTRY3  129, ResetEvent, 2 
-SYSSTUBS_ENTRY4  129, ResetEvent, 2 
-SYSSTUBS_ENTRY5  129, ResetEvent, 2 
-SYSSTUBS_ENTRY6  129, ResetEvent, 2 
-SYSSTUBS_ENTRY7  129, ResetEvent, 2 
-SYSSTUBS_ENTRY8  129, ResetEvent, 2 
-SYSSTUBS_ENTRY1  130, RestoreKey, 3 
-SYSSTUBS_ENTRY2  130, RestoreKey, 3 
-SYSSTUBS_ENTRY3  130, RestoreKey, 3 
-SYSSTUBS_ENTRY4  130, RestoreKey, 3 
-SYSSTUBS_ENTRY5  130, RestoreKey, 3 
-SYSSTUBS_ENTRY6  130, RestoreKey, 3 
-SYSSTUBS_ENTRY7  130, RestoreKey, 3 
-SYSSTUBS_ENTRY8  130, RestoreKey, 3 
-SYSSTUBS_ENTRY1  131, ResumeThread, 2 
-SYSSTUBS_ENTRY2  131, ResumeThread, 2 
-SYSSTUBS_ENTRY3  131, ResumeThread, 2 
-SYSSTUBS_ENTRY4  131, ResumeThread, 2 
-SYSSTUBS_ENTRY5  131, ResumeThread, 2 
-SYSSTUBS_ENTRY6  131, ResumeThread, 2 
-SYSSTUBS_ENTRY7  131, ResumeThread, 2 
-SYSSTUBS_ENTRY8  131, ResumeThread, 2 
-SYSSTUBS_ENTRY1  132, SaveKey, 2 
-SYSSTUBS_ENTRY2  132, SaveKey, 2 
-SYSSTUBS_ENTRY3  132, SaveKey, 2 
-SYSSTUBS_ENTRY4  132, SaveKey, 2 
-SYSSTUBS_ENTRY5  132, SaveKey, 2 
-SYSSTUBS_ENTRY6  132, SaveKey, 2 
-SYSSTUBS_ENTRY7  132, SaveKey, 2 
-SYSSTUBS_ENTRY8  132, SaveKey, 2 
-SYSSTUBS_ENTRY1  133, SetContextThread, 2 
-SYSSTUBS_ENTRY2  133, SetContextThread, 2 
-SYSSTUBS_ENTRY3  133, SetContextThread, 2 
-SYSSTUBS_ENTRY4  133, SetContextThread, 2 
-SYSSTUBS_ENTRY5  133, SetContextThread, 2 
-SYSSTUBS_ENTRY6  133, SetContextThread, 2 
-SYSSTUBS_ENTRY7  133, SetContextThread, 2 
-SYSSTUBS_ENTRY8  133, SetContextThread, 2 
-SYSSTUBS_ENTRY1  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY2  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY3  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY4  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY5  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY6  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY7  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY8  134, SetDefaultHardErrorPort, 1 
-SYSSTUBS_ENTRY1  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY2  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY3  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY4  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY5  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY6  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY7  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY8  135, SetDefaultLocale, 2 
-SYSSTUBS_ENTRY1  136, SetEaFile, 4 
-SYSSTUBS_ENTRY2  136, SetEaFile, 4 
-SYSSTUBS_ENTRY3  136, SetEaFile, 4 
-SYSSTUBS_ENTRY4  136, SetEaFile, 4 
-SYSSTUBS_ENTRY5  136, SetEaFile, 4 
-SYSSTUBS_ENTRY6  136, SetEaFile, 4 
-SYSSTUBS_ENTRY7  136, SetEaFile, 4 
-SYSSTUBS_ENTRY8  136, SetEaFile, 4 
-SYSSTUBS_ENTRY1  137, SetEvent, 2 
-SYSSTUBS_ENTRY2  137, SetEvent, 2 
-SYSSTUBS_ENTRY3  137, SetEvent, 2 
-SYSSTUBS_ENTRY4  137, SetEvent, 2 
-SYSSTUBS_ENTRY5  137, SetEvent, 2 
-SYSSTUBS_ENTRY6  137, SetEvent, 2 
-SYSSTUBS_ENTRY7  137, SetEvent, 2 
-SYSSTUBS_ENTRY8  137, SetEvent, 2 
-SYSSTUBS_ENTRY1  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY2  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY3  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY4  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY5  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY6  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY7  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY8  138, SetHighEventPair, 1 
-SYSSTUBS_ENTRY1  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY2  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY3  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY4  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY5  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY6  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY7  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY8  139, SetHighWaitLowEventPair, 1 
-SYSSTUBS_ENTRY1  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY2  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY3  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY4  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY5  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY6  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY7  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY8  140, SetHighWaitLowThread, 0 
-SYSSTUBS_ENTRY1  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY2  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY3  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY4  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY5  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY6  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY7  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY8  141, SetInformationFile, 5 
-SYSSTUBS_ENTRY1  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY2  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY3  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY4  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY5  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY6  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY7  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY8  142, SetInformationKey, 4 
-SYSSTUBS_ENTRY1  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY2  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY3  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY4  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY5  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY6  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY7  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY8  143, SetInformationObject, 4 
-SYSSTUBS_ENTRY1  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY2  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY3  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY4  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY5  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY6  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY7  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY8  144, SetInformationProcess, 4 
-SYSSTUBS_ENTRY1  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY2  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY3  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY4  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY5  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY6  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY7  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY8  145, SetInformationThread, 4 
-SYSSTUBS_ENTRY1  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY2  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY3  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY4  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY5  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY6  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY7  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY8  146, SetInformationToken, 4 
-SYSSTUBS_ENTRY1  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY2  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY3  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY4  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY5  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY6  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY7  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY8  147, SetIntervalProfile, 1 
-SYSSTUBS_ENTRY1  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY2  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY3  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY4  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY5  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY6  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY7  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY8  148, SetLdtEntries, 6 
-SYSSTUBS_ENTRY1  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY2  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY3  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY4  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY5  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY6  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY7  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY8  149, SetLowEventPair, 1 
-SYSSTUBS_ENTRY1  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY2  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY3  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY4  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY5  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY6  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY7  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY8  150, SetLowWaitHighEventPair, 1 
-SYSSTUBS_ENTRY1  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY2  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY3  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY4  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY5  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY6  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY7  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY8  151, SetLowWaitHighThread, 0 
-SYSSTUBS_ENTRY1  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY2  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY3  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY4  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY5  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY6  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY7  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY8  152, SetSecurityObject, 3 
-SYSSTUBS_ENTRY1  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY2  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY3  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY4  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY5  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY6  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY7  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY8  153, SetSystemEnvironmentValue, 2 
-SYSSTUBS_ENTRY1  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY2  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY3  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY4  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY5  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY6  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY7  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY8  154, SetSystemInformation, 3 
-SYSSTUBS_ENTRY1  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY2  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY3  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY4  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY5  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY6  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY7  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY8  155, SetSystemTime, 2 
-SYSSTUBS_ENTRY1  156, SetTimer, 5 
-SYSSTUBS_ENTRY2  156, SetTimer, 5 
-SYSSTUBS_ENTRY3  156, SetTimer, 5 
-SYSSTUBS_ENTRY4  156, SetTimer, 5 
-SYSSTUBS_ENTRY5  156, SetTimer, 5 
-SYSSTUBS_ENTRY6  156, SetTimer, 5 
-SYSSTUBS_ENTRY7  156, SetTimer, 5 
-SYSSTUBS_ENTRY8  156, SetTimer, 5 
-SYSSTUBS_ENTRY1  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY2  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY3  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY4  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY5  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY6  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY7  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY8  157, SetTimerResolution, 3 
-SYSSTUBS_ENTRY1  158, SetValueKey, 6 
-SYSSTUBS_ENTRY2  158, SetValueKey, 6 
-SYSSTUBS_ENTRY3  158, SetValueKey, 6 
-SYSSTUBS_ENTRY4  158, SetValueKey, 6 
-SYSSTUBS_ENTRY5  158, SetValueKey, 6 
-SYSSTUBS_ENTRY6  158, SetValueKey, 6 
-SYSSTUBS_ENTRY7  158, SetValueKey, 6 
-SYSSTUBS_ENTRY8  158, SetValueKey, 6 
-SYSSTUBS_ENTRY1  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY2  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY3  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY4  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY5  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY6  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY7  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY8  159, SetVolumeInformationFile, 5 
-SYSSTUBS_ENTRY1  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY2  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY3  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY4  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY5  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY6  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY7  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY8  160, ShutdownSystem, 1 
-SYSSTUBS_ENTRY1  161, StartProfile, 1 
-SYSSTUBS_ENTRY2  161, StartProfile, 1 
-SYSSTUBS_ENTRY3  161, StartProfile, 1 
-SYSSTUBS_ENTRY4  161, StartProfile, 1 
-SYSSTUBS_ENTRY5  161, StartProfile, 1 
-SYSSTUBS_ENTRY6  161, StartProfile, 1 
-SYSSTUBS_ENTRY7  161, StartProfile, 1 
-SYSSTUBS_ENTRY8  161, StartProfile, 1 
-SYSSTUBS_ENTRY1  162, StopProfile, 1 
-SYSSTUBS_ENTRY2  162, StopProfile, 1 
-SYSSTUBS_ENTRY3  162, StopProfile, 1 
-SYSSTUBS_ENTRY4  162, StopProfile, 1 
-SYSSTUBS_ENTRY5  162, StopProfile, 1 
-SYSSTUBS_ENTRY6  162, StopProfile, 1 
-SYSSTUBS_ENTRY7  162, StopProfile, 1 
-SYSSTUBS_ENTRY8  162, StopProfile, 1 
-SYSSTUBS_ENTRY1  163, SuspendThread, 2 
-SYSSTUBS_ENTRY2  163, SuspendThread, 2 
-SYSSTUBS_ENTRY3  163, SuspendThread, 2 
-SYSSTUBS_ENTRY4  163, SuspendThread, 2 
-SYSSTUBS_ENTRY5  163, SuspendThread, 2 
-SYSSTUBS_ENTRY6  163, SuspendThread, 2 
-SYSSTUBS_ENTRY7  163, SuspendThread, 2 
-SYSSTUBS_ENTRY8  163, SuspendThread, 2 
-SYSSTUBS_ENTRY1  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY2  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY3  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY4  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY5  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY6  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY7  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY8  164, SystemDebugControl, 6 
-SYSSTUBS_ENTRY1  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY2  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY3  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY4  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY5  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY6  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY7  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY8  165, TerminateProcess, 2 
-SYSSTUBS_ENTRY1  166, TerminateThread, 2 
-SYSSTUBS_ENTRY2  166, TerminateThread, 2 
-SYSSTUBS_ENTRY3  166, TerminateThread, 2 
-SYSSTUBS_ENTRY4  166, TerminateThread, 2 
-SYSSTUBS_ENTRY5  166, TerminateThread, 2 
-SYSSTUBS_ENTRY6  166, TerminateThread, 2 
-SYSSTUBS_ENTRY7  166, TerminateThread, 2 
-SYSSTUBS_ENTRY8  166, TerminateThread, 2 
-SYSSTUBS_ENTRY1  167, TestAlert, 0 
-SYSSTUBS_ENTRY2  167, TestAlert, 0 
-SYSSTUBS_ENTRY3  167, TestAlert, 0 
-SYSSTUBS_ENTRY4  167, TestAlert, 0 
-SYSSTUBS_ENTRY5  167, TestAlert, 0 
-SYSSTUBS_ENTRY6  167, TestAlert, 0 
-SYSSTUBS_ENTRY7  167, TestAlert, 0 
-SYSSTUBS_ENTRY8  167, TestAlert, 0 
-SYSSTUBS_ENTRY1  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY2  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY3  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY4  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY5  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY6  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY7  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY8  168, UnloadDriver, 1 
-SYSSTUBS_ENTRY1  169, UnloadKey, 1 
-SYSSTUBS_ENTRY2  169, UnloadKey, 1 
-SYSSTUBS_ENTRY3  169, UnloadKey, 1 
-SYSSTUBS_ENTRY4  169, UnloadKey, 1 
-SYSSTUBS_ENTRY5  169, UnloadKey, 1 
-SYSSTUBS_ENTRY6  169, UnloadKey, 1 
-SYSSTUBS_ENTRY7  169, UnloadKey, 1 
-SYSSTUBS_ENTRY8  169, UnloadKey, 1 
-SYSSTUBS_ENTRY1  170, UnlockFile, 5 
-SYSSTUBS_ENTRY2  170, UnlockFile, 5 
-SYSSTUBS_ENTRY3  170, UnlockFile, 5 
-SYSSTUBS_ENTRY4  170, UnlockFile, 5 
-SYSSTUBS_ENTRY5  170, UnlockFile, 5 
-SYSSTUBS_ENTRY6  170, UnlockFile, 5 
-SYSSTUBS_ENTRY7  170, UnlockFile, 5 
-SYSSTUBS_ENTRY8  170, UnlockFile, 5 
-SYSSTUBS_ENTRY1  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY2  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY3  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY4  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY5  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY6  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY7  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY8  171, UnlockVirtualMemory, 4 
-SYSSTUBS_ENTRY1  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY2  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY3  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY4  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY5  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY6  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY7  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY8  172, UnmapViewOfSection, 2 
-SYSSTUBS_ENTRY1  173, VdmControl, 2 
-SYSSTUBS_ENTRY2  173, VdmControl, 2 
-SYSSTUBS_ENTRY3  173, VdmControl, 2 
-SYSSTUBS_ENTRY4  173, VdmControl, 2 
-SYSSTUBS_ENTRY5  173, VdmControl, 2 
-SYSSTUBS_ENTRY6  173, VdmControl, 2 
-SYSSTUBS_ENTRY7  173, VdmControl, 2 
-SYSSTUBS_ENTRY8  173, VdmControl, 2 
-SYSSTUBS_ENTRY1  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY2  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY3  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY4  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY5  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY6  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY7  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY8  174, WaitForMultipleObjects, 5 
-SYSSTUBS_ENTRY1  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY2  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY3  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY4  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY5  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY6  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY7  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY8  175, WaitForSingleObject, 3 
-SYSSTUBS_ENTRY1  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY2  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY3  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY4  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY5  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY6  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY7  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY8  176, WaitForProcessMutant, 0 
-SYSSTUBS_ENTRY1  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY2  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY3  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY4  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY5  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY6  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY7  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY8  177, WaitHighEventPair, 1 
-SYSSTUBS_ENTRY1  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY2  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY3  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY4  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY5  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY6  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY7  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY8  178, WaitLowEventPair, 1 
-SYSSTUBS_ENTRY1  179, WriteFile, 9 
-SYSSTUBS_ENTRY2  179, WriteFile, 9 
-SYSSTUBS_ENTRY3  179, WriteFile, 9 
-SYSSTUBS_ENTRY4  179, WriteFile, 9 
-SYSSTUBS_ENTRY5  179, WriteFile, 9 
-SYSSTUBS_ENTRY6  179, WriteFile, 9 
-SYSSTUBS_ENTRY7  179, WriteFile, 9 
-SYSSTUBS_ENTRY8  179, WriteFile, 9 
-SYSSTUBS_ENTRY1  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY2  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY3  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY4  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY5  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY6  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY7  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY8  180, WriteRequestData, 6 
-SYSSTUBS_ENTRY1  181, WriteVirtualMemory, 5 
-SYSSTUBS_ENTRY2  181, WriteVirtualMemory, 5 
-SYSSTUBS_ENTRY3  181, WriteVirtualMemory, 5 
-SYSSTUBS_ENTRY4  181, WriteVirtualMemory, 5 
-SYSSTUBS_ENTRY5  181, WriteVirtualMemory, 5 
-SYSSTUBS_ENTRY6  181, WriteVirtualMemory, 5 
-SYSSTUBS_ENTRY7  181, WriteVirtualMemory, 5 
-SYSSTUBS_ENTRY8  181, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY1  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY2  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY3  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY4  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY5  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY6  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY7  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY8  126, ReplyWaitReceivePortEx, 5 
+SYSSTUBS_ENTRY1  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY2  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY3  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY4  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY5  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY6  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY7  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY8  127, ReplyWaitReplyPort, 2 
+SYSSTUBS_ENTRY1  128, RequestPort, 2 
+SYSSTUBS_ENTRY2  128, RequestPort, 2 
+SYSSTUBS_ENTRY3  128, RequestPort, 2 
+SYSSTUBS_ENTRY4  128, RequestPort, 2 
+SYSSTUBS_ENTRY5  128, RequestPort, 2 
+SYSSTUBS_ENTRY6  128, RequestPort, 2 
+SYSSTUBS_ENTRY7  128, RequestPort, 2 
+SYSSTUBS_ENTRY8  128, RequestPort, 2 
+SYSSTUBS_ENTRY1  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY2  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY3  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY4  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY5  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY6  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY7  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY8  129, RequestWaitReplyPort, 3 
+SYSSTUBS_ENTRY1  130, ResetEvent, 2 
+SYSSTUBS_ENTRY2  130, ResetEvent, 2 
+SYSSTUBS_ENTRY3  130, ResetEvent, 2 
+SYSSTUBS_ENTRY4  130, ResetEvent, 2 
+SYSSTUBS_ENTRY5  130, ResetEvent, 2 
+SYSSTUBS_ENTRY6  130, ResetEvent, 2 
+SYSSTUBS_ENTRY7  130, ResetEvent, 2 
+SYSSTUBS_ENTRY8  130, ResetEvent, 2 
+SYSSTUBS_ENTRY1  131, RestoreKey, 3 
+SYSSTUBS_ENTRY2  131, RestoreKey, 3 
+SYSSTUBS_ENTRY3  131, RestoreKey, 3 
+SYSSTUBS_ENTRY4  131, RestoreKey, 3 
+SYSSTUBS_ENTRY5  131, RestoreKey, 3 
+SYSSTUBS_ENTRY6  131, RestoreKey, 3 
+SYSSTUBS_ENTRY7  131, RestoreKey, 3 
+SYSSTUBS_ENTRY8  131, RestoreKey, 3 
+SYSSTUBS_ENTRY1  132, ResumeThread, 2 
+SYSSTUBS_ENTRY2  132, ResumeThread, 2 
+SYSSTUBS_ENTRY3  132, ResumeThread, 2 
+SYSSTUBS_ENTRY4  132, ResumeThread, 2 
+SYSSTUBS_ENTRY5  132, ResumeThread, 2 
+SYSSTUBS_ENTRY6  132, ResumeThread, 2 
+SYSSTUBS_ENTRY7  132, ResumeThread, 2 
+SYSSTUBS_ENTRY8  132, ResumeThread, 2 
+SYSSTUBS_ENTRY1  133, SaveKey, 2 
+SYSSTUBS_ENTRY2  133, SaveKey, 2 
+SYSSTUBS_ENTRY3  133, SaveKey, 2 
+SYSSTUBS_ENTRY4  133, SaveKey, 2 
+SYSSTUBS_ENTRY5  133, SaveKey, 2 
+SYSSTUBS_ENTRY6  133, SaveKey, 2 
+SYSSTUBS_ENTRY7  133, SaveKey, 2 
+SYSSTUBS_ENTRY8  133, SaveKey, 2 
+SYSSTUBS_ENTRY1  134, SetContextThread, 2 
+SYSSTUBS_ENTRY2  134, SetContextThread, 2 
+SYSSTUBS_ENTRY3  134, SetContextThread, 2 
+SYSSTUBS_ENTRY4  134, SetContextThread, 2 
+SYSSTUBS_ENTRY5  134, SetContextThread, 2 
+SYSSTUBS_ENTRY6  134, SetContextThread, 2 
+SYSSTUBS_ENTRY7  134, SetContextThread, 2 
+SYSSTUBS_ENTRY8  134, SetContextThread, 2 
+SYSSTUBS_ENTRY1  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY2  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY3  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY4  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY5  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY6  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY7  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY8  135, SetDefaultHardErrorPort, 1 
+SYSSTUBS_ENTRY1  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY2  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY3  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY4  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY5  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY6  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY7  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY8  136, SetDefaultLocale, 2 
+SYSSTUBS_ENTRY1  137, SetEaFile, 4 
+SYSSTUBS_ENTRY2  137, SetEaFile, 4 
+SYSSTUBS_ENTRY3  137, SetEaFile, 4 
+SYSSTUBS_ENTRY4  137, SetEaFile, 4 
+SYSSTUBS_ENTRY5  137, SetEaFile, 4 
+SYSSTUBS_ENTRY6  137, SetEaFile, 4 
+SYSSTUBS_ENTRY7  137, SetEaFile, 4 
+SYSSTUBS_ENTRY8  137, SetEaFile, 4 
+SYSSTUBS_ENTRY1  138, SetEvent, 2 
+SYSSTUBS_ENTRY2  138, SetEvent, 2 
+SYSSTUBS_ENTRY3  138, SetEvent, 2 
+SYSSTUBS_ENTRY4  138, SetEvent, 2 
+SYSSTUBS_ENTRY5  138, SetEvent, 2 
+SYSSTUBS_ENTRY6  138, SetEvent, 2 
+SYSSTUBS_ENTRY7  138, SetEvent, 2 
+SYSSTUBS_ENTRY8  138, SetEvent, 2 
+SYSSTUBS_ENTRY1  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY2  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY3  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY4  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY5  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY6  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY7  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY8  139, SetHighEventPair, 1 
+SYSSTUBS_ENTRY1  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY2  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY3  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY4  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY5  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY6  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY7  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY8  140, SetHighWaitLowEventPair, 1 
+SYSSTUBS_ENTRY1  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY2  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY3  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY4  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY5  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY6  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY7  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY8  141, SetHighWaitLowThread, 0 
+SYSSTUBS_ENTRY1  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY2  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY3  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY4  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY5  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY6  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY7  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY8  142, SetInformationFile, 5 
+SYSSTUBS_ENTRY1  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY2  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY3  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY4  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY5  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY6  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY7  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY8  143, SetInformationKey, 4 
+SYSSTUBS_ENTRY1  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY2  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY3  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY4  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY5  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY6  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY7  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY8  144, SetInformationObject, 4 
+SYSSTUBS_ENTRY1  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY2  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY3  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY4  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY5  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY6  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY7  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY8  145, SetInformationProcess, 4 
+SYSSTUBS_ENTRY1  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY2  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY3  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY4  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY5  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY6  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY7  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY8  146, SetInformationThread, 4 
+SYSSTUBS_ENTRY1  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY2  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY3  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY4  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY5  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY6  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY7  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY8  147, SetInformationToken, 4 
+SYSSTUBS_ENTRY1  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY2  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY3  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY4  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY5  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY6  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY7  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY8  148, SetIntervalProfile, 1 
+SYSSTUBS_ENTRY1  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY2  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY3  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY4  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY5  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY6  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY7  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY8  149, SetLdtEntries, 6 
+SYSSTUBS_ENTRY1  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY2  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY3  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY4  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY5  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY6  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY7  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY8  150, SetLowEventPair, 1 
+SYSSTUBS_ENTRY1  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY2  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY3  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY4  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY5  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY6  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY7  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY8  151, SetLowWaitHighEventPair, 1 
+SYSSTUBS_ENTRY1  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY2  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY3  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY4  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY5  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY6  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY7  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY8  152, SetLowWaitHighThread, 0 
+SYSSTUBS_ENTRY1  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY2  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY3  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY4  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY5  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY6  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY7  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY8  153, SetSecurityObject, 3 
+SYSSTUBS_ENTRY1  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY2  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY3  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY4  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY5  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY6  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY7  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY8  154, SetSystemEnvironmentValue, 2 
+SYSSTUBS_ENTRY1  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY2  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY3  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY4  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY5  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY6  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY7  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY8  155, SetSystemInformation, 3 
+SYSSTUBS_ENTRY1  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY2  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY3  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY4  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY5  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY6  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY7  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY8  156, SetSystemTime, 2 
+SYSSTUBS_ENTRY1  157, SetTimer, 5 
+SYSSTUBS_ENTRY2  157, SetTimer, 5 
+SYSSTUBS_ENTRY3  157, SetTimer, 5 
+SYSSTUBS_ENTRY4  157, SetTimer, 5 
+SYSSTUBS_ENTRY5  157, SetTimer, 5 
+SYSSTUBS_ENTRY6  157, SetTimer, 5 
+SYSSTUBS_ENTRY7  157, SetTimer, 5 
+SYSSTUBS_ENTRY8  157, SetTimer, 5 
+SYSSTUBS_ENTRY1  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY2  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY3  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY4  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY5  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY6  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY7  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY8  158, SetTimerResolution, 3 
+SYSSTUBS_ENTRY1  159, SetValueKey, 6 
+SYSSTUBS_ENTRY2  159, SetValueKey, 6 
+SYSSTUBS_ENTRY3  159, SetValueKey, 6 
+SYSSTUBS_ENTRY4  159, SetValueKey, 6 
+SYSSTUBS_ENTRY5  159, SetValueKey, 6 
+SYSSTUBS_ENTRY6  159, SetValueKey, 6 
+SYSSTUBS_ENTRY7  159, SetValueKey, 6 
+SYSSTUBS_ENTRY8  159, SetValueKey, 6 
+SYSSTUBS_ENTRY1  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY2  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY3  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY4  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY5  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY6  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY7  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY8  160, SetVolumeInformationFile, 5 
+SYSSTUBS_ENTRY1  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY2  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY3  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY4  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY5  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY6  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY7  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY8  161, ShutdownSystem, 1 
+SYSSTUBS_ENTRY1  162, StartProfile, 1 
+SYSSTUBS_ENTRY2  162, StartProfile, 1 
+SYSSTUBS_ENTRY3  162, StartProfile, 1 
+SYSSTUBS_ENTRY4  162, StartProfile, 1 
+SYSSTUBS_ENTRY5  162, StartProfile, 1 
+SYSSTUBS_ENTRY6  162, StartProfile, 1 
+SYSSTUBS_ENTRY7  162, StartProfile, 1 
+SYSSTUBS_ENTRY8  162, StartProfile, 1 
+SYSSTUBS_ENTRY1  163, StopProfile, 1 
+SYSSTUBS_ENTRY2  163, StopProfile, 1 
+SYSSTUBS_ENTRY3  163, StopProfile, 1 
+SYSSTUBS_ENTRY4  163, StopProfile, 1 
+SYSSTUBS_ENTRY5  163, StopProfile, 1 
+SYSSTUBS_ENTRY6  163, StopProfile, 1 
+SYSSTUBS_ENTRY7  163, StopProfile, 1 
+SYSSTUBS_ENTRY8  163, StopProfile, 1 
+SYSSTUBS_ENTRY1  164, SuspendThread, 2 
+SYSSTUBS_ENTRY2  164, SuspendThread, 2 
+SYSSTUBS_ENTRY3  164, SuspendThread, 2 
+SYSSTUBS_ENTRY4  164, SuspendThread, 2 
+SYSSTUBS_ENTRY5  164, SuspendThread, 2 
+SYSSTUBS_ENTRY6  164, SuspendThread, 2 
+SYSSTUBS_ENTRY7  164, SuspendThread, 2 
+SYSSTUBS_ENTRY8  164, SuspendThread, 2 
+SYSSTUBS_ENTRY1  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY2  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY3  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY4  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY5  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY6  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY7  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY8  165, SystemDebugControl, 6 
+SYSSTUBS_ENTRY1  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY2  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY3  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY4  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY5  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY6  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY7  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY8  166, TerminateProcess, 2 
+SYSSTUBS_ENTRY1  167, TerminateThread, 2 
+SYSSTUBS_ENTRY2  167, TerminateThread, 2 
+SYSSTUBS_ENTRY3  167, TerminateThread, 2 
+SYSSTUBS_ENTRY4  167, TerminateThread, 2 
+SYSSTUBS_ENTRY5  167, TerminateThread, 2 
+SYSSTUBS_ENTRY6  167, TerminateThread, 2 
+SYSSTUBS_ENTRY7  167, TerminateThread, 2 
+SYSSTUBS_ENTRY8  167, TerminateThread, 2 
+SYSSTUBS_ENTRY1  168, TestAlert, 0 
+SYSSTUBS_ENTRY2  168, TestAlert, 0 
+SYSSTUBS_ENTRY3  168, TestAlert, 0 
+SYSSTUBS_ENTRY4  168, TestAlert, 0 
+SYSSTUBS_ENTRY5  168, TestAlert, 0 
+SYSSTUBS_ENTRY6  168, TestAlert, 0 
+SYSSTUBS_ENTRY7  168, TestAlert, 0 
+SYSSTUBS_ENTRY8  168, TestAlert, 0 
+SYSSTUBS_ENTRY1  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY2  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY3  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY4  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY5  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY6  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY7  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY8  169, UnloadDriver, 1 
+SYSSTUBS_ENTRY1  170, UnloadKey, 1 
+SYSSTUBS_ENTRY2  170, UnloadKey, 1 
+SYSSTUBS_ENTRY3  170, UnloadKey, 1 
+SYSSTUBS_ENTRY4  170, UnloadKey, 1 
+SYSSTUBS_ENTRY5  170, UnloadKey, 1 
+SYSSTUBS_ENTRY6  170, UnloadKey, 1 
+SYSSTUBS_ENTRY7  170, UnloadKey, 1 
+SYSSTUBS_ENTRY8  170, UnloadKey, 1 
+SYSSTUBS_ENTRY1  171, UnlockFile, 5 
+SYSSTUBS_ENTRY2  171, UnlockFile, 5 
+SYSSTUBS_ENTRY3  171, UnlockFile, 5 
+SYSSTUBS_ENTRY4  171, UnlockFile, 5 
+SYSSTUBS_ENTRY5  171, UnlockFile, 5 
+SYSSTUBS_ENTRY6  171, UnlockFile, 5 
+SYSSTUBS_ENTRY7  171, UnlockFile, 5 
+SYSSTUBS_ENTRY8  171, UnlockFile, 5 
+SYSSTUBS_ENTRY1  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY2  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY3  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY4  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY5  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY6  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY7  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY8  172, UnlockVirtualMemory, 4 
+SYSSTUBS_ENTRY1  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY2  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY3  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY4  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY5  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY6  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY7  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY8  173, UnmapViewOfSection, 2 
+SYSSTUBS_ENTRY1  174, VdmControl, 2 
+SYSSTUBS_ENTRY2  174, VdmControl, 2 
+SYSSTUBS_ENTRY3  174, VdmControl, 2 
+SYSSTUBS_ENTRY4  174, VdmControl, 2 
+SYSSTUBS_ENTRY5  174, VdmControl, 2 
+SYSSTUBS_ENTRY6  174, VdmControl, 2 
+SYSSTUBS_ENTRY7  174, VdmControl, 2 
+SYSSTUBS_ENTRY8  174, VdmControl, 2 
+SYSSTUBS_ENTRY1  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY2  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY3  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY4  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY5  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY6  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY7  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY8  175, WaitForMultipleObjects, 5 
+SYSSTUBS_ENTRY1  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY2  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY3  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY4  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY5  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY6  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY7  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY8  176, WaitForSingleObject, 3 
+SYSSTUBS_ENTRY1  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY2  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY3  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY4  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY5  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY6  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY7  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY8  177, WaitForProcessMutant, 0 
+SYSSTUBS_ENTRY1  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY2  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY3  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY4  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY5  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY6  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY7  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY8  178, WaitHighEventPair, 1 
+SYSSTUBS_ENTRY1  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY2  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY3  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY4  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY5  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY6  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY7  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY8  179, WaitLowEventPair, 1 
+SYSSTUBS_ENTRY1  180, WriteFile, 9 
+SYSSTUBS_ENTRY2  180, WriteFile, 9 
+SYSSTUBS_ENTRY3  180, WriteFile, 9 
+SYSSTUBS_ENTRY4  180, WriteFile, 9 
+SYSSTUBS_ENTRY5  180, WriteFile, 9 
+SYSSTUBS_ENTRY6  180, WriteFile, 9 
+SYSSTUBS_ENTRY7  180, WriteFile, 9 
+SYSSTUBS_ENTRY8  180, WriteFile, 9 
+SYSSTUBS_ENTRY1  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY2  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY3  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY4  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY5  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY6  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY7  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY8  181, WriteRequestData, 6 
+SYSSTUBS_ENTRY1  182, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY2  182, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY3  182, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY4  182, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY5  182, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY6  182, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY7  182, WriteVirtualMemory, 5 
+SYSSTUBS_ENTRY8  182, WriteVirtualMemory, 5 
 
 STUBS_END

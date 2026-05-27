@@ -124,6 +124,7 @@ RemoveIoCompletion,5
 ReplaceKey,3
 ReplyPort,2
 ReplyWaitReceivePort,4
+ReplyWaitReceivePortEx,5
 ReplyWaitReplyPort,2
 RequestPort,2
 RequestWaitReplyPort,3

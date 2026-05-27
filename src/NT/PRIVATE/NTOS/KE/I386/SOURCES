@@ -13,6 +13,7 @@ i386_SOURCES=..\i386\mpipi.c      \
              ..\i386\int.asm      \
              ..\i386\intobj.c     \
              ..\i386\intsup.asm   \
+             ..\i386\kikdisp.asm  \
              ..\i386\iopm.c       \
              ..\i386\i386init.c   \
              ..\i386\i386pcr.asm  \
