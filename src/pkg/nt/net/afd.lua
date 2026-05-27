@@ -274,6 +274,7 @@ local IOCTL_AFD_ACCEPT             = 0x1200C
 local IOCTL_AFD_GET_ADDRESS        = 0x1201A   -- METHOD_OUT_DIRECT (= 2 in low bits)
 local IOCTL_AFD_POLL               = 0x12010   -- _AFD_CONTROL_CODE(4,  METHOD_BUFFERED)
 local IOCTL_AFD_PARTIAL_DISCONNECT = 0x12014   -- _AFD_CONTROL_CODE(5,  METHOD_BUFFERED)
+local IOCTL_AFD_QUERY_RECEIVE_INFO = 0x1201C   -- _AFD_CONTROL_CODE(7,  METHOD_BUFFERED)
 local IOCTL_AFD_QUERY_HANDLES      = 0x12020   -- _AFD_CONTROL_CODE(8,  METHOD_BUFFERED)
 local IOCTL_AFD_GET_CONTEXT_LENGTH = 0x12028   -- _AFD_CONTROL_CODE(10, METHOD_BUFFERED)
 local IOCTL_AFD_GET_CONTEXT        = 0x1202C   -- _AFD_CONTROL_CODE(11, METHOD_BUFFERED)
@@ -955,6 +956,27 @@ local function get_context(sock)
 end
 
 -- ------------------------------------------------------------------
+-- query_receive_info — IOCTL_AFD_QUERY_RECEIVE_INFO.
+--
+-- Reports how many bytes are pending in the endpoint's receive
+-- buffer, with normal-data and expedited (OOB) data broken out.
+-- Caller-side equivalent of ioctl(FIONREAD) on a BSD socket.
+-- Output is two ULONGs (AFD_RECEIVE_INFORMATION = 8 bytes).
+-- ------------------------------------------------------------------
+
+local function query_receive_info(sock)
+    local out = ffi.new('uint32_t[2]')
+    ioctl(sock, IOCTL_AFD_QUERY_RECEIVE_INFO,
+          nil, 0,
+          out, 8,
+          nil)
+    return {
+        bytes_available           = tonumber(out[0]),
+        expedited_bytes_available = tonumber(out[1]),
+    }
+end
+
+-- ------------------------------------------------------------------
 -- query_handles — IOCTL_AFD_QUERY_HANDLES.
 --
 -- Returns the underlying TDI address + connection handle integers
@@ -1123,6 +1145,7 @@ return {
     get_context        = get_context,
     get_context_length = get_context_length,
     query_handles      = query_handles,
+    query_receive_info = query_receive_info,
     -- query_handles input flags.
     QUERY_ADDRESS_HANDLE    = AFD_QUERY_ADDRESS_HANDLE,
     QUERY_CONNECTION_HANDLE = AFD_QUERY_CONNECTION_HANDLE,

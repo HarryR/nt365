@@ -639,6 +639,102 @@ t.test("RECEIVE: peer sends before our recv → AfdReceiveEventHandler",
     client:close(); listener:close()
 end)
 
+-- ------------------------------------------------------------------
+-- 8b. AFD receive-info + cancel-send.
+--
+-- Covers RECEIVE.C/AfdQueryReceiveInformation (the FIONREAD-style
+-- pending-bytes query) and SEND.C/AfdCancelSend (the IRP-cancel
+-- routine attached to a send that pended).
+-- ------------------------------------------------------------------
+
+t.test("QUERY_RECEIVE_INFO: fresh endpoint reports 0/0", function()
+    local s = afd.tcp()
+    local ri = afd.query_receive_info(s)
+    t.eq(ri.bytes_available, 0)
+    t.eq(ri.expedited_bytes_available, 0)
+    s:close()
+end)
+
+t.test("QUERY_RECEIVE_INFO: reflects buffered datagrams on a UDP socket",
+       function()
+    -- Push two datagrams into a UDP socket via a connected sender,
+    -- then check the byte count.  AFD buffers datagrams per-endpoint;
+    -- query_receive_info returns the sum across all pending datagrams.
+    local server = afd.udp()
+    afd.bind(server, "127.0.0.1", 0)
+    local _, sport = afd.getsockname(server)
+
+    local client = afd.udp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", sport)
+    afd.send(client, "first",  LOOPBACK_TIMEOUT)
+    afd.send(client, "second", LOOPBACK_TIMEOUT)
+
+    -- Let the datagrams land in the server's per-endpoint queue.
+    ke.NtDelayExecution(false, ke.timeout(0.05))
+
+    local ri = afd.query_receive_info(server)
+    -- 5 + 6 = 11 bytes total, no expedited.
+    t.eq(ri.bytes_available, 11,
+         "expected 11 bytes pending, got " .. ri.bytes_available)
+    t.eq(ri.expedited_bytes_available, 0)
+
+    server:close(); client:close()
+end)
+
+t.test("SEND: cancel a pending send via short io_wait timeout " ..
+       "→ AfdCancelSend",
+       function()
+    -- AfdSend's pend test (SEND.C:272) is *VcBufferredSendBytes >=
+    -- MaxBufferredSendBytes* AT IRP START — so a single oversize send
+    -- with an empty buffer still goes through (AFD allows the first
+    -- send to overshoot the limit, then pends subsequent sends).
+    -- Shrink both client send and peer recv windows, then push two
+    -- sends: first one fills the buffer, second one pends because
+    -- TDI hasn't drained.  io_wait's NtCancelIoFile drives the
+    -- cancel routine AfdSend attached to the pending IRP.
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+    local _, port = afd.getsockname(listener)
+
+    local th = thread.run([[
+        local ffi    = require('ffi')
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local ke     = require('nt.dll.ke')
+        local listener = handle.borrow(ffi.cast('HANDLE', tonumber(PAYLOAD)))
+        local peer = afd.accept(listener, 2.0)
+        afd.set_info(peer, afd.RECEIVE_WINDOW_SIZE, 1024)
+        -- Hold the peer open without draining long enough that the
+        -- client's second send hits its cancel timeout.
+        ke.NtDelayExecution(false, ke.timeout(1.5))
+        peer:close()
+        return "ok"
+    ]], listener_handle_int(listener))
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+    afd.set_info(client, afd.SEND_WINDOW_SIZE, 1024)
+
+    -- First send: starts with empty buffer → AFD lets it through and
+    -- the byte counter ends well over Max.  Use a 2x-window blob so
+    -- the counter is unambiguously past the limit.
+    afd.send(client, string.rep("A", 2048), LOOPBACK_TIMEOUT)
+
+    -- Second send: VcBufferredSendBytes is still > MaxBufferredSendBytes
+    -- because the peer's recv window is full → IRP pends.  Short
+    -- io_wait timeout drives NtCancelIoFile → AfdCancelSend.
+    local ok, errmsg = pcall(afd.send, client, "B", 0.3)
+    t.ok(not ok, "second send should have been cancelled, but returned cleanly")
+    t.ok(tostring(errmsg):match("CANCELLED") or
+         tostring(errmsg):match("0xc0000120"),
+         "expected STATUS_CANCELLED, got: " .. tostring(errmsg))
+    client:close(); listener:close()
+    th:wait(3.0); th:close()
+end)
+
 t.test("SEND: large send pends and completes when peer drains the window",
        function()
     -- Shrink the server's receive window so we don't have to push
