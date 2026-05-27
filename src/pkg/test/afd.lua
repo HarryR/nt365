@@ -456,6 +456,89 @@ t.test("SHUTDOWN: UDP 'send' / 'abort' update endpoint disconnect flags",
 end)
 
 -- ------------------------------------------------------------------
+-- 7b. AFD context attach + handle query — IOCTLs in MISC.C.
+--
+-- Covers AfdSetContext, AfdGetContext, AfdGetContextLength,
+-- AfdQueryHandles — the per-endpoint opaque blob storage WS2_32
+-- uses for its userland-state attach, plus the TDI handle accessors.
+-- ------------------------------------------------------------------
+
+t.test("CONTEXT: fresh endpoint has zero-length context", function()
+    local s = afd.tcp()
+    t.eq(afd.get_context_length(s), 0)
+    t.eq(afd.get_context(s), "")
+    s:close()
+end)
+
+t.test("CONTEXT: set/get round-trips a blob exactly", function()
+    local s = afd.tcp()
+    local payload = "ctx-blob-12345"
+    afd.set_context(s, payload)
+    t.eq(afd.get_context_length(s), #payload)
+    t.eq(afd.get_context(s), payload)
+    s:close()
+end)
+
+t.test("CONTEXT: shrinking + growing reuses or reallocates the buffer",
+       function()
+    local s = afd.tcp()
+    afd.set_context(s, string.rep("A", 64))
+    t.eq(afd.get_context_length(s), 64)
+    -- Smaller blob: AFD truncates ContextLength without freeing.
+    afd.set_context(s, "BB")
+    t.eq(afd.get_context_length(s), 2)
+    t.eq(afd.get_context(s), "BB")
+    -- Larger blob: AFD reallocates the underlying buffer.
+    local big = string.rep("C", 128)
+    afd.set_context(s, big)
+    t.eq(afd.get_context_length(s), 128)
+    t.eq(afd.get_context(s), big)
+    s:close()
+end)
+
+t.test("QUERY_HANDLES: address_handle populated after bind", function()
+    -- Before bind: neither handle is set.
+    local s = afd.tcp()
+    local h0 = afd.query_handles(s)
+    t.eq(h0.address_handle,    0, "fresh socket should have no address handle")
+    t.eq(h0.connection_handle, 0, "fresh socket should have no connection handle")
+    -- After bind: TdiOpenAddress ran → address_handle non-zero.
+    afd.bind(s, "127.0.0.1", 0)
+    local h1 = afd.query_handles(s)
+    t.ok(h1.address_handle ~= 0,
+         "expected non-zero address_handle after bind, got 0x" ..
+         bit.tohex(h1.address_handle))
+    t.eq(h1.connection_handle, 0, "no connection until connect/accept")
+    s:close()
+end)
+
+t.test("QUERY_HANDLES: connection_handle populated after connect", function()
+    -- Same listener/connect pattern, but issued from a single thread —
+    -- the test only inspects pre-existing handles after the
+    -- connect+accept returns, so there's no data-flow race to dodge.
+    local server, client = tcp_pair()
+    local hc = afd.query_handles(client)
+    t.ok(hc.address_handle    ~= 0, "client address_handle should be set")
+    t.ok(hc.connection_handle ~= 0, "client connection_handle should be set")
+    local hs = afd.query_handles(server)
+    t.ok(hs.address_handle    ~= 0, "server address_handle should be set")
+    t.ok(hs.connection_handle ~= 0, "server connection_handle should be set")
+    server:close(); client:close()
+end)
+
+t.test("QUERY_HANDLES: flags select which handle is fetched", function()
+    -- Asking for only ADDRESS_HANDLE leaves connection_handle as 0
+    -- regardless of socket state.  Just smoke-tests the flag dispatch.
+    local s = afd.tcp()
+    afd.bind(s, "127.0.0.1", 0)
+    local addr_only = afd.query_handles(s, afd.QUERY_ADDRESS_HANDLE)
+    t.ok(addr_only.address_handle ~= 0,
+         "ADDRESS_HANDLE-only request should still return address handle")
+    t.eq(addr_only.connection_handle, 0)
+    s:close()
+end)
+
+-- ------------------------------------------------------------------
 -- 8. TCP send/receive sequencing — paths that need a real
 -- producer/consumer in another thread.
 --

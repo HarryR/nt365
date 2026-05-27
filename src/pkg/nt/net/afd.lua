@@ -274,6 +274,14 @@ local IOCTL_AFD_ACCEPT             = 0x1200C
 local IOCTL_AFD_GET_ADDRESS        = 0x1201A   -- METHOD_OUT_DIRECT (= 2 in low bits)
 local IOCTL_AFD_POLL               = 0x12010   -- _AFD_CONTROL_CODE(4,  METHOD_BUFFERED)
 local IOCTL_AFD_PARTIAL_DISCONNECT = 0x12014   -- _AFD_CONTROL_CODE(5,  METHOD_BUFFERED)
+local IOCTL_AFD_QUERY_HANDLES      = 0x12020   -- _AFD_CONTROL_CODE(8,  METHOD_BUFFERED)
+local IOCTL_AFD_GET_CONTEXT_LENGTH = 0x12028   -- _AFD_CONTROL_CODE(10, METHOD_BUFFERED)
+local IOCTL_AFD_GET_CONTEXT        = 0x1202C   -- _AFD_CONTROL_CODE(11, METHOD_BUFFERED)
+local IOCTL_AFD_SET_CONTEXT        = 0x12030   -- _AFD_CONTROL_CODE(12, METHOD_BUFFERED)
+
+-- AFD_QUERY_HANDLES input flags.
+local AFD_QUERY_ADDRESS_HANDLE    = 1
+local AFD_QUERY_CONNECTION_HANDLE = 2
 local IOCTL_AFD_SET_INFORMATION    = 0x12024   -- _AFD_CONTROL_CODE(9,  METHOD_BUFFERED)
 local IOCTL_AFD_GET_INFORMATION    = 0x12064   -- _AFD_CONTROL_CODE(25, METHOD_BUFFERED)
 
@@ -907,6 +915,75 @@ local AFD_POLL_HEADER_SIZE = 16  -- Timeout(8) + NumberOfHandles(4) + Unique+pad
 local AFD_POLL_HANDLE_SIZE = 12  -- Handle(4) + PollEvents(4) + Status(4)
 
 -- ------------------------------------------------------------------
+-- Context attach — per-endpoint opaque blob storage.
+--
+-- IOCTL_AFD_SET_CONTEXT replaces the blob; the kernel allocates
+-- (or grows) a paged-pool buffer to hold whatever bytes we send.
+-- IOCTL_AFD_GET_CONTEXT_LENGTH returns the current size as a ULONG;
+-- IOCTL_AFD_GET_CONTEXT copies the stored bytes into our output buf.
+-- Used by WS2_32 to hang per-socket userland state off the kernel
+-- endpoint; reads/writes from anywhere in the process see the same
+-- bytes.
+-- ------------------------------------------------------------------
+
+local function set_context(sock, blob)
+    local len = #blob
+    local buf = ffi.new('uint8_t[?]', math.max(len, 1))
+    if len > 0 then ffi.copy(buf, blob, len) end
+    ioctl(sock, IOCTL_AFD_SET_CONTEXT,
+          buf, len, nil, 0, nil)
+end
+
+local function get_context_length(sock)
+    local out = ffi.new('uint32_t[1]')
+    ioctl(sock, IOCTL_AFD_GET_CONTEXT_LENGTH,
+          nil, 0,
+          out, ffi.sizeof('uint32_t'),
+          nil)
+    return tonumber(out[0])
+end
+
+local function get_context(sock)
+    local len = get_context_length(sock)
+    if len == 0 then return "" end
+    local buf = ffi.new('uint8_t[?]', len)
+    ioctl(sock, IOCTL_AFD_GET_CONTEXT,
+          nil, 0,
+          buf, len,
+          nil)
+    return ffi.string(buf, len)
+end
+
+-- ------------------------------------------------------------------
+-- query_handles — IOCTL_AFD_QUERY_HANDLES.
+--
+-- Returns the underlying TDI address + connection handle integers
+-- for an AFD endpoint.  AFD opens both during bind (address) and
+-- connect/accept (connection); either is 0 if that step hasn't run.
+-- The handles are returned as integers (intptr_t-cast) for cheap
+-- comparison; callers that need real NT_HANDLE wrappers should
+-- handle.borrow() the value themselves.
+-- ------------------------------------------------------------------
+
+local function query_handles(sock, flags)
+    flags = flags or bit.bor(AFD_QUERY_ADDRESS_HANDLE,
+                             AFD_QUERY_CONNECTION_HANDLE)
+    -- One buffer for both directions — input is a 4-byte flags word,
+    -- output is two 4-byte HANDLEs.  /Zp8 doesn't reorder either side.
+    local buf = ffi.new('uint8_t[8]')
+    ffi.cast('uint32_t *', buf)[0] = flags
+    ioctl(sock, IOCTL_AFD_QUERY_HANDLES,
+          buf, ffi.sizeof('uint32_t'),
+          buf, 8,
+          nil)
+    local hptr = ffi.cast('void **', buf)
+    return {
+        address_handle    = tonumber(ffi.cast('intptr_t', hptr[0])),
+        connection_handle = tonumber(ffi.cast('intptr_t', hptr[1])),
+    }
+end
+
+-- ------------------------------------------------------------------
 -- shutdown — IOCTL_AFD_PARTIAL_DISCONNECT.
 --
 -- BSD shutdown(2) maps cleanly onto AFD's PartialDisconnect flag bits:
@@ -1042,6 +1119,13 @@ return {
     set_info    = set_info,
     poll        = poll,
     shutdown    = shutdown,
+    set_context        = set_context,
+    get_context        = get_context,
+    get_context_length = get_context_length,
+    query_handles      = query_handles,
+    -- query_handles input flags.
+    QUERY_ADDRESS_HANDLE    = AFD_QUERY_ADDRESS_HANDLE,
+    QUERY_CONNECTION_HANDLE = AFD_QUERY_CONNECTION_HANDLE,
     -- AFD_POLL_* event bits — pass as the second element of each
     -- poll spec and bit.band against poll's return values.
     POLL_RECEIVE            = AFD_POLL_RECEIVE,
