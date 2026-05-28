@@ -721,16 +721,43 @@ Return Value:
         } else {
 
             //
-            // The first pended IRP is too tiny to hold all the 
-            // available data or else it is a peek or expedited receive 
-            // IRP.  Put the IRP back on the head of the list and buffer 
-            // the data and complete the IRP in the restart routine.  
+            // The first pended IRP is too tiny to hold all the
+            // available data or else it is a peek or expedited receive
+            // IRP.  Put the IRP back on the head of the list and buffer
+            // the data and complete the IRP in the restart routine.
             //
 
             InsertHeadList(
                 &connection->VcReceiveIrpListHead,
                 &irp->Tail.Overlay.ListEntry
                 );
+
+            //
+            // Restore the cancel routine that was cleared above.  Without
+            // this the IRP sits back on the pended list uncancellable:
+            // NtCancelIoFile / IoCancelThreadIo become no-ops on it,
+            // which under load (large indicated chunks > recv buffer)
+            // leaks the IRP onto the thread's IrpList and wedges
+            // PspExitThread -> IoCancelThreadIo.  We still hold both
+            // the cancel spinlock and the endpoint spinlock here, so
+            // this is safe vs concurrent IoCancelIrp.
+            //
+            // If the IRP was already cancelled during the brief NULL
+            // window, complete it now with STATUS_CANCELLED rather than
+            // putting it back into AFD's pended state.
+            //
+
+            if ( irp->Cancel ) {
+                RemoveEntryList( &irp->Tail.Overlay.ListEntry );
+                KeReleaseSpinLock( &endpoint->SpinLock, oldIrql );
+                IoReleaseCancelSpinLock( cancelIrql );
+                irp->IoStatus.Information = 0;
+                irp->IoStatus.Status = STATUS_CANCELLED;
+                IoCompleteRequest( irp, AfdPriorityBoost );
+                return STATUS_DATA_NOT_ACCEPTED;
+            }
+
+            IoSetCancelRoutine( irp, AfdCancelReceive );
 
             userIrp = FALSE;
             requiredAfdBufferSize = BytesAvailable;
@@ -919,11 +946,28 @@ Return Value:
         IoReleaseCancelSpinLock( cancelIrql );
 
         //
-        // If we couldn't get a buffer, abort the connection.  This is 
-        // pretty brutal, but the only alternative is to attempt to 
-        // receive the data sometime later, which is very complicated to 
-        // implement.  
+        // If we couldn't get a buffer, abort the connection.  This is
+        // pretty brutal, but the only alternative is to attempt to
+        // receive the data sometime later, which is very complicated to
+        // implement.
         //
+        // On the userIrp=TRUE path the user's IRP was already pulled
+        // off the pended list (line ~610) and its cancel routine
+        // cleared (line ~618).  If we just AfdBeginAbort and return,
+        // that IRP is leaked: it dangles on the issuing thread's
+        // IrpList with cancel-rtn=NULL, so neither NtCancelIoFile nor
+        // IoCancelThreadIo can drain it.  Complete it here with
+        // STATUS_INSUFFICIENT_RESOURCES so it leaves the thread list
+        // cleanly via the normal completion APC.  (userIrp=FALSE
+        // leaves the IRP back on the pended list with cancel-rtn
+        // restored, so the abort/cancel path can still find it.)
+        //
+
+        if ( userIrp ) {
+            irp->IoStatus.Information = 0;
+            irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+            IoCompleteRequest( irp, AfdPriorityBoost );
+        }
 
         AfdBeginAbort( connection );
 
@@ -1431,13 +1475,16 @@ Return Value:
     connection = endpoint->Common.VcConnecting.Connection;
     ASSERT( connection->Type == AfdBlockTypeConnection );
 
+    DbgPrint("AFD: AfdCancelReceive enter irp=%p ep=%p conn=%p thr=%p\n",
+             Irp, endpoint, connection, PsGetCurrentThread());
+
     //
-    // Remove the IRP from the connection's IRP list, synchronizing with 
-    // the endpoint lock which protects the lists.  Note that the IRP 
-    // *must* be on one of the connection's lists if we are getting 
-    // called here--anybody that removes the IRP from the list must do 
-    // so while holding the cancel spin lock and reset the cancel 
-    // routine to NULL before releasing the cancel spin lock.  
+    // Remove the IRP from the connection's IRP list, synchronizing with
+    // the endpoint lock which protects the lists.  Note that the IRP
+    // *must* be on one of the connection's lists if we are getting
+    // called here--anybody that removes the IRP from the list must do
+    // so while holding the cancel spin lock and reset the cancel
+    // routine to NULL before releasing the cancel spin lock.
     //
 
     KeAcquireSpinLock( &endpoint->SpinLock, &oldIrql );
@@ -1462,6 +1509,7 @@ Return Value:
 
     IoCompleteRequest( Irp, AfdPriorityBoost );
 
+    DbgPrint("AFD: AfdCancelReceive exit irp=%p completed STATUS_CANCELLED\n", Irp);
     return;
 
 } // AfdCancelReceive

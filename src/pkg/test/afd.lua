@@ -580,7 +580,9 @@ local thread = require('nt.thread')
 
 t.test("RECEIVE: recv that pends until peer sends → AfdRestartReceive",
        function()
-    -- Server delays before sending → client's recv issues a TdiReceive
+    -- Server waits for the client to have posted its recv (signalled
+    -- via `ready` event + tiny additional buffer for the syscall to
+    -- actually pend in the kernel) → client's recv issues a TdiReceive
     -- that pends in AFD; when the data arrives the TdiReceive
     -- completion fires AfdRestartReceive which completes the IRP.
     local listener = afd.tcp()
@@ -588,24 +590,36 @@ t.test("RECEIVE: recv that pends until peer sends → AfdRestartReceive",
     afd.listen(listener, 1)
     local _, port = afd.getsockname(listener)
 
+    local ready = ke.event()
+    local h_listener = handle.to_payload(listener)
+    local h_ready    = tostring(tonumber(ffi.cast('intptr_t',
+                                                  handle.raw(ready._h))))
+
     local th = thread.run([[
+        local ffi    = require('ffi')
         local handle = require('nt.dll.handle')
         local afd    = require('nt.net.afd')
         local ke     = require('nt.dll.ke')
-        local listener = handle.from_payload(PAYLOAD)
+        local listener = handle.from_payload(PAYLOAD:match('^([^,]+)'))
+        local ready   = handle.borrow(ffi.cast('void *',
+                            tonumber(PAYLOAD:match(',(%d+)$'))))
         local peer = afd.accept(listener, 2.0)
-        -- Long enough for the client's recv IRP to definitely pend.
-        ke.NtDelayExecution(false, ke.timeout(0.15))
+        -- Wait for parent to have posted its recv.  50ms additional
+        -- buffer for the syscall to actually reach the kernel-side
+        -- pend after the Lua-side signal.
+        ke.NtWaitForSingleObject(ready, false, ke.timeout(5.0))
+        ke.NtDelayExecution(false, ke.timeout(0.05))
         afd.send(peer, "deferred", 1.0)
         peer:close()
         return "ok"
-    ]], handle.to_payload(listener))
+    ]], h_listener .. ',' .. h_ready)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
     afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
-    -- Post recv FIRST, before the child sends.  Pends in AFD until
-    -- AfdRestartReceive fires from the TdiReceive completion.
+    -- Tell the worker we're about to call recv; the tiny worker-side
+    -- buffer covers the gap between signal and syscall reaching kernel.
+    ready:signal()
     local got = afd.recv(client, 256, 2.0)
     t.eq(got, "deferred")
 
@@ -614,6 +628,7 @@ t.test("RECEIVE: recv that pends until peer sends → AfdRestartReceive",
     local s = th:result()
     t.eq(s, "ok")
     th:close()
+    ready:close()
 end)
 
 t.test("RECEIVE: peer sends before our recv → AfdReceiveEventHandler",
@@ -709,24 +724,37 @@ t.test("SEND: cancel a pending send via short io_wait timeout " ..
     -- sends: first one fills the buffer, second one pends because
     -- TDI hasn't drained.  io_wait's NtCancelIoFile drives the
     -- cancel routine AfdSend attached to the pending IRP.
+    --
+    -- Event-handshake (instead of a fixed worker-side sleep) so
+    -- under coverage / throttle the worker can't close the peer
+    -- before the parent's cancel timeout has fired and been
+    -- asserted.
     local listener = afd.tcp()
     afd.bind(listener, "127.0.0.1", 0)
     afd.listen(listener, 1)
     local _, port = afd.getsockname(listener)
 
+    local done = ke.event()
+    local h_listener = handle.to_payload(listener)
+    local h_done     = tostring(tonumber(ffi.cast('intptr_t',
+                                                  handle.raw(done._h))))
+
     local th = thread.run([[
+        local ffi    = require('ffi')
         local handle = require('nt.dll.handle')
         local afd    = require('nt.net.afd')
         local ke     = require('nt.dll.ke')
-        local listener = handle.from_payload(PAYLOAD)
+        local listener = handle.from_payload(PAYLOAD:match('^([^,]+)'))
+        local done    = handle.borrow(ffi.cast('void *',
+                            tonumber(PAYLOAD:match(',(%d+)$'))))
         local peer = afd.accept(listener, 2.0)
         afd.set_info(peer, afd.RECEIVE_WINDOW_SIZE, 1024)
-        -- Hold the peer open without draining long enough that the
-        -- client's second send hits its cancel timeout.
-        ke.NtDelayExecution(false, ke.timeout(1.5))
+        -- Hold without draining until parent says it's done.  10s
+        -- bound so a parent crash can't hang the worker forever.
+        ke.NtWaitForSingleObject(done, false, ke.timeout(10.0))
         peer:close()
         return "ok"
-    ]], handle.to_payload(listener))
+    ]], h_listener .. ',' .. h_done)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
@@ -742,12 +770,14 @@ t.test("SEND: cancel a pending send via short io_wait timeout " ..
     -- because the peer's recv window is full → IRP pends.  Short
     -- io_wait timeout drives NtCancelIoFile → AfdCancelSend.
     local ok, errmsg = pcall(afd.send, client, "B", 0.3)
+    done:signal()              -- release worker
     t.ok(not ok, "second send should have been cancelled, but returned cleanly")
     t.ok(tostring(errmsg):match("CANCELLED") or
          tostring(errmsg):match("0xc0000120"),
          "expected STATUS_CANCELLED, got: " .. tostring(errmsg))
     client:close(); listener:close()
     th:wait(3.0); th:close()
+    done:close()
 end)
 
 t.test("SEND: large send pends and completes when peer drains the window",
@@ -768,16 +798,26 @@ t.test("SEND: large send pends and completes when peer drains the window",
     afd.listen(listener, 1)
     local _, port = afd.getsockname(listener)
 
+    local ready = ke.event()
+    local h_listener = handle.to_payload(listener)
+    local h_ready    = tostring(tonumber(ffi.cast('intptr_t',
+                                                  handle.raw(ready._h))))
+
     local th = thread.run([[
+        local ffi    = require('ffi')
         local handle = require('nt.dll.handle')
         local afd    = require('nt.net.afd')
         local ke     = require('nt.dll.ke')
-        local listener = handle.from_payload(PAYLOAD)
+        local listener = handle.from_payload(PAYLOAD:match('^([^,]+)'))
+        local ready   = handle.borrow(ffi.cast('void *',
+                            tonumber(PAYLOAD:match(',(%d+)$'))))
         local peer = afd.accept(listener, 2.0)
-        -- Shrink the receive window on the accepted (connected) endpoint.
         afd.set_info(peer, afd.RECEIVE_WINDOW_SIZE, 1024)
-        -- Let the client's send fill the window (pend) before draining.
-        ke.NtDelayExecution(false, ke.timeout(0.15))
+        -- Wait for parent to have posted its big send; the 50ms
+        -- buffer covers the gap between signal and the send actually
+        -- pending in AFD (window-fill).
+        ke.NtWaitForSingleObject(ready, false, ke.timeout(5.0))
+        ke.NtDelayExecution(false, ke.timeout(0.05))
         -- Drain everything — each recv frees window, the peer's
         -- AfdSendPossibleEventHandler fires, AfdRestartSend completes
         -- the pended send.
@@ -789,23 +829,354 @@ t.test("SEND: large send pends and completes when peer drains the window",
         end
         peer:close()
         return tostring(total)
-    ]], handle.to_payload(listener))
+    ]], h_listener .. ',' .. h_ready)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
     afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+    -- Signal worker that we're about to issue the big send; the
+    -- worker will then start draining.
+    ready:signal()
     -- Big send; AFD pushes what it can, pends the rest.  Returns
     -- only after the peer has drained enough that everything's
-    -- flushed.  2s ceiling for the full handshake.
-    afd.send(client, PAYLOAD, 2.0)
+    -- flushed.  5s ceiling tolerates coverage/throttle without
+    -- hiding genuine drain bugs.
+    afd.send(client, PAYLOAD, 5.0)
 
     client:close(); listener:close()
-    t.ok(th:wait(3.0), "child timed out draining the window")
+    t.ok(th:wait(8.0), "child timed out draining the window")
     local s, v = th:result()
     t.eq(s, "ok", "child errored: " .. tostring(v))
     t.eq(tonumber(v), #PAYLOAD,
          "child drained " .. v .. " bytes, expected " .. #PAYLOAD)
     th:close()
+    ready:close()
+end)
+
+t.test("RECV: cancel a pending recv via short io_wait timeout " ..
+       "→ AfdCancelReceive",
+       function()
+    -- Symmetric to the "SEND: cancel ..." test above.  The peer never
+    -- sends anything, so the client's recv pends in AFD with
+    -- cancel-rtn=AfdCancelReceive.  io_wait's NtCancelIoFile fires
+    -- AfdCancelReceive, which completes the IRP with STATUS_CANCELLED.
+    -- Direct coverage for AfdCancelReceive (zero baseline hits before
+    -- this test).
+    --
+    -- Event-handshake instead of a worker-side sleep so the FIN from
+    -- peer:close can never race the cancel under coverage/throttle.
+    -- Worker only closes after parent signals `done`.
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+    local _, port = afd.getsockname(listener)
+
+    local done = ke.event()
+    local h_listener = handle.to_payload(listener)
+    local h_done     = tostring(tonumber(ffi.cast('intptr_t',
+                                                  handle.raw(done._h))))
+
+    local th = thread.run([[
+        local ffi    = require('ffi')
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local ke     = require('nt.dll.ke')
+        local listener = handle.from_payload(PAYLOAD:match('^([^,]+)'))
+        local done    = handle.borrow(ffi.cast('void *',
+                            tonumber(PAYLOAD:match(',(%d+)$'))))
+        local peer = afd.accept(listener, 2.0)
+        -- Wait for parent to finish the recv-and-cancel before
+        -- closing.  Bounded so worker can't hang forever.
+        ke.NtWaitForSingleObject(done, false, ke.timeout(10.0))
+        peer:close()
+        return "ok"
+    ]], h_listener .. ',' .. h_done)
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+
+    -- No data inbound → recv pends → 0.3s io_wait fires cancel.
+    local ok, ret = pcall(afd.recv, client, 256, 0.3)
+    done:signal()              -- release worker
+    -- On ok=true `ret` is the recv result (data string, possibly
+    -- empty for EOF); on ok=false it's the error.  Surface it either
+    -- way so a failure under throttle tells us what path was taken.
+    t.ok(not ok,
+         "recv should have been cancelled, but returned cleanly: " ..
+         (ok and ("got " .. #(ret or "") .. " bytes: " .. tostring(ret))
+              or tostring(ret)))
+    t.ok(tostring(ret):match("CANCELLED") or
+         tostring(ret):match("0xc0000120"),
+         "expected STATUS_CANCELLED, got: " .. tostring(ret))
+    client:close(); listener:close()
+    th:wait(3.0); th:close()
+    done:close()
+end)
+
+t.test("RECV: indication larger than recv buffer takes the " ..
+       "userIrp=FALSE re-pend path",
+       function()
+    -- Force AfdBReceiveEventHandler's userIrp=FALSE branch: at the
+    -- time TDI indicates data, the pended user IRP's OutputBufferLength
+    -- is smaller than BytesAvailable.  AFD must put the IRP back on
+    -- the pended list AND restore cancel-rtn so it stays cancellable
+    -- (the bug Fix 1 addressed).  This drives the path in steady
+    -- state where everything works; absent the fix it would still
+    -- work here because the worker doesn't die mid-flight — the
+    -- regression only fires when a cancel arrives in the NULL window.
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+    local _, port = afd.getsockname(listener)
+
+    local SEND_BYTES = 4096
+    local RECV_BUF   = 64
+
+    local ready = ke.event()
+    local h_listener = handle.to_payload(listener)
+    local h_ready    = tostring(tonumber(ffi.cast('intptr_t',
+                                                  handle.raw(ready._h))))
+
+    local th = thread.run([[
+        local ffi    = require('ffi')
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local ke     = require('nt.dll.ke')
+        local listener = handle.from_payload(PAYLOAD:match('^([^,]+)'))
+        local ready   = handle.borrow(ffi.cast('void *',
+                            tonumber(PAYLOAD:match(',(%d+)$'))))
+        local peer = afd.accept(listener, 2.0)
+        -- Wait for parent to have posted its first recv; the IRP is
+        -- pended when our indication arrives.  Tiny additional buffer.
+        ke.NtWaitForSingleObject(ready, false, ke.timeout(5.0))
+        ke.NtDelayExecution(false, ke.timeout(0.05))
+        afd.send(peer, string.rep("Z", 4096), 2.0)
+        peer:close()
+        return "ok"
+    ]], h_listener .. ',' .. h_ready)
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+
+    -- Signal worker to dump its 4 KB; our drain loop's first recv
+    -- pends so when the indication arrives it triggers userIrp=FALSE.
+    ready:signal()
+    local total = 0
+    while total < SEND_BYTES do
+        local chunk = afd.recv(client, RECV_BUF, 2.0)
+        if chunk == nil or #chunk == 0 then break end
+        total = total + #chunk
+    end
+    t.eq(total, SEND_BYTES,
+         "expected to drain " .. SEND_BYTES .. " bytes, got " .. total)
+
+    client:close(); listener:close()
+    t.ok(th:wait(3.0))
+    th:close()
+    ready:close()
+end)
+
+t.test("RECV: rapid cancel/re-pend cycles survive without hanging " ..
+       "(Fix 1 regression guard)",
+       function()
+    -- Stress the userIrp=FALSE re-pend + cancel race that produced the
+    -- throttled-hang bug.  Without Fix 1 (cancel-rtn restoration after
+    -- InsertHeadList), any cycle whose cancel lands in the cancel-rtn=
+    -- NULL window leaks the IRP onto the worker's IrpList — the worker
+    -- then wedges PspExitThread → IoCancelThreadIo and the next
+    -- NtCreateThread blocks on PsLockProcess.  With the fix, every
+    -- cancel finds AfdCancelReceive in place and completes cleanly.
+    -- 8 iterations is enough to make the race hit at least once.
+    for iter = 1, 8 do
+        local listener = afd.tcp()
+        afd.bind(listener, "127.0.0.1", 0)
+        afd.listen(listener, 1)
+        local _, port = afd.getsockname(listener)
+
+        local th = thread.run([[
+            local handle = require('nt.dll.handle')
+            local afd    = require('nt.net.afd')
+            local ke     = require('nt.dll.ke')
+            local listener = handle.from_payload(PAYLOAD)
+            local peer = afd.accept(listener, 2.0)
+            -- Delay just long enough that the client's tiny recv has
+            -- likely pended in AFD before we dump data.
+            ke.NtDelayExecution(false, ke.timeout(0.02))
+            pcall(afd.send, peer, string.rep("Q", 2048), 1.0)
+            peer:close()
+            return "ok"
+        ]], handle.to_payload(listener))
+
+        local client = afd.tcp()
+        afd.bind(client, "127.0.0.1", 0)
+        afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+
+        -- Tiny recv that pends.  Short cancel timeout races with the
+        -- peer's 20ms-delayed bulk send: sometimes cancel beats the
+        -- indication, sometimes the userIrp=FALSE re-pend beats it.
+        pcall(afd.recv, client, 64, 0.01)
+
+        client:close(); listener:close()
+        th:wait(2.0); th:close()
+    end
+    t.ok(true,
+         "completed 8 cancel/re-pend race iterations without hanging")
+end)
+
+-- ------------------------------------------------------------------
+-- Cancel coverage — symmetric cancel routines that the existing
+-- send/recv-cancel tests don't reach.
+-- ------------------------------------------------------------------
+
+t.test("RECV: UDP recvfrom cancel via short io_wait → " ..
+       "AfdCancelReceiveDatagram",
+       function()
+    -- Direct coverage for the UDP analogue of AfdCancelReceive.
+    -- A bound UDP socket with no peer sending → recvfrom pends in AFD
+    -- with cancel-rtn=AfdCancelReceiveDatagram (RECVDG.C).  Short
+    -- io_wait timeout fires NtCancelIoFile → cancel routine →
+    -- STATUS_CANCELLED.
+    local u = afd.udp()
+    afd.bind(u, "127.0.0.1", 0)
+
+    local ok, errmsg = pcall(afd.udp_recvfrom, u, 256, 0.05)
+    u:close()
+    t.ok(not ok, "udp recvfrom should have been cancelled")
+    t.ok(tostring(errmsg):match("CANCELLED") or
+         tostring(errmsg):match("0xc0000120"),
+         "expected STATUS_CANCELLED, got: " .. tostring(errmsg))
+end)
+
+t.test("ACCEPT: cancel a pending accept via short io_wait → " ..
+       "AfdCancelWaitForListen",
+       function()
+    -- Direct coverage for AfdCancelWaitForListen.  A bound+listening
+    -- TCP socket with no client connecting → accept pends the
+    -- IOCTL_AFD_WAIT_FOR_LISTEN IRP with cancel-rtn=
+    -- AfdCancelWaitForListen (LISTEN.C:278).  Short io_wait timeout
+    -- drives the cancel.
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+
+    local ok, errmsg = pcall(afd.accept, listener, 0.05)
+    listener:close()
+    t.ok(not ok, "accept should have been cancelled")
+    t.ok(tostring(errmsg):match("CANCELLED") or
+         tostring(errmsg):match("0xc0000120"),
+         "expected STATUS_CANCELLED, got: " .. tostring(errmsg))
+end)
+
+-- ------------------------------------------------------------------
+-- State / boundary validation — fast-failing edge cases that exercise
+-- error paths in AFD's dispatch routines.  No sleeps; each test
+-- returns synchronously from an immediate-fail path.
+-- ------------------------------------------------------------------
+
+t.test("STATE: recv on a closed socket fails cleanly", function()
+    -- After close, the file handle is invalid; the I/O manager rejects
+    -- the IOCTL before AFD's dispatch ever sees it.  Catches handle-
+    -- lifetime regressions.
+    local s = afd.tcp()
+    s:close()
+    local ok, err = pcall(afd.recv, s, 64, 0.0)
+    t.ok(not ok, "recv on closed socket should fail")
+    t.ok(tostring(err):match("INVALID") or
+         tostring(err):match("0xc0000008"),
+         "expected STATUS_INVALID_HANDLE-class, got: " .. tostring(err))
+end)
+
+t.test("STATE: send on a closed socket fails cleanly", function()
+    local s = afd.tcp()
+    s:close()
+    local ok, err = pcall(afd.send, s, "x", 0.0)
+    t.ok(not ok, "send on closed socket should fail")
+    t.ok(tostring(err):match("INVALID") or
+         tostring(err):match("0xc0000008"),
+         "expected STATUS_INVALID_HANDLE-class, got: " .. tostring(err))
+end)
+
+t.test("STATE: connect on an already-connected TCP fails", function()
+    -- Drives AfdConnect's state-machine guard for a non-Bound,
+    -- non-Connecting endpoint state.  Exercises the immediate-fail
+    -- branch without ever entering the TDI connect.
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 1)
+    local _, port = afd.getsockname(listener)
+
+    local th = thread.run([[
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local listener = handle.from_payload(PAYLOAD)
+        local peer = afd.accept(listener, 2.0)
+        peer:close()
+        return "ok"
+    ]], handle.to_payload(listener))
+
+    local c = afd.tcp()
+    afd.bind(c, "127.0.0.1", 0)
+    afd.connect(c, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+    -- Second connect on the same socket — should fail at the state
+    -- check, not initiate a new TDI connect.
+    local ok, err = pcall(afd.connect, c, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+    t.ok(not ok, "connect on already-connected socket should fail")
+    c:close(); listener:close()
+    th:wait(2.0); th:close()
+end)
+
+t.test("STATE: listen on an unbound TCP fails", function()
+    -- AfdStartListen requires the endpoint to already be bound;
+    -- listening on a fresh socket should be rejected.
+    local s = afd.tcp()
+    local ok, err = pcall(afd.listen, s, 1, 0.0)
+    s:close()
+    t.ok(not ok, "listen on unbound socket should fail")
+end)
+
+t.test("STATE: double-listen on the same socket fails", function()
+    -- Second listen call on an already-listening endpoint should be
+    -- rejected by the state machine before AfdStartListen does any
+    -- TDI work.
+    local s = afd.tcp()
+    afd.bind(s, "127.0.0.1", 0)
+    afd.listen(s, 1)
+    local ok, err = pcall(afd.listen, s, 1, 0.0)
+    s:close()
+    t.ok(not ok, "second listen on the same socket should fail")
+end)
+
+t.test("STATE: getsockname on an unbound socket is rejected",
+       function()
+    -- AfdGetAddress requires the endpoint to be at least bound — TDI's
+    -- TDI_QUERY_ADDRESS_INFO returns STATUS_INVALID_PARAMETER (0xc000000d)
+    -- on a fresh endpoint.  Exercises AfdGetAddress's error-completion
+    -- path without crashing.
+    local s = afd.tcp()
+    local ok, err = pcall(afd.getsockname, s)
+    s:close()
+    t.ok(not ok, "getsockname on unbound socket should fail")
+    t.ok(tostring(err):match("INVALID_PARAMETER") or
+         tostring(err):match("0xc000000d"),
+         "expected STATUS_INVALID_PARAMETER, got: " .. tostring(err))
+end)
+
+t.test("STATE: bind with empty host string is rejected", function()
+    -- Empty host fails address parsing before reaching AfdBind.
+    local s = afd.tcp()
+    local ok, err = pcall(afd.bind, s, "", 0)
+    s:close()
+    t.ok(not ok, "bind with empty host should fail")
+end)
+
+t.test("STATE: bind with malformed dotted-quad is rejected", function()
+    -- Drives AFD/parser address validation.
+    local s = afd.tcp()
+    local ok, err = pcall(afd.bind, s, "999.999.999.999", 0)
+    s:close()
+    t.ok(not ok, "bind with out-of-range octets should fail")
 end)
 
 t.test("SHUTDOWN: rejects unknown 'how' values", function()

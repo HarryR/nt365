@@ -1421,7 +1421,6 @@ Return Value:
 #if !defined(_ALPHA_)
 #if !defined(_MIPS_)
 #if !defined(_PPC_)
-#if !defined(i386)
 
 
 NTSTATUS
@@ -1468,6 +1467,7 @@ Return Value:
     KPRIORITY NewPriority;
     PKPROCESS Process;
     ULONG Processor;
+    PKQUEUE Queue;
     PKTHREAD Thread;
     PKWAIT_BLOCK WaitBlock;
     PLIST_ENTRY WaitEntry;
@@ -1695,7 +1695,6 @@ ContinueWait:
     return KiContinueClientWait(ClientEvent, WrEventPair, WaitMode);
 }
 
-#endif
 #endif
 #endif
 #endif
