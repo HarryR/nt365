@@ -55,6 +55,12 @@
 #               built-in DHCP/DNS — the harness serves DHCP itself.
 #               --netdump still captures every frame (filter-dump
 #               attaches to the netdev by id, not to the backend).
+#   --throttle N
+#               Throttle the QEMU process to N% of one host CPU using
+#               cpulimit (apt install cpulimit).  Useful for reproducing
+#               timing-sensitive races that only manifest on slower
+#               machines (e.g. GitHub-hosted Actions runners).
+#               THROTTLE=N env var works too (e.g. THROTTLE=25 make selftest).
 #   --mem MB    Guest RAM in megabytes. Default 128.
 #   --kernel-opts STRING
 #               LOADER_PARAMETER_BLOCK.LoadOptions string (NT-style,
@@ -121,6 +127,12 @@ if [ -n "$NETDUMP" ] && [ "$NETDUMP" != "0" ]; then
     set -- --netdump "$@"
 fi
 
+# Same shape for THROTTLE — `THROTTLE=25 make selftest` opts into the
+# cpulimit wrapper without touching the Makefile.
+if [ -n "$THROTTLE" ] && [ "$THROTTLE" != "0" ]; then
+    set -- --throttle "$THROTTLE" "$@"
+fi
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --vga)
@@ -164,6 +176,25 @@ while [ $# -gt 0 ]; do
             NETDUMP_FILE="${NETDUMP_FILE:-./vionet.pcap}"
             NETDUMP_FLAGS="-object filter-dump,id=netdump0,netdev=n0,file=$NETDUMP_FILE"
             echo "[boot.sh] capturing virtio-net traffic to $NETDUMP_FILE"
+            shift
+            ;;
+        --throttle)
+            # Wrap QEMU with cpulimit to throttle the whole process
+            # (vCPU thread + iothread + helper threads) to N% of one
+            # host CPU.  Reproduces the slow-host timing window that
+            # GitHub Actions runners hit but local TCG/KVM don't.
+            shift
+            case "$1" in
+                ''|*[!0-9]*)
+                    echo "[boot.sh] --throttle needs a numeric percent 1..100" >&2
+                    exit 2
+                    ;;
+            esac
+            if [ "$1" -lt 1 ] || [ "$1" -gt 100 ]; then
+                echo "[boot.sh] --throttle out of range: $1 (need 1..100)" >&2
+                exit 2
+            fi
+            THROTTLE_PCT="$1"
             shift
             ;;
         --net-harness)
@@ -260,6 +291,32 @@ if [ -n "$COVERAGE_FLAGS" ] && [ ! -f "$QCOV_SO" ]; then
     exit 1
 fi
 
+if [ -n "$THROTTLE_PCT" ] && ! command -v cpulimit >/dev/null 2>&1; then
+    echo "ERROR: --throttle needs cpulimit (apt install cpulimit)" >&2
+    exit 1
+fi
+
+# run_qemu — exec qemu directly, OR background it under cpulimit when
+# --throttle is set.  cpulimit attaches via PID and limits the whole
+# process tree (every QEMU thread shares the cpu accounting window),
+# so we capture qemu's PID, launch cpulimit, and wait.  Trap INT/TERM
+# so Ctrl-C in interactive runs cleans up both children.
+run_qemu() {
+    if [ -z "$THROTTLE_PCT" ]; then
+        exec "$@"
+    fi
+    echo "[boot.sh] throttling QEMU to ${THROTTLE_PCT}% of one CPU (cpulimit)"
+    "$@" &
+    qpid=$!
+    cpulimit --pid="$qpid" --limit="$THROTTLE_PCT" >/dev/null 2>&1 &
+    cpid=$!
+    trap 'kill "$cpid" 2>/dev/null; kill "$qpid" 2>/dev/null' INT TERM
+    wait "$qpid"
+    qstatus=$?
+    kill "$cpid" 2>/dev/null
+    exit "$qstatus"
+}
+
 if [ -z "$RAMDISK" ]; then
     cp /usr/share/OVMF/OVMF_VARS_4M.fd OVMF_VARS_4M.fd
 fi
@@ -310,12 +367,12 @@ if [ -n "$RAMDISK" ]; then
     DEBUG_EXIT="-device isa-debug-exit,iobase=0xf4,iosize=0x04"
 
     if [ "$MACHINE" = "microvm" ]; then
-        exec qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
+        run_qemu qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
             -kernel "$VMLINUX" -initrd "$RAMDISK" -append "$KERNEL_OPTS" \
             $SERIAL_FLAGS $DEBUG_EXIT -no-reboot \
             $DISPLAY_FLAGS $GDB_FLAGS $TRACE_FLAGS $COVERAGE_FLAGS
     else
-        exec qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
+        run_qemu qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
             -kernel "$VMLINUX" -initrd "$RAMDISK" -append "$KERNEL_OPTS" \
             $SERIAL_FLAGS \
             -object rng-random,id=rng0,filename=/dev/urandom \
@@ -434,7 +491,7 @@ fi
 # do NOT pass -global i440FX-pcihost.pci-hole64-size=0 here so this
 # path is exercised end-to-end, matching cloud / non-QEMU firmware
 # that may not honour such tweaks.
-exec qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
+run_qemu qemu-system-x86_64 $MACHINE_FLAGS $ACCEL_FLAGS -m "$MEM" \
     -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive if=pflash,format=raw,file=./OVMF_VARS_4M.fd \
     $STORAGE_FLAGS \
