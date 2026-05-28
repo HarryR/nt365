@@ -37,8 +37,37 @@ function M.suite(name)
     print("--- " .. name .. " ---")
 end
 
+-- Deferred-cleanup stack for the currently-running test.  Reset on
+-- every t.test() entry, drained in reverse order on exit regardless
+-- of pass / fail / skip.  Use t.defer(fn) inside a test to register
+-- cleanup that MUST run — typically NtTerminateThread on worker
+-- threads so a stuck IRP gets cancelled (PspExitThread →
+-- IoCancelThreadIo → IopDisassociateThreadIrp) before the next
+-- test starts.  Without this, a test that fails partway leaks its
+-- worker, and the leaked worker's wait on a now-closed handle (or
+-- a recv on a closed socket) can take down a later test.
+local deferred = nil
+
+function M.defer(fn)
+    if deferred == nil then
+        error("t.defer: called outside a t.test() body", 2)
+    end
+    deferred[#deferred+1] = fn
+end
+
+local function run_deferred()
+    if deferred == nil then return end
+    local d = deferred
+    deferred = nil
+    for i = #d, 1, -1 do
+        pcall(d[i])
+    end
+end
+
 function M.test(name, fn)
+    deferred = {}
     local ok, err = pcall(fn)
+    run_deferred()
     if ok then
         ok_count = ok_count + 1
         print(string.format("  PASS  %s", name))

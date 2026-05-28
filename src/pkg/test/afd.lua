@@ -102,6 +102,7 @@ t.test("TCP loopback exchange on 127.0.0.1", function()
         peer:close()
         return "ok"
     ]], handle.to_payload(listener))
+    t.defer(function() th:close() end)
 
     diag("client connect")
     local client = afd.tcp()
@@ -119,7 +120,6 @@ t.test("TCP loopback exchange on 127.0.0.1", function()
     t.eq(got, "hello")
 
     listener:close()
-    th:close()
     diag("cleaned up")
 end)
 
@@ -613,6 +613,8 @@ t.test("RECEIVE: recv that pends until peer sends → AfdRestartReceive",
         peer:close()
         return "ok"
     ]], h_listener .. ',' .. h_ready)
+    t.defer(function() th:close() end)
+    t.defer(function() ready:close() end)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
@@ -627,8 +629,6 @@ t.test("RECEIVE: recv that pends until peer sends → AfdRestartReceive",
     t.ok(th:wait(2.0))
     local s = th:result()
     t.eq(s, "ok")
-    th:close()
-    ready:close()
 end)
 
 t.test("RECEIVE: peer sends before our recv → AfdReceiveEventHandler",
@@ -651,6 +651,7 @@ t.test("RECEIVE: peer sends before our recv → AfdReceiveEventHandler",
         peer:close()
         return "ok"
     ]], handle.to_payload(listener))
+    t.defer(function() th:close() end)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
@@ -660,7 +661,6 @@ t.test("RECEIVE: peer sends before our recv → AfdReceiveEventHandler",
     t.ok(th:wait(2.0))
     local s = th:result()
     t.eq(s, "ok")
-    th:close()
 
     -- Data is sitting in our AFD-side receive buffer; recv returns
     -- immediately from the buffered path (no TdiReceive needed).
@@ -755,6 +755,8 @@ t.test("SEND: cancel a pending send via short io_wait timeout " ..
         peer:close()
         return "ok"
     ]], h_listener .. ',' .. h_done)
+    t.defer(function() th:close() end)
+    t.defer(function() done:close() end)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
@@ -776,8 +778,7 @@ t.test("SEND: cancel a pending send via short io_wait timeout " ..
          tostring(errmsg):match("0xc0000120"),
          "expected STATUS_CANCELLED, got: " .. tostring(errmsg))
     client:close(); listener:close()
-    th:wait(3.0); th:close()
-    done:close()
+    th:wait(3.0)
 end)
 
 t.test("SEND: large send pends and completes when peer drains the window",
@@ -830,6 +831,8 @@ t.test("SEND: large send pends and completes when peer drains the window",
         peer:close()
         return tostring(total)
     ]], h_listener .. ',' .. h_ready)
+    t.defer(function() th:close() end)
+    t.defer(function() ready:close() end)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
@@ -849,8 +852,6 @@ t.test("SEND: large send pends and completes when peer drains the window",
     t.eq(s, "ok", "child errored: " .. tostring(v))
     t.eq(tonumber(v), #PAYLOAD,
          "child drained " .. v .. " bytes, expected " .. #PAYLOAD)
-    th:close()
-    ready:close()
 end)
 
 t.test("RECV: cancel a pending recv via short io_wait timeout " ..
@@ -891,6 +892,8 @@ t.test("RECV: cancel a pending recv via short io_wait timeout " ..
         peer:close()
         return "ok"
     ]], h_listener .. ',' .. h_done)
+    t.defer(function() th:close() end)
+    t.defer(function() done:close() end)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
@@ -910,8 +913,7 @@ t.test("RECV: cancel a pending recv via short io_wait timeout " ..
          tostring(ret):match("0xc0000120"),
          "expected STATUS_CANCELLED, got: " .. tostring(ret))
     client:close(); listener:close()
-    th:wait(3.0); th:close()
-    done:close()
+    th:wait(3.0)
 end)
 
 t.test("RECV: indication larger than recv buffer takes the " ..
@@ -955,6 +957,8 @@ t.test("RECV: indication larger than recv buffer takes the " ..
         peer:close()
         return "ok"
     ]], h_listener .. ',' .. h_ready)
+    t.defer(function() th:close() end)
+    t.defer(function() ready:close() end)
 
     local client = afd.tcp()
     afd.bind(client, "127.0.0.1", 0)
@@ -974,8 +978,6 @@ t.test("RECV: indication larger than recv buffer takes the " ..
 
     client:close(); listener:close()
     t.ok(th:wait(3.0))
-    th:close()
-    ready:close()
 end)
 
 t.test("RECV: rapid cancel/re-pend cycles survive without hanging " ..

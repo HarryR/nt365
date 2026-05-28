@@ -80,8 +80,8 @@ AfdBReceive (
     ASSERT( connection->Type == AfdBlockTypeConnection );
 
     //
-    // Grab the input parameters from the IRP.  If a too-small input 
-    // buffer was used, assume that the user wanted a default receive.  
+    // Grab the input parameters from the IRP.  If a too-small input
+    // buffer was used, assume that the user wanted a default receive.
     //
 
     peek = FALSE;
@@ -467,13 +467,13 @@ AfdBReceive (
     IoReleaseCancelSpinLock( Irp->CancelIrql );
 
     //
-    // If there was data bufferred in the transport, fire off the IRP to 
+    // If there was data bufferred in the transport, fire off the IRP to
     // receive it.  We have to wait until here because it is not legal
     // to do an IoCallDriver() while holding a spin lock.
     //
 
     if ( newAfdBuffer != NULL ) {
-        (VOID)IoCallDriver( 
+        (VOID)IoCallDriver(
                  connection->FileObject->DeviceObject,
                  newAfdBuffer->Irp
                  );
@@ -530,7 +530,6 @@ Return Value:
     ULONG requiredAfdBufferSize;
     NTSTATUS status;
     ULONG receiveLength;
-    BOOLEAN userIrp;
     BOOLEAN completeMessage;
 
     DEBUG receiveLength = 0xFFFFFFFF;
@@ -620,150 +619,138 @@ Return Value:
         irpSp = IoGetCurrentIrpStackLocation( irp );
 
         //
-        // If the IRP is not large enough to hold the available data, or 
-        // if it is a peek or expedited receive IRP, or if we've already 
-        // placed some data into the IRP, then we'll just buffer the 
-        // data manually and complete the IRP in the receive completion 
-        // routine.  
+        // Sync-complete fast path: if the user's buffer holds all the
+        // available data AND this indication contains a complete message
+        // already in the lookahead, copy the data directly into the user
+        // IRP and complete it.  No further AFD/TDI bookkeeping needed.
         //
 
         if ( irpSp->Parameters.DeviceIoControl.OutputBufferLength >=
                  BytesAvailable &&
              irpSp->Parameters.DeviceIoControl.InputBufferLength == 0 &&
-             (ULONG)irpSp->Parameters.DeviceIoControl.Type3InputBuffer == 0 ) {
-    
-            //
-            // If all of the data was indicated to us here AND this is a 
-            // complete message in and of itself, then just copy the 
-            // data to the IRP and complete the IRP.  
-            //
-    
-            if ( completeMessage && BytesIndicated == BytesAvailable ) {
-                
-                //
-                // The IRP is off the endpoint's list and is no longer 
-                // cancellable.  We can release the locks we hold.  
-                //
-    
-                KeReleaseSpinLock( &endpoint->SpinLock, oldIrql );
-                IoReleaseCancelSpinLock( cancelIrql );
-        
-                //
-                // Set BytesTaken to indicate that we've taken all the
-                // data.  We do it here because we already have
-                // BytesAvailable in a register, which probably won't
-                // be true after making function calls.
-                //
-    
-                *BytesTaken = BytesAvailable;
-    
-                //
-                // Copy the datagram and source address to the IRP.  This 
-                // prepares the IRP to be completed.  
-                //
-    
-                if ( irp->MdlAddress != NULL ) {
-    
-                    status = TdiCopyBufferToMdl(
-                                 Tsdu,
-                                 0,
-                                 BytesAvailable,
-                                 irp->MdlAddress,
-                                 0,
-                                 &irp->IoStatus.Information
-                                 );
-
-                } else {
-
-                    ASSERT( BytesAvailable == 0 );
-                    status = STATUS_SUCCESS;
-                    irp->IoStatus.Information = 0;
-                }
-
-                //
-                // We should never get STATUS_BUFFER_OVERFLOW from
-                // TdiCopyBufferToMdl() because the user's buffer
-                // should have been large enough to hold all the data.
-                //
-
-                ASSERT( status == STATUS_SUCCESS );
-
-                //
-                // We have already set up the status field of the IRP
-                // when we pended the IRP, so there's no need to
-                // set it again here.
-                //
-
-                ASSERT( irp->IoStatus.Status == STATUS_SUCCESS );
-        
-                //
-                // Complete the IRP.  We've already set BytesTaken
-                // to tell the provider that we have taken all the data.
-                //
-    
-                IoCompleteRequest( irp, AfdPriorityBoost );
-    
-                return STATUS_SUCCESS;
-            }
-    
-            //
-            // Some of the data was not indicated, so remember that we 
-            // want to pass back this IRP to the TDI provider.  Passing 
-            // back this IRP directly is good because it avoids having 
-            // to copy the data from one of our buffers into the user's 
-            // buffer.  
-            //
-    
-            userIrp = TRUE;
-            requiredAfdBufferSize = 0;
-            receiveLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
-
-        } else {
+             (ULONG)irpSp->Parameters.DeviceIoControl.Type3InputBuffer == 0 &&
+             completeMessage &&
+             BytesIndicated == BytesAvailable ) {
 
             //
-            // The first pended IRP is too tiny to hold all the
-            // available data or else it is a peek or expedited receive
-            // IRP.  Put the IRP back on the head of the list and buffer
-            // the data and complete the IRP in the restart routine.
+            // The IRP is off the endpoint's list and is no longer
+            // cancellable.  We can release the locks we hold.
             //
 
-            InsertHeadList(
-                &connection->VcReceiveIrpListHead,
-                &irp->Tail.Overlay.ListEntry
-                );
+            KeReleaseSpinLock( &endpoint->SpinLock, oldIrql );
+            IoReleaseCancelSpinLock( cancelIrql );
 
             //
-            // Restore the cancel routine that was cleared above.  Without
-            // this the IRP sits back on the pended list uncancellable:
-            // NtCancelIoFile / IoCancelThreadIo become no-ops on it,
-            // which under load (large indicated chunks > recv buffer)
-            // leaks the IRP onto the thread's IrpList and wedges
-            // PspExitThread -> IoCancelThreadIo.  We still hold both
-            // the cancel spinlock and the endpoint spinlock here, so
-            // this is safe vs concurrent IoCancelIrp.
-            //
-            // If the IRP was already cancelled during the brief NULL
-            // window, complete it now with STATUS_CANCELLED rather than
-            // putting it back into AFD's pended state.
+            // Set BytesTaken to indicate that we've taken all the
+            // data.  We do it here because we already have
+            // BytesAvailable in a register, which probably won't
+            // be true after making function calls.
             //
 
-            if ( irp->Cancel ) {
-                RemoveEntryList( &irp->Tail.Overlay.ListEntry );
-                KeReleaseSpinLock( &endpoint->SpinLock, oldIrql );
-                IoReleaseCancelSpinLock( cancelIrql );
+            *BytesTaken = BytesAvailable;
+
+            //
+            // Copy the data to the IRP.  This prepares the IRP to be
+            // completed.
+            //
+
+            if ( irp->MdlAddress != NULL ) {
+
+                status = TdiCopyBufferToMdl(
+                             Tsdu,
+                             0,
+                             BytesAvailable,
+                             irp->MdlAddress,
+                             0,
+                             &irp->IoStatus.Information
+                             );
+
+            } else {
+
+                ASSERT( BytesAvailable == 0 );
+                status = STATUS_SUCCESS;
                 irp->IoStatus.Information = 0;
-                irp->IoStatus.Status = STATUS_CANCELLED;
-                IoCompleteRequest( irp, AfdPriorityBoost );
-                return STATUS_DATA_NOT_ACCEPTED;
             }
 
-            IoSetCancelRoutine( irp, AfdCancelReceive );
+            //
+            // We should never get STATUS_BUFFER_OVERFLOW from
+            // TdiCopyBufferToMdl() because the user's buffer should
+            // have been large enough to hold all the data.
+            //
 
-            userIrp = FALSE;
-            requiredAfdBufferSize = BytesAvailable;
-            receiveLength = BytesAvailable;
+            ASSERT( status == STATUS_SUCCESS );
+
+            //
+            // The IRP's status field was set when we pended it.
+            //
+
+            ASSERT( irp->IoStatus.Status == STATUS_SUCCESS );
+
+            IoCompleteRequest( irp, AfdPriorityBoost );
+
+            return STATUS_SUCCESS;
         }
-    
+
+        //
+        // All other cases: re-pend the user IRP on the connection's list
+        // with cancel-rtn restored, then continue below to fetch the data
+        // via an AFD-owned buffer.  AfdRestartBufferReceive will then
+        // drain that buffer into pended user IRPs and complete them.
+        //
+        // This unconditional re-pend is the surgical "Fix A" for the
+        // throttled-test lock leak.  Stock NT 3.5 had a userIrp=TRUE
+        // zero-copy fast path here when OutputBufferLength >= BytesAvailable
+        // and the data wasn't complete-message: AFD would hand the user
+        // IRP itself to TDI (TdiBuildReceive + IoSetNextIrpStackLocation +
+        // *IoRequestPacket = irp + return MORE_PROCESSING), and TDI set
+        // cancel-rtn=TCPCancelRequest via TCPPrepareIrpForCancel so the
+        // IRP appeared cancellable.
+        //
+        // Under load that path leaks: if the user closes the socket
+        // (via NtClose / AfdCleanup / AfdBeginDisconnect) while a recv
+        // IRP is at TDI, the TCB transitions to CLOSING state -- and
+        // TCPAbortAndIndicateDisconnect (the only thing TCPCancelRequest
+        // does for TDI_RECEIVE) silently no-ops on CLOSING TCBs, leaving
+        // the IRP uncancellable.  PspExitThread -> IoCancelThreadIo then
+        // spins for 5 minutes waiting for the IRP to drain naturally.
+        //
+        // Always going through the AFD buffer keeps the user IRP on
+        // VcReceiveIrpListHead with cancel-rtn=AfdCancelReceive throughout
+        // its life, and AfdCleanup explicitly drains that list with
+        // STATUS_CANCELLED via AfdCompleteIrpList -- no race.  Cost is
+        // one extra RtlCopyMemory per pended recv that doesn't hit the
+        // sync-complete fast path above.
+        //
+
+        InsertHeadList(
+            &connection->VcReceiveIrpListHead,
+            &irp->Tail.Overlay.ListEntry
+            );
+
+        //
+        // Restore the cancel routine that was cleared at line 618.
+        // We still hold both the cancel spinlock and the endpoint
+        // spinlock here, so this is safe vs concurrent IoCancelIrp.
+        // If the IRP was already cancelled during the brief NULL
+        // window, complete it now with STATUS_CANCELLED rather than
+        // putting it back into AFD's pended state.
+        //
+
+        if ( irp->Cancel ) {
+            RemoveEntryList( &irp->Tail.Overlay.ListEntry );
+            KeReleaseSpinLock( &endpoint->SpinLock, oldIrql );
+            IoReleaseCancelSpinLock( cancelIrql );
+            irp->IoStatus.Information = 0;
+            irp->IoStatus.Status = STATUS_CANCELLED;
+            IoCompleteRequest( irp, AfdPriorityBoost );
+            return STATUS_DATA_NOT_ACCEPTED;
+        }
+
+        IoSetCancelRoutine( irp, AfdCancelReceive );
+
+        requiredAfdBufferSize = BytesAvailable;
+        receiveLength = BytesAvailable;
+
     } else {
 
         ASSERT( IsListEmpty( &connection->VcReceiveIrpListHead ) );
@@ -921,8 +908,6 @@ Return Value:
         // behavior on a SOCK_STREAM.
         //
 
-        userIrp = FALSE;
-
         if ( AfdLargeBufferSize >= BytesAvailable ) {
             requiredAfdBufferSize = AfdLargeBufferSize;
             receiveLength = AfdLargeBufferSize;
@@ -951,23 +936,12 @@ Return Value:
         // receive the data sometime later, which is very complicated to
         // implement.
         //
-        // On the userIrp=TRUE path the user's IRP was already pulled
-        // off the pended list (line ~610) and its cancel routine
-        // cleared (line ~618).  If we just AfdBeginAbort and return,
-        // that IRP is leaked: it dangles on the issuing thread's
-        // IrpList with cancel-rtn=NULL, so neither NtCancelIoFile nor
-        // IoCancelThreadIo can drain it.  Complete it here with
-        // STATUS_INSUFFICIENT_RESOURCES so it leaves the thread list
-        // cleanly via the normal completion APC.  (userIrp=FALSE
-        // leaves the IRP back on the pended list with cancel-rtn
-        // restored, so the abort/cancel path can still find it.)
+        // Note: any pended user recv IRP is on VcReceiveIrpListHead with
+        // cancel-rtn=AfdCancelReceive at this point (re-pended in the
+        // outer branch above, or never pulled off if no user IRP existed
+        // for this indication).  AfdBeginAbort -> AfdDisconnectEventHandler
+        // -> AfdCompleteIrpList will drain it with STATUS_CANCELLED.
         //
-
-        if ( userIrp ) {
-            irp->IoStatus.Information = 0;
-            irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
-            IoCompleteRequest( irp, AfdPriorityBoost );
-        }
 
         AfdBeginAbort( connection );
 
@@ -985,15 +959,16 @@ Return Value:
     IoReleaseCancelSpinLock( cancelIrql );
 
     //
-    // Use the IRP in the AFD buffer if appropriate.  If userIrp is 
-    // TRUE, then the local variable irp will already point to the 
-    // user's IRP which we'll use for this IO.  
+    // Use the IRP in the AFD buffer for the TDI receive.  The user IRP,
+    // if any, stays on VcReceiveIrpListHead and gets satisfied later by
+    // AfdRestartBufferReceive draining this buffer into it.  (Stock NT
+    // had a userIrp=TRUE zero-copy path that handed the user IRP itself
+    // to TDI -- removed because it created an uncancellable window when
+    // the connection went into CLOSING state via AfdCleanup.)
     //
 
-    if ( !userIrp ) {
-        irp = afdBuffer->Irp;
-        ASSERT( afdBuffer->Mdl == irp->MdlAddress );
-    }
+    irp = afdBuffer->Irp;
+    ASSERT( afdBuffer->Mdl == irp->MdlAddress );
 
     //
     // We need to remember the connection in the AFD buffer because 
@@ -1475,9 +1450,6 @@ Return Value:
     connection = endpoint->Common.VcConnecting.Connection;
     ASSERT( connection->Type == AfdBlockTypeConnection );
 
-    DbgPrint("AFD: AfdCancelReceive enter irp=%p ep=%p conn=%p thr=%p\n",
-             Irp, endpoint, connection, PsGetCurrentThread());
-
     //
     // Remove the IRP from the connection's IRP list, synchronizing with
     // the endpoint lock which protects the lists.  Note that the IRP
@@ -1509,7 +1481,6 @@ Return Value:
 
     IoCompleteRequest( Irp, AfdPriorityBoost );
 
-    DbgPrint("AFD: AfdCancelReceive exit irp=%p completed STATUS_CANCELLED\n", Irp);
     return;
 
 } // AfdCancelReceive

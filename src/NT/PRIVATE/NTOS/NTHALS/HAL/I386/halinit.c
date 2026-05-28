@@ -119,12 +119,20 @@ HalInitSystem(
         HalpSerialPrint("HAL: Phase 1 - connecting clock...\r\n");
 
         /*
-         * Program 8254 PIT Channel 0 for ~10ms tick (100 Hz)
-         * Divisor = 1193182 / 100 = 11932 = 0x2E9C
+         * Program 8254 PIT Channel 0 for ~10ms tick (100 Hz).
+         * Divisor = 1193182 / 100 = 11932 = 0x2E9C.
+         *
+         * Mode 2 (rate generator) rather than mode 3 (square wave):
+         * mode 2 decrements the counter by 1 per PIT clock (range 1..N),
+         * so a latched counter-read gives a clean wall-time delta with
+         * no even-value rounding artefacts.  Mode 3 decrements by 2 to
+         * produce a 50/50 duty cycle, which made the counter awkward to
+         * poll for sub-tick wall time in HalpClockTickIncrement.  Both
+         * modes fire IRQ0 at the same N-PIT-clock rate.
          */
         {
             USHORT divisor = PIT_FREQ / 100;
-            HalpWritePort(PIT_CMD, 0x36);   /* Channel 0, mode 3, lo/hi */
+            HalpWritePort(PIT_CMD, 0x34);   /* Channel 0, mode 2, lo/hi */
             HalpWritePort(PIT_CH0, (UCHAR)(divisor & 0xFF));
             HalpWritePort(PIT_CH0, (UCHAR)(divisor >> 8));
         }

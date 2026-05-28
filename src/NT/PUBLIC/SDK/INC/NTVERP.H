@@ -20,7 +20,7 @@
 #define VER_LEGALCOPYRIGHT_YEARS "1981-2026"
 #define VER_PRODUCTVERSION_STR      "3.65"
 #define VER_PRODUCTVERSION          3,65,2605,28
-#define VER_PRODUCTBETA_STR         "dev-f93d726"
+#define VER_PRODUCTBETA_STR         "dev-7726ea7"
 
 /*--------------------------------------------------------------*/
 /* the following section defines values used in the version     */

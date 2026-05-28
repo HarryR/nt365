@@ -46,7 +46,7 @@ SRC         := $(REPO)/src
 BOOT_EFI    := $(SRC)/boot/efi
 BUILD       := $(REPO)/build/disk
 
-.PHONY: cr disk boot selftest selfhost smoketest smoke-disk iprepro gdb qcov coverage coverage-html vmlinux ramdisk boot-ramdisk smoke-ramdisk smoke-ramdisk-disk
+.PHONY: cr disk boot selftest selftest-ramdisk selftest-ramdisk-disk selfhost smoketest smoke-disk iprepro gdb qcov coverage coverage-html vmlinux ramdisk boot-ramdisk smoke-ramdisk smoke-ramdisk-disk
 
 # ---------------- cr binaries (run.exe + lua.dll) -------------------
 #
@@ -260,6 +260,21 @@ smoke-ramdisk-disk: PROFILE_FLAG := --profile smoke
 smoke-ramdisk-disk: INIT_ARGS_FLAG :=
 smoke-ramdisk-disk: RAMDISK_BUILD := $(REPO)/build/disk-smoke-ramdisk
 smoke-ramdisk-disk: ramdisk
+
+# Selftest over the PVH ramdisk path.  Same layer set as `selftest` but
+# packed as initrd.zip instead of esp.img; vmlinuz+initrd skips the
+# OVMF/UEFI boot phase, so debug iteration is ~10s wall vs ~30s for UEFI.
+#   make selftest-ramdisk MACHINE=microvm     # smallest qemu shape
+#   make selftest-ramdisk-disk                # build-only, agent_run after
+selftest-ramdisk: PROFILE_FLAG := --profile selftest
+selftest-ramdisk: INIT_ARGS_FLAG :=
+selftest-ramdisk: RAMDISK_BUILD := $(REPO)/build/disk-selftest-ramdisk
+selftest-ramdisk: boot-ramdisk
+
+selftest-ramdisk-disk: PROFILE_FLAG := --profile selftest
+selftest-ramdisk-disk: INIT_ARGS_FLAG :=
+selftest-ramdisk-disk: RAMDISK_BUILD := $(REPO)/build/disk-selftest-ramdisk
+selftest-ramdisk-disk: ramdisk
 
 # ---------------- gdb DWARF + interactive session -------------------
 #

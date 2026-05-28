@@ -1187,17 +1187,35 @@ Return Value:
     // device object the operation is being performed.
     //
 
-////
-////DbgPrint( "Disassociating Irp:  %x\n", irp );
-////DbgBreakPoint();
-////
+    //
+    // Tombstone: this point is reached only after the IoCancelThreadIo
+    // drain loop has waited past its threshold for an IRP that won't
+    // complete -- i.e. some driver's cancel routine didn't actually
+    // complete the IRP, or there was no cancel routine at all.  Always
+    // log so a regression of any cancellation path leaves a paper
+    // trail.  Safe to print here: we're well past any timing-sensitive
+    // window, and the IRP fields stay valid until IoCompleteRequest
+    // (which won't run on this IRP again until something completes it
+    // upstream and IopCompleteRequest drops it on the floor due to
+    // NULL Tail.Overlay.Thread).
+    //
+
+    irpSp = IoGetCurrentIrpStackLocation( irp );
+    DbgPrint("IO: IopDisassociateThreadIrp thr=%p irp=%p cancel-rtn=%p "
+             "Cancel=%d Pending=%d st=%x major=%x minor=%x fo=%p dev=%p "
+             "CurrentLoc=%d StackCount=%d Flags=%x\n",
+             thread, irp, irp->CancelRoutine,
+             irp->Cancel, irp->PendingReturned, irp->IoStatus.Status,
+             irpSp->MajorFunction, irpSp->MinorFunction,
+             irpSp->FileObject,
+             (irp->CurrentLocation <= irp->StackCount) ? irpSp->DeviceObject : NULL,
+             irp->CurrentLocation, irp->StackCount, irp->Flags);
 
     IopDeadIrp = irp;
 
     irp->Tail.Overlay.Thread = (PETHREAD) NULL;
     entry = RemoveHeadList( &thread->IrpList );
 
-    irpSp = IoGetCurrentIrpStackLocation( irp );
     if (irp->CurrentLocation <= irp->StackCount) {
         deviceObject = irpSp->DeviceObject;
     } else {
@@ -1241,16 +1259,17 @@ Return Value:
         ObDereferenceObject( deviceObject );
 
         if (NT_SUCCESS( status )) {
-            {
-            ULONG parameters = (ULONG) &nameInformation->Name;
-
-            ExRaiseHardError( STATUS_DRIVER_CANCEL_TIMEOUT,
-                              1,
-                              1,
-                              &parameters,
-                              OptionOk,
-                              &response );
-            }
+            //
+            // The serial tombstone above is the durable signal; the
+            // ExRaiseHardError popup is suppressed because (a) on a
+            // headless workload host there's nobody to OK the dialog,
+            // and (b) under load the harderr daemon itself can crash
+            // handling the popup and bugcheck the box with
+            // STATUS_SYSTEM_PROCESS_TERMINATED -- which is strictly
+            // worse than the original cancel-timeout it was reporting.
+            //
+            DbgPrint("IO: IopDisassociateThreadIrp irp=%p driver=%wZ\n",
+                     irp, &nameInformation->Name);
         }
     }
 

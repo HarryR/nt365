@@ -38,15 +38,9 @@ require('test.cm')
 require('test.fs')
 require('test.mm')
 require('test.lpc')
--- harderr: single-process unit tests deliberately do NOT call
--- NtSetDefaultHardErrorPort (would set ExpReadyForErrors permanently
--- and break harderr_xproc).  The xproc suite owns the one-and-only
--- registration in this boot, so it must come BEFORE anything else
--- that might want to register the default port (nothing else does
--- today, so order between the two is loose).
 require('test.harderr')
 require('test.harderr_xproc')
-require('test.ex_misc')   -- SYSTIME / PROFILE / EVENTPR thread vars / DBGCTRL / SYSENV
+require('test.ex_misc')
 require('test.sys')
 require('test.tree')
 require('test.thread')
@@ -82,7 +76,12 @@ print("")
 if ok then
     print("ALL PASSED — shutting down")
 else
-    print("FAILURES — shutting down with failure status")
+    -- Brief pause so any IRP wedged in a worker thread reaches the
+    -- IopDisassociateThreadIrp tombstone (1s threshold) when the
+    -- worker is killed during process teardown at shutdown.
+    print("FAILURES — pausing 5s for tombstone capture, then shutting down")
+    local ke = require('nt.dll.ke')
+    ke.NtDelayExecution(false, ke.timeout(5.0))
 end
 
 -- Clean shutdown. Exit status doesn't propagate out of QEMU in any

@@ -37,6 +37,15 @@ KeStallExecutionProcessor(
 
 static ULONGLONG HalpTscFrequency = 0;    /* Hz; 0 = not yet calibrated */
 
+/* PIT-counter wall-clock state.  HalpClockTickIncrement reads PIT
+ * channel 0's down-counter on each ISR, computes the delta in PIT
+ * clocks (1193182 Hz), and accumulates total elapsed PIT clocks
+ * since boot.  HalQueryRealTimeClock reads the accumulator to
+ * derive wall time from the UEFI-seeded boot system time. */
+static USHORT    HalpLastPitCount = 0;
+static BOOLEAN   HalpPitClockInit = FALSE;
+static ULONGLONG HalpPitTicksSinceBoot = 0;
+
 static ULONGLONG
 HalpReadTsc(VOID)
 {
@@ -390,35 +399,40 @@ HalSetProfileInterval(
 /* ===== RTC ===== */
 
 /*
- * Live wall-clock query.  Returns boot system time plus the elapsed
- * 100-ns interval derived from the TSC (which is invariant on every
- * platform we target, see HalpInitTscClock).  Returns FALSE only
- * when there's no UEFI seed at all — graceful fallback to today's
- * 1601 zero-time behaviour.
+ * Live wall-clock query.  Returns boot system time plus the wall
+ * interval elapsed since boot, derived from PIT-channel-0 counter
+ * deltas accumulated in HalpPitTicksSinceBoot by HalpClockTickIncrement.
  *
- * 64-bit arithmetic note: `dt_tsc * 10^7` overflows ULONGLONG after
- * ~1844 seconds at a 1 GHz TSC.  Split the multiply across the
- * divide to keep the intermediate in ULONGLONG range:
- *     q = dt / freq;  r = dt % freq;
- *     dt_100ns = q * 1e7 + (r * 1e7) / freq.
+ * Was TSC-derived; that broke under QEMU TCG where RDTSC tracks
+ * guest-execution rate rather than wall (see HalpClockTickIncrement
+ * comment).  PIT is wall-aligned under both TCG and KVM, so this
+ * works on every machine type / accelerator we target.
+ *
+ * Returns FALSE only when there's no UEFI seed at all — graceful
+ * fallback to today's 1601 zero-time behaviour.
+ *
+ * Racy read of HalpPitTicksSinceBoot vs the ISR's update: a torn
+ * read can give a value that's high/low for one call.  At 100 Hz
+ * a tear straddles a PIT tick at most ~once per ~1.8 years of
+ * uptime per uncached read, and the worst-case error is 10 ms.
+ * Accepting the race rather than spinlock-protecting; if we ever
+ * need stricter we can copy the high-low-high retry pattern from
+ * KiQueryInterruptTime.
  */
 BOOLEAN
 HalQueryRealTimeClock(
     OUT PTIME_FIELDS TimeFields
     )
 {
-    ULONGLONG     dt_tsc, q, r, dt_100ns;
+    ULONGLONG     ticks, dt_100ns;
     LARGE_INTEGER live;
 
-    if (HalpBootSystemTime.QuadPart == 0 || HalpTscFrequency == 0) {
+    if (HalpBootSystemTime.QuadPart == 0) {
         return FALSE;
     }
 
-    dt_tsc   = HalpReadTsc() - HalpBootTsc;
-    q        = dt_tsc / HalpTscFrequency;
-    r        = dt_tsc % HalpTscFrequency;
-    dt_100ns = q * (ULONGLONG)10000000
-             + (r * (ULONGLONG)10000000) / HalpTscFrequency;
+    ticks    = HalpPitTicksSinceBoot;
+    dt_100ns = (ticks * (ULONGLONG)10000000) / PIT_FREQ;
 
     live.QuadPart = HalpBootSystemTime.QuadPart + (LONGLONG)dt_100ns;
     RtlTimeToTimeFields(&live, TimeFields);
@@ -436,45 +450,91 @@ HalSetRealTimeClock(
 }
 
 /*
- * Called from HalpClockInterrupt (clock.asm) on every IRQ0 tick to
- * compute the per-tick increment passed to KeUpdateSystemTime.
+ * Per-tick increment passed to KeUpdateSystemTime, derived from a
+ * direct read of PIT channel 0's down-counter.
  *
- * Returns the elapsed 100-ns interval since the previous tick, derived
- * from the TSC delta.  Replaces the original fixed 100000 (10 ms ×
- * 1e4) so KeSystemTime tracks invariant TSC accuracy (~1 ppm under
- * a hypervisor) rather than PIT crystal drift (~50 ppm).
+ * Why not TSC: under QEMU TCG, RDTSC ticks at the guest-execution
+ * rate (cpu_get_ticks → virtual time, not wall) — so a delta
+ * captures whatever fraction of host wall the guest happened to
+ * be scheduled for, not the wall interval between two PIT IRQs.
+ * Result is InterruptTime that lags wall by 10-30x under TCG; a
+ * 2-second NtWaitForSingleObject takes a minute of wall to fire.
+ * Under KVM the TSC is honest, so the TSC path worked, but the
+ * dev/CI/TCG path was structurally broken.
  *
- * Capped at 0xFFFFFFFF on the (extremely unlikely) chance of a TSC
- * glitch — a hostile host could otherwise pass garbage into
- * KeUpdateSystemTime and skew SystemTime arbitrarily.
+ * PIT channel 0 is programmed (halinit.c) for mode 2 at 100 Hz
+ * (reload N = 11932) and qemu emulates the PIT against its
+ * QEMU_CLOCK_VIRTUAL_RT clock — i.e. real wall time — under both
+ * TCG and KVM.  So a PIT-counter delta is the universal "what
+ * happened to the wall between this ISR and the last one" answer
+ * that works on every machine type / accelerator we target.
  *
- * Runs at CLOCK2_LEVEL (we're inside the ISR), so no spinlock needed
- * even on SMP — though we're UP-only today.
+ * Mode 2 counter decrements by 1 per PIT clock and reloads at 0,
+ * so the legal range is 1..N; counter is monotonically decreasing
+ * within a cycle.  Per-ISR delta in PIT clocks is:
+ *
+ *   if (current <= last)      // same cycle, no wrap
+ *       delta = last - current
+ *   else                      // wrapped — counter reloaded once
+ *       delta = last + N - current
+ *
+ * Multi-wrap (delta > N) under cpulimit SIGSTOP / VM-pause is
+ * possible but invisible to this code; the bounded under-report
+ * is acceptable for now and will be addressed when we add HPET
+ * (64-bit counter, can't wrap on us) or PV clocks.
+ *
+ * Runs at CLOCK2_LEVEL (we're inside the ISR), so no spinlock
+ * needed even on SMP — though we're UP-only today.
  */
+#define PIT_RELOAD (PIT_FREQ / 100)           /* 11932 — matches halinit */
+
+static USHORT
+HalpReadPitCounter(VOID)
+{
+    UCHAR lo, hi;
+    /* Latch counter 0: command byte = 0000 0000.  Snapshots the
+     * 16-bit counter into a read-only buffer so the lo/hi byte
+     * reads are coherent without the counter ticking under us. */
+    HalpWritePort(PIT_CMD, 0x00);
+    lo = HalpReadPort(PIT_CH0);
+    hi = HalpReadPort(PIT_CH0);
+    return (USHORT)lo | ((USHORT)hi << 8);
+}
+
 ULONG
 HalpClockTickIncrement(VOID)
 {
-    ULONGLONG now, dt_tsc, q, r, dt_100ns;
+    USHORT current;
+    ULONG  delta_pit;
+    ULONG  dt_100ns;
 
-    /* Fall back to the original fixed increment until calibration is
-     * complete (HalpInitTscClock runs in Phase 1 before we unmask
-     * IRQ0, so this branch shouldn't fire in practice — defensive). */
-    if (HalpTscFrequency == 0) {
+    current = HalpReadPitCounter();
+
+    if (!HalpPitClockInit) {
+        HalpLastPitCount = current;
+        HalpPitClockInit = TRUE;
+        /* First tick — no previous reading to delta against.
+         * Hand back the nominal 10ms; subsequent ticks self-correct. */
         return 100000;
     }
 
-    now              = HalpReadTsc();
-    dt_tsc           = now - HalpLastTickTsc;
-    HalpLastTickTsc  = now;
-    q                = dt_tsc / HalpTscFrequency;
-    r                = dt_tsc % HalpTscFrequency;
-    dt_100ns = q * (ULONGLONG)10000000
-             + (r * (ULONGLONG)10000000) / HalpTscFrequency;
-
-    if (dt_100ns > (ULONGLONG)0xFFFFFFFF) {
-        return 0xFFFFFFFF;
+    if (current <= HalpLastPitCount) {
+        delta_pit = (ULONG)HalpLastPitCount - (ULONG)current;
+    } else {
+        /* Counter wrapped (reloaded to N).  Treat as one full cycle
+         * plus the partial decrement since reload. */
+        delta_pit = (ULONG)HalpLastPitCount + PIT_RELOAD - (ULONG)current;
     }
-    return (ULONG)dt_100ns;
+    HalpLastPitCount = current;
+
+    HalpPitTicksSinceBoot += delta_pit;
+
+    /* PIT clocks → 100ns units: delta * 10^7 / 1193182.
+     * delta_pit fits in ULONG (and well under 2^31 for any sane
+     * interval), so the multiply stays in ULONGLONG range. */
+    dt_100ns = (ULONG)(((ULONGLONG)delta_pit * (ULONGLONG)10000000) / PIT_FREQ);
+
+    return dt_100ns;
 }
 
 /* ===== Bus / Resources ===== */

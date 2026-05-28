@@ -1957,15 +1957,20 @@ Return Value:
         Interval.LowPart = (ULONG) (-10 * 1000 * 100);
         KeDelayExecutionThread( KernelMode, FALSE, &Interval );
 
-        if (count++ > 3000) {
+        if (count++ > 10) {
 
             //
-            // This I/O request has timed out, as it has not been completed
-            // for a full minute.  Attempt to remove the packet's association
-            // with this thread.  Note that by not resetting the count, the
-            // next time through the loop the next packet, if there is one,
-            // which has also timed out, will be dealt with, although it
-            // will be given another 100ms to complete.
+            // Loopback / local IPC completion is microseconds; a real
+            // network stack drains in well under a second.  Anything
+            // still pending after ~1s is a driver bug, not a slow path —
+            // disassociate now so the diagnostic surfaces while the
+            // suite is still timing-coupled to the bug, and the per-
+            // process create/delete lock isn't held for the original
+            // 5-minute (stock NT 3.5: count=3000) reaper window.
+            //
+            // The count is *not* reset; if multiple IRPs are wedged,
+            // each subsequent outer iteration gets another 100ms grace
+            // before its own disassociate.
             //
 
             IopDisassociateThreadIrp();
