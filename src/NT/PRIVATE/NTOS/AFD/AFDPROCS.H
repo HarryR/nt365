@@ -125,11 +125,6 @@ AfdErrorEventHandler (
     IN NTSTATUS Status
     );
 
-VOID
-AfdFreeConnectDataBuffers (
-    IN PAFD_CONNECT_DATA_BUFFERS ConnectDataBuffers
-    );
-
 NTSTATUS
 AfdGetAddress (
     IN PIRP Irp,
@@ -467,24 +462,6 @@ AfdFastIoDeviceControl (
     IN ULONG IoControlCode,
     OUT PIO_STATUS_BLOCK IoStatus,
     IN struct _DEVICE_OBJECT *DeviceObject
-    );
-
-//
-// Routines to handle getting and setting connect data.
-//
-
-NTSTATUS
-AfdGetConnectData (
-    IN PIRP Irp,
-    IN PIO_STACK_LOCATION IrpSp,
-    IN ULONG Code
-    );
-
-NTSTATUS
-AfdSetConnectData (
-    IN PIRP Irp,
-    IN PIO_STACK_LOCATION IrpSp,
-    IN ULONG Code
     );
 
 //

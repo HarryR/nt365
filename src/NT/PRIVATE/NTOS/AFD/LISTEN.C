@@ -34,26 +34,12 @@ AfdRestartAccept (
     IN PVOID Context
     );
 
-PAFD_CONNECT_DATA_BUFFERS
-CopyConnectDataBuffers (
-    IN PAFD_CONNECT_DATA_BUFFERS OriginalConnectDataBuffers,
-    IN ULONG ExtraAllocation
-    );
-
-BOOLEAN
-CopySingleConnectDataBuffer (
-    IN PAFD_CONNECT_DATA_INFO InConnectDataInfo,
-    OUT PAFD_CONNECT_DATA_INFO OutConnectDataInfo
-    );
-
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text( PAGEAFD, AfdStartListen )
 #pragma alloc_text( PAGEAFD, AfdWaitForListen )
 #pragma alloc_text( PAGEAFD, AfdCancelWaitForListen )
 #pragma alloc_text( PAGEAFD, AfdConnectEventHandler )
 #pragma alloc_text( PAGEAFD, AfdRestartAccept )
-#pragma alloc_text( PAGEAFD, CopyConnectDataBuffers )
-#pragma alloc_text( PAGEAFD, CopySingleConnectDataBuffer )
 #endif
 
 
@@ -492,7 +478,6 @@ Return Value:
     PDEVICE_OBJECT deviceObject;
     PFILE_OBJECT fileObject;
     KIRQL oldIrql;
-    PAFD_CONNECT_DATA_BUFFERS connectDataBuffers;
     PTDI_CONNECTION_INFORMATION requestConnectionInformation;
 
     IF_DEBUG(LISTEN) {
@@ -512,102 +497,11 @@ Return Value:
     }
 
     //
-    // If there are connect data buffers on the listening endpoint,
-    // create equivalent buffers that we'll use for the connection.
+    // This transport carries no connect data, so the accept needs
+    // no request connection information.
     //
 
-    KeAcquireSpinLock( &AfdSpinLock, &oldIrql );
-
-    if ( endpoint->ConnectDataBuffers != NULL ) {
-
-        connectDataBuffers = CopyConnectDataBuffers(
-                                 endpoint->ConnectDataBuffers,
-                                 sizeof(*requestConnectionInformation)
-                                 );
-        if ( connectDataBuffers == NULL ) {
-            KeReleaseSpinLock( &AfdSpinLock, oldIrql );
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-
-        //
-        // If there was connect data or options and we have a place
-        // for them, save them on the connection.
-        //
-
-        if ( UserData != NULL && UserDataLength != 0 &&
-                 connectDataBuffers->ReceiveConnectData.Buffer != NULL ) {
-
-            if ( connectDataBuffers->ReceiveConnectData.BufferLength >
-                     (ULONG)UserDataLength ) {
-
-                connectDataBuffers->ReceiveConnectData.BufferLength =
-                    UserDataLength;
-            }
-
-            RtlCopyMemory(
-                connectDataBuffers->ReceiveConnectData.Buffer,
-                UserData,
-                connectDataBuffers->ReceiveConnectData.BufferLength
-                );
-
-        } else {
-
-            connectDataBuffers->ReceiveConnectData.BufferLength = 0;
-        }
-
-        if ( Options != NULL && OptionsLength != 0 &&
-                 connectDataBuffers->ReceiveConnectOptions.Buffer != NULL ) {
-
-            if ( connectDataBuffers->ReceiveConnectOptions.BufferLength >
-                     (ULONG)OptionsLength ) {
-
-                connectDataBuffers->ReceiveConnectOptions.BufferLength =
-                    OptionsLength;
-            }
-
-            RtlCopyMemory(
-                connectDataBuffers->ReceiveConnectOptions.Buffer,
-                Options,
-                connectDataBuffers->ReceiveConnectOptions.BufferLength
-                );
-
-        } else {
-
-            connectDataBuffers->ReceiveConnectOptions.BufferLength = 0;
-        }
-
-        //
-        // We allocated extra space at the end of the connect data 
-        // buffers structure.  We'll use this for the 
-        // TDI_CONNECTION_INFORMATION structure that holds response
-        // connect data and options.  Not pretty, but the fastest
-        // and easiest way to accomplish this.
-        //
-
-        requestConnectionInformation =
-            (PTDI_CONNECTION_INFORMATION)(connectDataBuffers + 1);
-
-        RtlZeroMemory(
-            requestConnectionInformation,
-            sizeof(*requestConnectionInformation)
-            );
-
-        requestConnectionInformation->UserData =
-            connectDataBuffers->SendConnectData.Buffer;
-        requestConnectionInformation->UserDataLength =
-            connectDataBuffers->SendConnectData.BufferLength;
-        requestConnectionInformation->Options =
-            connectDataBuffers->SendConnectOptions.Buffer;
-        requestConnectionInformation->OptionsLength =
-            connectDataBuffers->SendConnectOptions.BufferLength;
-
-    } else {
-
-        connectDataBuffers = NULL;
-        requestConnectionInformation = NULL;
-    }
-
-    KeReleaseSpinLock( &AfdSpinLock, oldIrql );
+    requestConnectionInformation = NULL;
 
     //
     // Attempt to get a pre-allocated connection object to handle the
@@ -628,10 +522,6 @@ Return Value:
 
     if ( connection == NULL ) {
 
-        if ( connectDataBuffers != NULL ) {
-            AfdFreeConnectDataBuffers( connectDataBuffers );
-        }
-
         //
         // If there have been failed connection additions, kick off
         // a request to an executive worker thread to attempt to add
@@ -646,12 +536,6 @@ Return Value:
     }
 
     ASSERT( connection->Type == AfdBlockTypeConnection );
-
-    //
-    // Save a pointer to the connect data buffers, if any.
-    //
-
-    connection->ConnectDataBuffers = connectDataBuffers;
 
     //
     // Get the address of the target device object.
@@ -675,11 +559,6 @@ Return Value:
         //
 
         KeAcquireSpinLock( &AfdSpinLock, &oldIrql );
-
-        if ( connection->ConnectDataBuffers != NULL ) {
-            AFD_FREE_POOL( connection->ConnectDataBuffers );
-            connection->ConnectDataBuffers = NULL;
-        }
 
         InsertTailList(
             &endpoint->Common.VcListening.FreeConnectionListHead,
@@ -955,118 +834,3 @@ AfdRestartAccept (
     return STATUS_MORE_PROCESSING_REQUIRED;
 
 } // AfdRestartAccept
-
-
-PAFD_CONNECT_DATA_BUFFERS
-CopyConnectDataBuffers (
-    IN PAFD_CONNECT_DATA_BUFFERS OriginalConnectDataBuffers,
-    IN ULONG ExtraAllocation
-    )
-{
-    PAFD_CONNECT_DATA_BUFFERS connectDataBuffers;
-
-    connectDataBuffers = AFD_ALLOCATE_POOL(
-                             NonPagedPool,
-                             sizeof(*connectDataBuffers) + ExtraAllocation
-                             );
-    if ( connectDataBuffers == NULL ) {
-        return NULL;
-    }
-
-    RtlZeroMemory( connectDataBuffers, sizeof(*connectDataBuffers) );
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->SendConnectData,
-              &connectDataBuffers->SendConnectData ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->SendConnectOptions,
-              &connectDataBuffers->SendConnectOptions ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->ReceiveConnectData,
-              &connectDataBuffers->ReceiveConnectData ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->ReceiveConnectOptions,
-              &connectDataBuffers->ReceiveConnectOptions ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->SendDisconnectData,
-              &connectDataBuffers->SendDisconnectData ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->SendDisconnectOptions,
-              &connectDataBuffers->SendDisconnectOptions ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->ReceiveDisconnectData,
-              &connectDataBuffers->ReceiveDisconnectData ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    if ( !CopySingleConnectDataBuffer(
-              &OriginalConnectDataBuffers->ReceiveDisconnectOptions,
-              &connectDataBuffers->ReceiveDisconnectOptions ) ) {
-        AfdFreeConnectDataBuffers( connectDataBuffers );
-        return NULL;
-    }
-
-    return connectDataBuffers;
-
-} // CopyConnectDataBuffers
-
-
-BOOLEAN
-CopySingleConnectDataBuffer (
-    IN PAFD_CONNECT_DATA_INFO InConnectDataInfo,
-    OUT PAFD_CONNECT_DATA_INFO OutConnectDataInfo
-    )
-{
-
-    if ( InConnectDataInfo->Buffer != NULL &&
-             InConnectDataInfo->BufferLength != 0 ) {
-
-        OutConnectDataInfo->BufferLength = InConnectDataInfo->BufferLength;
-
-        OutConnectDataInfo->Buffer =
-            AFD_ALLOCATE_POOL( NonPagedPool, OutConnectDataInfo->BufferLength );
-
-        if ( OutConnectDataInfo->Buffer == NULL ) {
-            return FALSE;
-        }
-
-        RtlCopyMemory(
-            OutConnectDataInfo->Buffer,
-            InConnectDataInfo->Buffer,
-            InConnectDataInfo->BufferLength
-            );
-
-    } else {
-
-        OutConnectDataInfo->Buffer = NULL;
-        OutConnectDataInfo->BufferLength = 0;
-    }
-
-    return TRUE;
-
-} // CopySingleConnectDataBuffer

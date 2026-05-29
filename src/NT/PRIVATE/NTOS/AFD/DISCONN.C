@@ -344,56 +344,6 @@ AfdDisconnectEventHandler (
         }
     }
 
-    //
-    // If this connection has buffers for disconnect data and there
-    // was disconnect data in this indication, remember the data.
-    //
-
-    KeAcquireSpinLock( &AfdSpinLock, &oldIrql );
-
-    if ( connection->ConnectDataBuffers != NULL ) {
-
-        if ( connection->ConnectDataBuffers->ReceiveDisconnectData.Buffer != NULL &&
-                 DisconnectData != NULL ) {
-
-            if ( connection->ConnectDataBuffers->ReceiveDisconnectData.BufferLength <
-                     (ULONG)DisconnectDataLength ) {
-
-                connection->ConnectDataBuffers->ReceiveDisconnectData.BufferLength =
-                    DisconnectDataLength;
-            }
-
-            RtlCopyMemory(
-                connection->ConnectDataBuffers->ReceiveDisconnectData.Buffer,
-                DisconnectData,
-                connection->ConnectDataBuffers->ReceiveDisconnectData.BufferLength
-                );
-
-        } else {
-            connection->ConnectDataBuffers->ReceiveDisconnectData.BufferLength = 0;
-        }
-
-        if ( connection->ConnectDataBuffers->ReceiveDisconnectOptions.Buffer != NULL &&
-                 DisconnectInformation != NULL ) {
-
-            if ( connection->ConnectDataBuffers->ReceiveDisconnectOptions.BufferLength <
-                     (ULONG)DisconnectInformationLength ) {
-
-                connection->ConnectDataBuffers->ReceiveDisconnectOptions.BufferLength =
-                    DisconnectInformationLength;
-            }
-
-            RtlCopyMemory(
-                connection->ConnectDataBuffers->ReceiveDisconnectOptions.Buffer,
-                DisconnectInformation,
-                connection->ConnectDataBuffers->ReceiveDisconnectOptions.BufferLength
-                );
-        } else {
-            connection->ConnectDataBuffers->ReceiveDisconnectOptions.BufferLength = 0;
-        }
-    }
-
-    KeReleaseSpinLock( &AfdSpinLock, oldIrql );
 
     //
     // Call AfdIndicatePollEvent in case anyone is polling on this
@@ -746,48 +696,6 @@ AfdBeginDisconnect (
     //
 
     Endpoint->DisconnectMode |= AFD_PARTIAL_DISCONNECT_SEND;
-
-    //
-    // If there are disconnect data buffers, allocate request
-    // and return connection information structures and copy over
-    // pointers to the structures.
-    //
-
-    if ( connection->ConnectDataBuffers != NULL ) {
-
-        requestConnectionInformation =
-            AFD_ALLOCATE_POOL(
-                NonPagedPool,
-                sizeof(*requestConnectionInformation) +
-                    sizeof(*returnConnectionInformation)
-                );
-
-        if ( requestConnectionInformation != NULL ) {
-
-            returnConnectionInformation =
-                requestConnectionInformation + 1;
-            
-            requestConnectionInformation->UserData =
-                connection->ConnectDataBuffers->SendDisconnectData.Buffer;
-            requestConnectionInformation->UserDataLength =
-                connection->ConnectDataBuffers->SendDisconnectData.BufferLength;
-            requestConnectionInformation->Options =
-                connection->ConnectDataBuffers->SendDisconnectOptions.Buffer;
-            requestConnectionInformation->OptionsLength =
-                connection->ConnectDataBuffers->SendDisconnectOptions.BufferLength;
-            returnConnectionInformation->UserData =
-                connection->ConnectDataBuffers->ReceiveDisconnectData.Buffer;
-            returnConnectionInformation->UserDataLength =
-                connection->ConnectDataBuffers->ReceiveDisconnectData.BufferLength;
-            returnConnectionInformation->Options =
-                connection->ConnectDataBuffers->ReceiveDisconnectOptions.Buffer;
-            returnConnectionInformation->OptionsLength =
-                connection->ConnectDataBuffers->ReceiveDisconnectOptions.BufferLength;
-        }
-
-        disconnectContext->TdiConnectionInformation =
-            requestConnectionInformation;
-    }
 
     //
     // Set up the timeout for the disconnect.

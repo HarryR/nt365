@@ -366,38 +366,6 @@ Return Value:
 
         return status;
 
-    case IOCTL_AFD_SET_CONNECT_DATA:
-    case IOCTL_AFD_SET_CONNECT_OPTIONS:   
-    case IOCTL_AFD_SET_DISCONNECT_DATA:   
-    case IOCTL_AFD_SET_DISCONNECT_OPTIONS:
-    case IOCTL_AFD_SIZE_CONNECT_DATA:      
-    case IOCTL_AFD_SIZE_CONNECT_OPTIONS:   
-    case IOCTL_AFD_SIZE_DISCONNECT_DATA:   
-    case IOCTL_AFD_SIZE_DISCONNECT_OPTIONS:
-
-        status = AfdSetConnectData( Irp, IrpSp, code );
-
-        Irp->IoStatus.Status = status;
-        IoCompleteRequest( Irp, AfdPriorityBoost );
-
-        ASSERT( KeGetCurrentIrql( ) == LOW_LEVEL );
-
-        return status;
-
-    case IOCTL_AFD_GET_CONNECT_DATA:      
-    case IOCTL_AFD_GET_CONNECT_OPTIONS:   
-    case IOCTL_AFD_GET_DISCONNECT_DATA:   
-    case IOCTL_AFD_GET_DISCONNECT_OPTIONS:
-
-        status = AfdGetConnectData( Irp, IrpSp, code );
-
-        Irp->IoStatus.Status = status;
-        IoCompleteRequest( Irp, AfdPriorityBoost );
-
-        ASSERT( KeGetCurrentIrql( ) == LOW_LEVEL );
-
-        return status;
-
     default:
 
         Irp->IoStatus.Status = STATUS_INVALID_DEVICE_REQUEST;

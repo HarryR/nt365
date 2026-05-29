@@ -40,29 +40,6 @@ typedef struct _AFD_REFERENCE_DEBUG {
 
 #endif
 
-//
-// Structures for holding connect data pointers and lengths.  This is
-// kept separate from the normal structures to save space in those
-// structures for transports that do not support and applications
-// which do not use connect data.
-//
-
-typedef struct _AFD_CONNECT_DATA_INFO {
-    PVOID Buffer;
-    ULONG BufferLength;
-} AFD_CONNECT_DATA_INFO, *PAFD_CONNECT_DATA_INFO;
-
-typedef struct _AFD_CONNECT_DATA_BUFFERS {
-    AFD_CONNECT_DATA_INFO SendConnectData;
-    AFD_CONNECT_DATA_INFO SendConnectOptions;
-    AFD_CONNECT_DATA_INFO ReceiveConnectData;
-    AFD_CONNECT_DATA_INFO ReceiveConnectOptions;
-    AFD_CONNECT_DATA_INFO SendDisconnectData;
-    AFD_CONNECT_DATA_INFO SendDisconnectOptions;
-    AFD_CONNECT_DATA_INFO ReceiveDisconnectData;
-    AFD_CONNECT_DATA_INFO ReceiveDisconnectOptions;
-} AFD_CONNECT_DATA_BUFFERS, *PAFD_CONNECT_DATA_BUFFERS;
-
 #define AfdBlockTypeEndpoint     0xAFD0
 #define AfdBlockTypeVcConnecting 0xAFD1
 #define AfdBlockTypeVcListening  0xAFD2
@@ -120,7 +97,6 @@ typedef struct _AFD_CONNECTION {
     CSHORT MaxBufferredReceiveCount;
     CSHORT MaxBufferredSendCount;
 
-    PAFD_CONNECT_DATA_BUFFERS ConnectDataBuffers;
     BOOLEAN DisconnectIndicated;
     BOOLEAN AbortIndicated;
     BOOLEAN ConnectedReferenceAdded;
@@ -254,7 +230,6 @@ typedef struct _AFD_ENDPOINT {
     CLONG ContextLength;
     KSPIN_LOCK SpinLock;
     PEPROCESS OwningProcess;
-    PAFD_CONNECT_DATA_BUFFERS ConnectDataBuffers;
     BOOLEAN ConnectOutstanding;
     BOOLEAN SendDisconnected;
     BOOLEAN ReceiveDisconnected;

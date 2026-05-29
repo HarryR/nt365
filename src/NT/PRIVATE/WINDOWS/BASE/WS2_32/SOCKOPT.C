@@ -34,15 +34,6 @@ IsValidOptionForSocket (
     IN int OptionName
     );
 
-INT
-SockPassConnectData (
-    IN PSOCKET_INFORMATION Socket,
-    IN ULONG AfdIoctl,
-    IN PCHAR Buffer,
-    IN INT BufferLength,
-    OUT PINT OutBufferLength
-    );
-
 
 int PASCAL
 getsockopt(
@@ -313,50 +304,6 @@ Return Value:
             }
 
             break;
-
-        case SO_CONNDATA:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_GET_CONNECT_DATA,
-                        (PCHAR)OptionValue,
-                        *OptionLength,
-                        OptionLength
-                        );
-            goto exit;
-
-        case SO_CONNOPT:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_GET_CONNECT_OPTIONS,
-                        (PCHAR)OptionValue,
-                        *OptionLength,
-                        OptionLength
-                        );
-            goto exit;
-
-        case SO_DISCDATA:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_GET_DISCONNECT_DATA,
-                        (PCHAR)OptionValue,
-                        *OptionLength,
-                        OptionLength
-                        );
-            goto exit;
-
-        case SO_DISCOPT:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_GET_DISCONNECT_OPTIONS,
-                        (PCHAR)OptionValue,
-                        *OptionLength,
-                        OptionLength
-                        );
-            goto exit;
 
         case SO_OPENTYPE:
 
@@ -1082,94 +1029,6 @@ Return Value:
 
             break;
 
-        case SO_CONNDATA:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SET_CONNECT_DATA,
-                        (PVOID)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
-        case SO_CONNOPT:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SET_CONNECT_OPTIONS,
-                        (PCHAR)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
-        case SO_DISCDATA:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SET_DISCONNECT_DATA,
-                        (PCHAR)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
-        case SO_DISCOPT:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SET_DISCONNECT_OPTIONS,
-                        (PCHAR)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
-        case SO_CONNDATALEN:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SIZE_CONNECT_DATA,
-                        (PCHAR)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
-        case SO_CONNOPTLEN:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SIZE_CONNECT_OPTIONS,
-                        (PCHAR)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
-        case SO_DISCDATALEN:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SIZE_DISCONNECT_DATA,
-                        (PCHAR)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
-        case SO_DISCOPTLEN:
-
-            error = SockPassConnectData(
-                        socket,
-                        IOCTL_AFD_SIZE_DISCONNECT_OPTIONS,
-                        (PCHAR)OptionValue,
-                        OptionLength,
-                        NULL
-                        );
-            goto exit;
-
         case SO_OPENTYPE:
 
             SockCreateOptions = optionValue;
@@ -1511,65 +1370,4 @@ SockUpdateWindowSizes (
     return NO_ERROR;
 
 } // SockSetSocketReceiveBuffer
-
-
-INT
-SockPassConnectData (
-    IN PSOCKET_INFORMATION Socket,
-    IN ULONG AfdIoctl,
-    IN PCHAR Buffer,
-    IN INT BufferLength,
-    OUT PINT OutBufferLength
-    )
-{
-    NTSTATUS status;
-    IO_STATUS_BLOCK ioStatusBlock;
-
-    //
-    // Give request to AFD.
-    //
-
-    status = NtDeviceIoControlFile(
-                 (HANDLE)Socket->Handle,
-                 SockThreadEvent,
-                 NULL,
-                 0,
-                 &ioStatusBlock,
-                 AfdIoctl,
-                 Buffer,
-                 BufferLength,
-                 Buffer,
-                 BufferLength
-                 );
-
-    //
-    // If the call pended and we were supposed to wait for completion,
-    // then wait.
-    //
-
-    if ( status == STATUS_PENDING ) {
-        SockWaitForSingleObject(
-            SockThreadEvent,
-            Socket->Handle,
-            SOCK_NEVER_CALL_BLOCKING_HOOK,
-            SOCK_NO_TIMEOUT
-            );
-        status = ioStatusBlock.Status;
-    }
-
-    if ( !NT_SUCCESS(status) ) {
-        return SockNtStatusToSocketError( status );
-    }
-
-    //
-    // If requested, set up the length of returned buffer.
-    //
-
-    if ( ARGUMENT_PRESENT(OutBufferLength) ) {
-        *OutBufferLength = ioStatusBlock.Information;
-    }
-
-    return NO_ERROR;
-
-} // SockPassConnectData
 

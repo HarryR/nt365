@@ -409,10 +409,6 @@ AfdFreeEndpoint (
         DEBUG endpoint->Context = NULL;
     }
 
-    if ( endpoint->ConnectDataBuffers != NULL ) {
-        AfdFreeConnectDataBuffers( endpoint->ConnectDataBuffers );
-    }
-
     //
     // Free the space that holds the endpoint itself.
     //

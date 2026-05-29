@@ -145,7 +145,6 @@ AfdAllocateConnection (
     //connection->ReceiveBytesIndicated = 0;
     //connection->ReceiveBytesTaken = 0;
     //connection->ReceiveBytesOutstanding = 0;
-    //connection->ConnectDataBuffers = NULL;
     //connection->DisconnectIndicated = FALSE;
     //connection->AbortIndicated = FALSE;
     //connection->ConnectedReferenceAdded = FALSE;
@@ -475,10 +474,6 @@ AfdFreeConnection (
     if ( connection->RemoteAddress != NULL ) {
         AFD_FREE_POOL( connection->RemoteAddress );
         DEBUG connection->RemoteAddress = NULL;
-    }
-
-    if ( connection->ConnectDataBuffers != NULL ) {
-        AfdFreeConnectDataBuffers( connection->ConnectDataBuffers );
     }
 
     //

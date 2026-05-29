@@ -34,14 +34,6 @@ AfdRestartConnect (
     IN PVOID Context
     );
 
-VOID
-AfdSetupConnectDataBuffers (
-    IN PAFD_ENDPOINT Endpoint,
-    IN PAFD_CONNECTION Connection,
-    IN PTDI_CONNECTION_INFORMATION RequestConnectionInformation,
-    IN PTDI_CONNECTION_INFORMATION ReturnConnectionInformation
-    );
-
 PVOID
 AfdMapUserBufferPointer (
     IN PVOID UserPointer,
@@ -55,7 +47,6 @@ AfdMapUserBufferPointer (
 #pragma alloc_text( PAGE, AfdConnect )
 #pragma alloc_text( PAGEAFD, AfdDoDatagramConnect )
 #pragma alloc_text( PAGEAFD, AfdRestartConnect )
-#pragma alloc_text( PAGEAFD, AfdSetupConnectDataBuffers )
 #pragma alloc_text( PAGE, AfdMapUserBufferPointer )
 #endif
 
@@ -296,20 +287,6 @@ Return Value:
     endpoint->ConnectOutstanding = TRUE;
 
     //
-    // If there are connect data buffers, move them from the endpoint
-    // structure to the connection structure and set up the necessary
-    // pointers in the connection request we're going to give to the TDI
-    // provider.  Do this in a subroutine so this routine can be pageable.
-    //
-
-    AfdSetupConnectDataBuffers(
-        endpoint,
-        connection,
-        requestConnectionInformation,
-        returnConnectionInformation
-        );
-
-    //
     // Save a pointer to the return connection information structure
     // so we can access it in the restart routine.
     //
@@ -472,50 +449,7 @@ complete:
 
     return status;
 
-} // AfdDoDatagramConnect
-
-
-VOID
-AfdSetupConnectDataBuffers (
-    IN PAFD_ENDPOINT Endpoint,
-    IN PAFD_CONNECTION Connection,
-    IN PTDI_CONNECTION_INFORMATION RequestConnectionInformation,
-    IN PTDI_CONNECTION_INFORMATION ReturnConnectionInformation
-    )
-{
-    KIRQL oldIrql;
-
-    KeAcquireSpinLock( &AfdSpinLock, &oldIrql );
-
-    if ( Endpoint->ConnectDataBuffers != NULL ) {
-
-        ASSERT( Connection->ConnectDataBuffers == NULL );
-
-        Connection->ConnectDataBuffers = Endpoint->ConnectDataBuffers;
-        Endpoint->ConnectDataBuffers = NULL;
-
-        RequestConnectionInformation->UserData =
-            Connection->ConnectDataBuffers->SendConnectData.Buffer;
-        RequestConnectionInformation->UserDataLength =
-            Connection->ConnectDataBuffers->SendConnectData.BufferLength;
-        RequestConnectionInformation->Options =
-            Connection->ConnectDataBuffers->SendConnectOptions.Buffer;
-        RequestConnectionInformation->OptionsLength =
-            Connection->ConnectDataBuffers->SendConnectOptions.BufferLength;
-        ReturnConnectionInformation->UserData =
-            Connection->ConnectDataBuffers->ReceiveConnectData.Buffer;
-        ReturnConnectionInformation->UserDataLength =
-            Connection->ConnectDataBuffers->ReceiveConnectData.BufferLength;
-        ReturnConnectionInformation->Options =
-            Connection->ConnectDataBuffers->ReceiveConnectOptions.Buffer;
-        ReturnConnectionInformation->OptionsLength =
-            Connection->ConnectDataBuffers->ReceiveConnectOptions.BufferLength;
-
-    }
-
-    KeReleaseSpinLock( &AfdSpinLock, oldIrql );
-
-} // AfdSetupConnectDataBuffers
+} // AfdConnect
 
 
 NTSTATUS
@@ -571,35 +505,6 @@ Return Value:
 
     endpoint->ConnectOutstanding = FALSE;
 
-    //
-    // If there are connect buffers on this endpoint, remember the
-    // size of the return connect data.
-    //
-
-    KeAcquireSpinLock( &AfdSpinLock, &oldIrql );
-
-    if ( connection->ConnectDataBuffers != NULL ) {
-
-        PIO_STACK_LOCATION irpSp;
-        PTDI_CONNECTION_INFORMATION returnConnectionInformation;
-
-        irpSp = IoGetCurrentIrpStackLocation( Irp );
-        returnConnectionInformation =
-            irpSp->Parameters.DeviceIoControl.Type3InputBuffer;
-
-        ASSERT( returnConnectionInformation != NULL );
-        ASSERT( connection->ConnectDataBuffers->ReceiveConnectData.BufferLength >=
-                    (ULONG)returnConnectionInformation->UserDataLength );
-        ASSERT( connection->ConnectDataBuffers->ReceiveConnectOptions.BufferLength >=
-                    (ULONG)returnConnectionInformation->OptionsLength );
-
-        connection->ConnectDataBuffers->ReceiveConnectData.BufferLength =
-            returnConnectionInformation->UserDataLength;
-        connection->ConnectDataBuffers->ReceiveConnectOptions.BufferLength =
-            returnConnectionInformation->OptionsLength;
-    }
-
-    KeReleaseSpinLock( &AfdSpinLock, oldIrql );
 
     //
     // Indicate that the connect completed.  Implicitly, the successful
