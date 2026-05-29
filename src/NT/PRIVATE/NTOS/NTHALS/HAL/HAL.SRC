@@ -38,6 +38,7 @@ EXPORTS
     HalSetProfileInterval
     HalSetRealTimeClock
     HalSetTimeIncrement
+    HalStartEntropyThread
     HalStartNextProcessor
     HalStartProfileInterrupt
     HalStopProfileInterrupt

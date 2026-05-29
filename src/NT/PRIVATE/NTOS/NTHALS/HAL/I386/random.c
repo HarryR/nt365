@@ -145,3 +145,82 @@ HalpAbsorbBootEntropy(VOID)
 
     RngAddEntropy(buf, n);
 }
+
+/* ~60s reseed cadence, as negative (relative) 100ns units. */
+#define HALP_RESEED_INTERVAL_100NS  (-((LONGLONG)60 * 10 * 1000 * 1000))
+
+/* nthal.h doesn't carry THREAD_ALL_ACCESS (it's a DDK macro); the handle is
+ * closed immediately so its rights don't matter, but spell it out anyway. */
+#ifndef THREAD_ALL_ACCESS
+#define THREAD_ALL_ACCESS  0x001F03FFUL
+#endif
+
+/*
+ * Periodic reseed thread. Off the boot critical path, it folds fresh CPU
+ * entropy into the pool roughly every minute: the scheduling jitter of when
+ * the thread actually wakes (two TSC samples bracketing the work) plus an
+ * RDRAND batch when available. RDRAND is gathered into the local buffer with
+ * no lock held, so even a slow/trapping draw never stalls a pool user.
+ *
+ * It deliberately does NOT read the PIT: the live clock ISR latches PIT
+ * channel 0 every tick, and a concurrent latch here would corrupt timekeeping.
+ */
+static VOID
+HalpEntropyThread(IN PVOID Context)
+{
+    LARGE_INTEGER interval;
+    UCHAR     buf[64];
+    ULONG     n, i, tries, v;
+    ULONGLONG tsc;
+
+    UNREFERENCED_PARAMETER(Context);
+    interval.QuadPart = HALP_RESEED_INTERVAL_100NS;
+
+    for (;;) {
+        KeDelayExecutionThread(KernelMode, FALSE, &interval);
+
+        n = 0;
+        tsc = HalpRandReadTsc();
+        RtlCopyMemory(buf + n, &tsc, sizeof(tsc));
+        n += sizeof(tsc);
+
+        if (HalpHaveRdrand) {
+            for (i = 0; i < 4; i += 1) {
+                v = 0;
+                for (tries = 0; tries < 10; tries += 1) {
+                    if (HalpRandRdrand(&v)) {
+                        break;
+                    }
+                }
+                RtlCopyMemory(buf + n, &v, sizeof(v));
+                n += sizeof(v);
+            }
+        }
+
+        tsc = HalpRandReadTsc();   /* second sample: wake-to-here jitter */
+        RtlCopyMemory(buf + n, &tsc, sizeof(tsc));
+        n += sizeof(tsc);
+
+        RngAddEntropy(buf, n);
+    }
+}
+
+/*
+ * Start the reseed thread. Called from the executive once the process
+ * subsystem is up (system threads can't be created earlier), which is why
+ * this is its own export rather than part of HalInitSystem phase 1.
+ */
+VOID
+HalStartEntropyThread(VOID)
+{
+    HANDLE   h;
+    NTSTATUS st;
+
+    st = PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL,
+                              HalpEntropyThread, NULL);
+    if (NT_SUCCESS(st)) {
+        ZwClose(h);                 /* detached; we never join it */
+    } else {
+        HalpSerialPrint("HAL: reseed thread create failed\r\n");
+    }
+}

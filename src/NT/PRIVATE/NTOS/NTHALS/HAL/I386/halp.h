@@ -337,6 +337,10 @@ VOID HalpCpuid(IN ULONG Leaf, IN ULONG Subleaf,
 VOID HalpAbsorbBootEntropy(VOID);
 VOID RngAddEntropy(IN PVOID Buffer, IN ULONG Length);
 
+/* Periodic reseed thread (random.c).  HAL export; the executive calls it once
+ * the process subsystem is up so system threads can be created. */
+VOID HalStartEntropyThread(VOID);
+
 /* Boot wall-clock seed (stubs.c); 0 until HalpInitTscClock runs.  Absorbed as
  * one of the entropy sources. */
 extern LARGE_INTEGER HalpBootSystemTime;

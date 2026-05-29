@@ -1,21 +1,18 @@
 /*++
 
-    viorng.c — virtio-rng entropy device. The simplest possible
-    consumer of the shared virtio.lib: one queue, one operation
-    ("device, please write N random bytes into this buffer").
-
-    Surfaces \Device\VirtioRng0 with IRP_MJ_READ. Lua opens it from
-    user mode and reads bytes; the driver pushes the buffer into the
-    request virtqueue, the device fills it, and completion bubbles
-    back through the ISR/DPC chain to IoCompleteRequest.
+    viorng.c — virtio-rng entropy source. A pure entropy *pump* with NO
+    user-facing device: a dedicated system thread periodically asks the
+    device for random bytes and folds them straight into the kernel RNG
+    pool via RngAddEntropy. It is one of several entropy inputs; userland
+    never talks to it directly (that path is NtGenerateSecureRandom).
 
     PCI device 1AF4:1005 (Red Hat / Qumranet, legacy virtio-rng).
     QEMU exposes this when invoked with:
         -device virtio-rng-pci,disable-modern=on,disable-legacy=off
 
-    Single in-flight IRP for now — concurrent reads return
-    STATUS_DEVICE_BUSY. Good enough for milestone "Lua reads 16 bytes
-    of entropy"; multi-IRP queueing via IoStartPacket can come later.
+    One request at a time: the pump thread submits a write-only descriptor,
+    waits on DoneEvent (signaled by the completion DPC), then absorbs the
+    bytes and sleeps. No \Device\ object, no IRP dispatch.
 
 --*/
 
@@ -24,8 +21,13 @@
 #include "vio_pci.h"
 #include "vio_ids.h"
 
+/* RNG subsystem entropy intake — exported by ntoskrnl (NTOS/RNG). */
+extern VOID RngAddEntropy(IN PVOID Buffer, IN ULONG Length);
+
 /* ------------------------------------------------------------------ *
- * Per-device extension. Pointed to by DEVICE_OBJECT->DeviceExtension.
+ * Per-device extension. Pointed to by DEVICE_OBJECT->DeviceExtension
+ * (the device object is unnamed — it exists only to anchor this state
+ * and the interrupt; it is never opened).
  * ------------------------------------------------------------------ */
 typedef struct _VIORNG_DEV {
     VIRTIO_PCI_DEV    Pci;
@@ -34,13 +36,19 @@ typedef struct _VIORNG_DEV {
     KSPIN_LOCK        IsrLock;     /* synchronization with ISR */
     KDPC              CompletionDpc;
     PVIRTQUEUE        Queue;       /* virtio-rng has only the requestq (id 0) */
-    PIRP              CurrentIrp;  /* single in-flight slot */
+    KEVENT            DoneEvent;   /* signaled by the DPC when a fill completes */
+    ULONG             LastLen;     /* bytes the device wrote on the last fill */
     PVOID             ScratchBuf;  /* NonPagedPool DMA target */
     PHYSICAL_ADDRESS  ScratchPaddr;
     ULONG             ScratchLen;  /* size of ScratchBuf */
 } VIORNG_DEV, *PVIORNG_DEV;
 
-#define VIORNG_SCRATCH_SIZE   4096   /* one page; max entropy per read */
+#define VIORNG_SCRATCH_SIZE    4096   /* one page; DMA target */
+#define VIORNG_RESEED_BYTES    64     /* entropy pulled per reseed */
+/* Gap between reseeds (~2 min), as negative relative 100ns units. */
+#define VIORNG_RESEED_INTERVAL (-((LONGLONG)120 * 10 * 1000 * 1000))
+/* How long to wait for one fill before giving up (negative relative 100ns). */
+#define VIORNG_FILL_TIMEOUT    (-((LONGLONG)5 * 10 * 1000 * 1000))
 
 /* Driver-global slot for the (single) device we manage. NT 3.5 had
    no AddDevice routine; DriverEntry walks the bus + creates objects. */
@@ -51,27 +59,25 @@ static PVIORNG_DEV g_Dev = NULL;
  * ------------------------------------------------------------------ */
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath);
 
-static NTSTATUS  VioRngCreateClose(PDEVICE_OBJECT DevObj, PIRP Irp);
-static NTSTATUS  VioRngRead       (PDEVICE_OBJECT DevObj, PIRP Irp);
-static BOOLEAN   VioRngIsr        (PKINTERRUPT Interrupt, PVOID Context);
-static VOID      VioRngDpc        (PKDPC Dpc, PVOID Context, PVOID A1, PVOID A2);
+static BOOLEAN   VioRngIsr (PKINTERRUPT Interrupt, PVOID Context);
+static VOID      VioRngDpc (PKDPC Dpc, PVOID Context, PVOID A1, PVOID A2);
+static ULONG     VioRngReseedOnce(PVIORNG_DEV dev);
+static VOID      VioRngPumpThread(PVOID Context);
 
 static NTSTATUS  VioRngFindAndAttach(PDRIVER_OBJECT DriverObject,
                                      PUNICODE_STRING RegPath);
 
 /* ------------------------------------------------------------------ *
- * DriverEntry — runs once at I/O Manager init time.
+ * DriverEntry — runs once at I/O Manager init time. Attaches to the
+ * device and starts the entropy pump thread. No major-function
+ * handlers: the driver has no openable device.
  * ------------------------------------------------------------------ */
 NTSTATUS
 DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
 {
     NTSTATUS st;
-
-    DbgPrint("VIORNG: DriverEntry\n");
-
-    DriverObject->MajorFunction[IRP_MJ_CREATE] = VioRngCreateClose;
-    DriverObject->MajorFunction[IRP_MJ_CLOSE]  = VioRngCreateClose;
-    DriverObject->MajorFunction[IRP_MJ_READ]   = VioRngRead;
+    HANDLE   h;
+    ULONG    seeded;
 
     st = VioRngFindAndAttach(DriverObject, RegPath);
     if (!NT_SUCCESS(st)) {
@@ -79,7 +85,19 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
         return st;
     }
 
-    DbgPrint("VIORNG: ready, \\Device\\VirtioRng0 alive\n");
+    /* Seed the pool once, synchronously, at load — so there's real hardware
+       entropy in immediately, without waiting for the first periodic tick. */
+    seeded = VioRngReseedOnce(g_Dev);
+
+    st = PsCreateSystemThread(&h, THREAD_ALL_ACCESS, NULL, NULL, NULL,
+                              VioRngPumpThread, g_Dev);
+    if (!NT_SUCCESS(st)) {
+        DbgPrint("VIORNG: pump thread create failed 0x%08x\n", st);
+        return st;
+    }
+    ZwClose(h);
+
+    DbgPrint("VIORNG: seeded %u bytes, pump running\n", seeded);
     return STATUS_SUCCESS;
 }
 
@@ -92,7 +110,6 @@ DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
 static NTSTATUS
 VioRngFindAndAttach(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
 {
-    UNICODE_STRING devName;
     PDEVICE_OBJECT devObj;
     PVIORNG_DEV    dev;
     NTSTATUS       st;
@@ -119,8 +136,6 @@ VioRngFindAndAttach(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
         if (cfg.VendorID != VIRTIO_PCI_VENDOR_ID)         continue;
         if (cfg.DeviceID != VIRTIO_PCI_DEV_RNG &&
             cfg.DeviceID != VIRTIO_PCI_TRANS_RNG)         continue;
-        DbgPrint("VIORNG: matched virtio-rng (devid 0x%04x) at bus0 slot 0x%02x\n",
-                 cfg.DeviceID, slot);
         break;
     }
     if (slot >= 32 * 8)
@@ -158,8 +173,6 @@ VioRngFindAndAttach(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
         KIRQL sysIrql = 0;
         sysVector = HalGetInterruptVector(PCIBus, 0, intLevel, intVector,
                                           &sysIrql, &affinity);
-        DbgPrint("VIORNG: bus IRQ %u/%u -> system vec=%u irql=%u affinity=0x%x\n",
-                 intVector, intLevel, sysVector, sysIrql, (ULONG)affinity);
         intVector = sysVector;
         intLevel  = sysIrql;
     }
@@ -168,23 +181,22 @@ VioRngFindAndAttach(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
        walk reports. */
     UNREFERENCED_PARAMETER(ioBase);
 
-    /* (3) Create the device object. Buffered I/O — NT will copy
-       between user buffer and Irp->AssociatedIrp.SystemBuffer for us. */
-    RtlInitUnicodeString(&devName, L"\\Device\\VirtioRng0");
-    st = IoCreateDevice(DriverObject, sizeof(VIORNG_DEV), &devName,
+    /* (3) Create an UNNAMED device object — it only anchors the device
+       extension and the interrupt; nothing ever opens it. */
+    st = IoCreateDevice(DriverObject, sizeof(VIORNG_DEV), NULL,
                         FILE_DEVICE_UNKNOWN, 0, FALSE, &devObj);
     if (!NT_SUCCESS(st)) {
         DbgPrint("VIORNG: IoCreateDevice failed 0x%08x\n", st);
         ExFreePool(resources);
         return st;
     }
-    devObj->Flags |= DO_BUFFERED_IO;
 
     dev = (PVIORNG_DEV)devObj->DeviceExtension;
     RtlZeroMemory(dev, sizeof(*dev));
     dev->DevObj = devObj;
     KeInitializeSpinLock(&dev->IsrLock);
     KeInitializeDpc(&dev->CompletionDpc, VioRngDpc, dev);
+    KeInitializeEvent(&dev->DoneEvent, SynchronizationEvent, FALSE);
 
     /* (4) Init virtio_pci (modern transport — caps + MmMapIoSpace),
        then run the device handshake. */
@@ -202,8 +214,6 @@ VioRngFindAndAttach(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
                           VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER);
 
     dev->Pci.Vdev.Features = VirtioFeatureGet(&dev->Pci.Vdev);
-    DbgPrint("VIORNG: device features 0x%08x\n",
-             (ULONG)dev->Pci.Vdev.Features);
     VirtioFeatureSet(&dev->Pci.Vdev);
 
     /* (5) Find + set up the single request queue (queue id 0). */
@@ -214,14 +224,15 @@ VioRngFindAndAttach(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegPath)
             DbgPrint("VIORNG: VirtioFindVqs failed 0x%08x\n", st);
             goto fail_dev;
         }
-        DbgPrint("VIORNG: requestq has %u descriptors\n", vqsize);
-
         st = VirtioVqSetup(&dev->Pci.Vdev, 0, vqsize, NULL, &dev->Queue);
         if (!NT_SUCCESS(st)) {
             DbgPrint("VIORNG: VirtioVqSetup failed 0x%08x\n", st);
             goto fail_dev;
         }
         dev->Queue->Priv = dev;   /* DPC needs the device extension */
+
+        DbgPrint("VIORNG: virtio-rng devid 0x%04x slot 0x%02x vec=%u requestq=%u\n",
+                 cfg.DeviceID, slot, intVector, vqsize);
     }
 
     /* (6) Allocate a NonPagedPool scratch buffer for the device to
@@ -262,76 +273,79 @@ fail_dev:
 }
 
 /* ------------------------------------------------------------------ *
- * IRP_MJ_CREATE / IRP_MJ_CLOSE — trivial.
+ * One reseed: submit a write-only descriptor, wait for the completion
+ * DPC to signal DoneEvent, then fold the bytes into the kernel RNG pool.
+ * One request in flight at a time. Returns bytes absorbed. Runs at
+ * PASSIVE_LEVEL (DriverEntry at load, and the pump thread thereafter).
  * ------------------------------------------------------------------ */
-static NTSTATUS
-VioRngCreateClose(PDEVICE_OBJECT DevObj, PIRP Irp)
+static ULONG
+VioRngReseedOnce(PVIORNG_DEV dev)
 {
-    UNREFERENCED_PARAMETER(DevObj);
-    Irp->IoStatus.Status      = STATUS_SUCCESS;
-    Irp->IoStatus.Information = 0;
-    IoCompleteRequest(Irp, IO_NO_INCREMENT);
-    return STATUS_SUCCESS;
-}
+    VIRTIO_SG_SEG  seg;
+    VIRTIO_SG_LIST sg;
+    KIRQL          irql;
+    NTSTATUS       st;
+    LARGE_INTEGER  timeout;
 
-/* ------------------------------------------------------------------ *
- * IRP_MJ_READ — submit a write-only descriptor pointing at our scratch
- * buffer; device fills it; DPC completes the IRP.
- * ------------------------------------------------------------------ */
-static NTSTATUS
-VioRngRead(PDEVICE_OBJECT DevObj, PIRP Irp)
-{
-    PVIORNG_DEV         dev = (PVIORNG_DEV)DevObj->DeviceExtension;
-    PIO_STACK_LOCATION  sp  = IoGetCurrentIrpStackLocation(Irp);
-    ULONG               len = sp->Parameters.Read.Length;
-    NTSTATUS            st;
-    KIRQL               irql;
-    VIRTIO_SG_SEG       seg;
-    VIRTIO_SG_LIST      sg;
+    KeClearEvent(&dev->DoneEvent);
+    dev->LastLen = 0;
 
-    if (len == 0 || len > dev->ScratchLen) {
-        Irp->IoStatus.Status      = STATUS_INVALID_PARAMETER;
-        Irp->IoStatus.Information = 0;
-        IoCompleteRequest(Irp, IO_NO_INCREMENT);
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    KeAcquireSpinLock(&dev->IsrLock, &irql);
-    if (dev->CurrentIrp) {
-        KeReleaseSpinLock(&dev->IsrLock, irql);
-        Irp->IoStatus.Status      = STATUS_DEVICE_BUSY;
-        Irp->IoStatus.Information = 0;
-        IoCompleteRequest(Irp, IO_NO_INCREMENT);
-        return STATUS_DEVICE_BUSY;
-    }
-    dev->CurrentIrp = Irp;
-
-    seg.Paddr = dev->ScratchPaddr;
-    seg.Len   = len;
+    seg.Paddr  = dev->ScratchPaddr;
+    seg.Len    = VIORNG_RESEED_BYTES;
     sg.NumSegs = 1;
     sg.Segs    = &seg;
 
     /* read_bufs = 0 (driver→device), write_bufs = 1 (device→driver). */
-    st = VirtqEnqueue(dev->Queue, Irp, &sg, 0, 1);
+    KeAcquireSpinLock(&dev->IsrLock, &irql);
+    st = VirtqEnqueue(dev->Queue, dev, &sg, 0, 1);
+    if (NT_SUCCESS(st)) {
+        VirtqHostNotify(dev->Queue);
+    }
+    KeReleaseSpinLock(&dev->IsrLock, irql);
+
     if (!NT_SUCCESS(st)) {
-        dev->CurrentIrp = NULL;
-        KeReleaseSpinLock(&dev->IsrLock, irql);
-        Irp->IoStatus.Status      = st;
-        Irp->IoStatus.Information = 0;
-        IoCompleteRequest(Irp, IO_NO_INCREMENT);
-        return st;
+        DbgPrint("VIORNG: enqueue failed 0x%08x\n", st);
+        return 0;
     }
 
-    IoMarkIrpPending(Irp);
-    VirtqHostNotify(dev->Queue);
-    KeReleaseSpinLock(&dev->IsrLock, irql);
-    return STATUS_PENDING;
+    /* Bounded wait so a wedged device can't hang boot (DriverEntry) or the
+       pump thread forever — we just skip this round and try again later. */
+    timeout.QuadPart = VIORNG_FILL_TIMEOUT;
+    st = KeWaitForSingleObject(&dev->DoneEvent, Executive, KernelMode,
+                               FALSE, &timeout);
+    if (st == STATUS_TIMEOUT) {
+        DbgPrint("VIORNG: fill timed out\n");
+        return 0;
+    }
+
+    if (dev->LastLen > 0) {
+        RngAddEntropy(dev->ScratchBuf, dev->LastLen);
+    }
+    return dev->LastLen;
+}
+
+/* ------------------------------------------------------------------ *
+ * Entropy pump thread — tops the pool up periodically. The initial seed
+ * already happened synchronously in DriverEntry, so this delays first.
+ * ------------------------------------------------------------------ */
+static VOID
+VioRngPumpThread(PVOID Context)
+{
+    PVIORNG_DEV   dev = (PVIORNG_DEV)Context;
+    LARGE_INTEGER interval;
+
+    interval.QuadPart = VIORNG_RESEED_INTERVAL;
+
+    for (;;) {
+        KeDelayExecutionThread(KernelMode, FALSE, &interval);
+        VioRngReseedOnce(dev);
+    }
 }
 
 /* ------------------------------------------------------------------ *
  * Interrupt service routine — runs at DIRQL. Must do the bare minimum:
  * ack the device's ISR register (VirtioPciIsr does this) and queue a
- * DPC for the heavy work (used-ring drain + IRP completion).
+ * DPC for the heavy work (used-ring drain + signalling the pump thread).
  * ------------------------------------------------------------------ */
 static BOOLEAN
 VioRngIsr(PKINTERRUPT Interrupt, PVOID Context)
@@ -350,8 +364,9 @@ VioRngIsr(PKINTERRUPT Interrupt, PVOID Context)
 }
 
 /* ------------------------------------------------------------------ *
- * DPC — runs at DISPATCH_LEVEL. Drains the used ring, copies entropy
- * into the IRP's SystemBuffer, completes the IRP.
+ * DPC — runs at DISPATCH_LEVEL. Drains the used ring, records how many
+ * bytes the device wrote, and signals the pump thread (which does the
+ * RngAddEntropy at PASSIVE_LEVEL with no lock held).
  * ------------------------------------------------------------------ */
 static VOID
 VioRngDpc(PKDPC Dpc, PVOID Context, PVOID A1, PVOID A2)
@@ -360,8 +375,8 @@ VioRngDpc(PKDPC Dpc, PVOID Context, PVOID A1, PVOID A2)
     PVOID       cookie;
     u32         len;
     NTSTATUS    st;
-    PIRP        irp;
     KIRQL       irql;
+    BOOLEAN     completed = FALSE;
 
     UNREFERENCED_PARAMETER(Dpc);
     UNREFERENCED_PARAMETER(A1);
@@ -372,34 +387,12 @@ VioRngDpc(PKDPC Dpc, PVOID Context, PVOID A1, PVOID A2)
         st = VirtqDequeue(dev->Queue, &cookie, &len);
         if (!NT_SUCCESS(st))
             break;
-        irp = (PIRP)cookie;
-        if (irp != dev->CurrentIrp) {
-            DbgPrint("VIORNG DPC: cookie mismatch %p vs %p\n",
-                     irp, dev->CurrentIrp);
-            continue;
-        }
-        /* Copy entropy from scratch into the IRP's SystemBuffer
-           (BUFFERED_IO; the I/O Manager copies SystemBuffer back to
-           the user-mode buffer on completion). */
-        if (irp->AssociatedIrp.SystemBuffer && len > 0) {
-            ULONG copyLen = len;
-            if (copyLen > IoGetCurrentIrpStackLocation(irp)
-                            ->Parameters.Read.Length) {
-                copyLen = IoGetCurrentIrpStackLocation(irp)
-                            ->Parameters.Read.Length;
-            }
-            RtlCopyMemory(irp->AssociatedIrp.SystemBuffer,
-                          dev->ScratchBuf, copyLen);
-            irp->IoStatus.Status      = STATUS_SUCCESS;
-            irp->IoStatus.Information = copyLen;
-        } else {
-            irp->IoStatus.Status      = STATUS_DEVICE_DATA_ERROR;
-            irp->IoStatus.Information = 0;
-        }
-        dev->CurrentIrp = NULL;
-        KeReleaseSpinLock(&dev->IsrLock, irql);
-        IoCompleteRequest(irp, IO_NO_INCREMENT);
-        KeAcquireSpinLock(&dev->IsrLock, &irql);
+        dev->LastLen = len;       /* single request in flight */
+        completed = TRUE;
     }
     KeReleaseSpinLock(&dev->IsrLock, irql);
+
+    if (completed) {
+        KeSetEvent(&dev->DoneEvent, IO_NO_INCREMENT, FALSE);
+    }
 }

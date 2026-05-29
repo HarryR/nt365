@@ -1617,6 +1617,16 @@ Phase1Initialization(
         KeBugCheck(PROCESS1_INITIALIZATION_FAILED);
 
     //
+    // The process subsystem is up, so system threads can now be created.
+    // Start the HAL's periodic entropy reseed thread (keeps the RNG pool
+    // fresh from RDRAND + scheduling jitter, off the boot critical path).
+    //
+    {
+        extern VOID HalStartEntropyThread(VOID);
+        HalStartEntropyThread();
+    }
+
+    //
     // Free loader block.
     //
 
