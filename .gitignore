@@ -67,6 +67,11 @@ src/NT/PUBLIC/SDK/LIB/I386/kernel32.dll
 src/NT/PUBLIC/SDK/LIB/I386/kernel32.exp
 src/NT/PUBLIC/SDK/LIB/I386/advapi32.dll
 src/NT/PUBLIC/SDK/LIB/I386/advapi32.exp
+# bcryptprimitives.dll (CSPRNG ProcessPrng/SystemPrng) — built from source,
+# no bootstrap consumer; .dll/.exp/.lib are pure build outputs.
+src/NT/PUBLIC/SDK/LIB/I386/bcryptprimitives.dll
+src/NT/PUBLIC/SDK/LIB/I386/bcryptprimitives.exp
+src/NT/PUBLIC/SDK/LIB/I386/bcryptprimitives.lib
 # nt.lib (URTL) + smdll.lib (SM/CLIENT) — built from source
 src/NT/PUBLIC/SDK/LIB/I386/nt.lib
 src/NT/PUBLIC/SDK/LIB/I386/smdll.lib

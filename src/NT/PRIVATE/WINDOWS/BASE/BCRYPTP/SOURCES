@@ -1,0 +1,36 @@
+!IF 0
+
+Module Name:
+
+    sources.
+
+Abstract:
+
+    bcryptprimitives.dll -- the modern CSPRNG provider DLL.  Exports
+    ProcessPrng + SystemPrng, both thin forwarders to the kernel CSPRNG
+    (NtGenerateSecureRandom).  Output DLL name comes from TARGETNAME, so
+    the on-disk bcryptprimitives.dll is built from the short-named sources
+    here.
+
+!ENDIF
+
+MAJORCOMP=windows
+MINORCOMP=base
+
+TARGETNAME=bcryptprimitives
+TARGETPATH=$(BASEDIR)\public\sdk\lib
+TARGETTYPE=DYNLINK
+DLLENTRY=BcryptpDllInit
+
+LINKLIBS=$(BASEDIR)\public\sdk\lib\*\kernel32.lib \
+         $(BASEDIR)\public\sdk\lib\*\ntdll.lib
+
+INCLUDES=..\inc;..\..\inc;..\..\..\inc
+
+NTDEBUGTYPE=coff
+
+SOURCES=bcryptp.c
+
+UMTYPE=console
+
+DLLDEF=bcryptp.def

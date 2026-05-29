@@ -481,6 +481,7 @@ symhelp     0x21000000  0x01000000
 ; WINDOWS/BASE/WSOCK32) the two collide, so wsock32 gets its own slot in
 ; the 9 MB gap between profile (0x71600000) and the kbd block (0x72000000).
 wsock32     0x71AB0000  0x00100000
+bcryptprimitives 0x71C00000  0x00100000
 ws2_32      0x75000000  0x00400000
 winstrm     0x75400000  0x00100000
 inetmib1    0x75500000  0x00100000

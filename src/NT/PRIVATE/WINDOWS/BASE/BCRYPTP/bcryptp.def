@@ -1,0 +1,8 @@
+LIBRARY bcryptprimitives
+
+DESCRIPTION 'MicroNT CSPRNG primitives (forwarders to NtGenerateSecureRandom)'
+
+EXPORTS
+
+    ProcessPrng
+    SystemPrng

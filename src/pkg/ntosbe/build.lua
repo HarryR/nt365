@@ -803,6 +803,18 @@ function M.main(opts)
     end
     clean_dirs.windows_wsock32 = { WIN .. "/BASE/WSOCK32", WIN .. "/BASE/WSOCK32/obj" }
 
+    -- ----- WINDOWS/BASE/BCRYPTP — bcryptprimitives.dll: ProcessPrng +
+    -- SystemPrng, thin forwarders to the NtGenerateSecureRandom syscall.
+    targets.windows_bcryptprimitives = function()
+        local since = platform.now()
+        local rc = run_nmake(WIN .. "/BASE/BCRYPTP",
+                         "WINDOWS/BASE/BCRYPTP - bcryptprimitives.dll",
+                         { "makedll=1" })
+        if rc ~= 0 then return rc end
+        return splitsym_dir(PUB_LIB, since)
+    end
+    clean_dirs.windows_bcryptprimitives = { WIN .. "/BASE/BCRYPTP", WIN .. "/BASE/BCRYPTP/obj" }
+
     -- ----- WINDOWS/CMD — NT 3.5 cmd.exe lifted from stuff/.
     -- NMAKE shells inline commands (@if exist, &&, |, redirections)
     -- through COMSPEC; without a working cmd.exe those _spawn calls
@@ -1394,6 +1406,7 @@ function M.main(opts)
     local USERLAND_TARGETS = {
         "rtl_user", "ntdll", "urtl", "windows_base_client", "windows_advapi",
         "windows_user32", "windows_shell32", "windows_ws2_32", "windows_wsock32",
+        "windows_bcryptprimitives",
         "cmd",
     }
 

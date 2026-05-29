@@ -50,7 +50,8 @@ SOURCES= init.c \
          regdel.c \
          regv31.c \
          regmisc.c \
-         evtlog.c
+         evtlog.c \
+         crypt.c
 
 UMTYPE=console
 

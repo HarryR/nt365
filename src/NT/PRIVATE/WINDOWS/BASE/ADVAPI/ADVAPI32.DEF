@@ -76,3 +76,13 @@ EXPORTS
     RegisterEventSourceA
     ReportEventA
     DeregisterEventSource
+
+;   --- CryptoAPI: randomness path only (crypt.c) ---
+;   Headless provider for CryptAcquireContext -> CryptGenRandom -> Release
+;   (Python 2.5 os.urandom, OpenSSL).  SystemFunction036 (= RtlGenRandom) is
+;   advapi32's ABI contract too.  All forward to NtGenerateSecureRandom.
+    CryptAcquireContextA
+    CryptAcquireContextW
+    CryptGenRandom
+    CryptReleaseContext
+    SystemFunction036
