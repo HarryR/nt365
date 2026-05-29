@@ -26,6 +26,7 @@ i386_SOURCES=i386\halinit.c   \
              i386\apic.c       \
              i386\display.c    \
              i386\stubs.c      \
+             i386\time.c       \
              i386\random.c     \
              i386\dma.c        \
              i386\halps2.c     \

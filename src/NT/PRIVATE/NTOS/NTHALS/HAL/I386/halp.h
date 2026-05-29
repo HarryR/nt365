@@ -341,7 +341,7 @@ VOID RngAddEntropy(IN PVOID Buffer, IN ULONG Length);
  * the process subsystem is up so system threads can be created. */
 VOID HalStartEntropyThread(VOID);
 
-/* Boot wall-clock seed (stubs.c); 0 until HalpInitTscClock runs.  Absorbed as
+/* Boot wall-clock seed (time.c); 0 until HalpInitTscClock runs.  Absorbed as
  * one of the entropy sources. */
 extern LARGE_INTEGER HalpBootSystemTime;
 
