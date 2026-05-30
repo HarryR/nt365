@@ -377,6 +377,7 @@ EXPORTS
     IsBadStringPtrW
     IsBadWritePtr
     IsDBCSLeadByte
+    IsDebuggerPresent
     IsDBCSLeadByteEx
     IsValidCodePage
     IsValidLocale

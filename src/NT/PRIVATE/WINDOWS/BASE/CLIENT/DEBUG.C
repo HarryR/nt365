@@ -853,3 +853,35 @@ Return Value:
 #endif // i386
 
 }
+
+BOOL
+APIENTRY
+IsDebuggerPresent(
+    VOID
+    )
+
+/*++
+
+Routine Description:
+
+    Indicates whether the calling process is running under a user-mode
+    debugger.
+
+    NT 3.5's PEB predates the BeingDebugged field (NTPSAPI.H: its second
+    member is Mutant, not the later ReadImageFileExecOptions/BeingDebugged
+    pair), so there is no flag to consult -- and no user-mode debugger
+    attaches in this environment.  Always report FALSE.
+
+Arguments:
+
+    None.
+
+Return Value:
+
+    FALSE - the calling process is not being debugged.
+
+--*/
+
+{
+    return FALSE;
+}

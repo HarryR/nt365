@@ -1817,6 +1817,13 @@ DebugBreak(
 WINBASEAPI
 BOOL
 WINAPI
+IsDebuggerPresent(
+    VOID
+    );
+
+WINBASEAPI
+BOOL
+WINAPI
 WaitForDebugEvent(
     LPDEBUG_EVENT lpDebugEvent,
     DWORD dwMilliseconds
