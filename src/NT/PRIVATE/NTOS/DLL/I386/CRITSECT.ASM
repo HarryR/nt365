@@ -42,6 +42,8 @@ _LdrpLockPrefixTable    label dword
         dd offset FLAT:Lock1
         dd offset FLAT:Lock2
         dd offset FLAT:Lock3
+        dd offset FLAT:Lock4
+        dd offset FLAT:Lock5
         dd 0
 _DATA   ENDS
 
@@ -205,5 +207,100 @@ Lock3:
         stdRET  _RtlLeaveCriticalSection
 
 _RtlLeaveCriticalSection    endp
+
+        page , 132
+        subttl  "RtlTryEnterCriticalSection"
+;++
+;
+; BOOLEAN
+; RtlTryEnterCriticalSection(
+;    IN PRTL_CRITICAL_SECTION CriticalSection
+;    )
+;
+; Routine Description:
+;
+;    This function attempts to enter a critical section without blocking.  If
+;    the section is free it is acquired; if it is already owned by the calling
+;    thread the recursion count is bumped; otherwise the function returns
+;    immediately without waiting.
+;
+; Arguments:
+;
+;    CriticalSection - supplies a pointer to a critical section.
+;
+; Return Value:
+;
+;    TRUE if the critical section was entered (or recursively re-entered);
+;    FALSE if it is currently owned by another thread.
+;
+;--
+
+        align   16
+cPublicProc _RtlTryEnterCriticalSection,1
+cPublicFpo 1,0
+
+        mov     eax,CriticalSection         ; (eax) -> critical section
+        lea     ecx,CsLockCount[eax]        ; (ecx) -> CriticalSection->LockCount
+        xor     edx,edx                     ; (edx) == 0  : exchange value (acquired; LockCount 0)
+        mov     eax,-1                       ; (eax) == -1 : comperand  (LockCount when free)
+
+;
+; ml 6.11 predates the 486 cmpxchg mnemonic, so emit the opcode bytes -- the same
+; sequence proven by kernel32's InterlockedCompareExchange:
+;   F0          lock prefix (NOP'd on UP via _LdrpLockPrefixTable; Lock4 labels it)
+;   0F B1 /r    cmpxchg r/m32, r32 ; ModRM 11h = mod 00 ([ecx]) / reg edx / r/m ecx
+;               -> lock cmpxchg dword ptr [ecx], edx
+;
+Lock4:
+        db      0F0h
+        db      00Fh, 0B1h, 011h
+        jnz     tryen10                     ; not free (eax == current LockCount)
+
+;
+; The critical section was free and is now owned by this thread.
+;
+        mov     edx,CriticalSection         ; (edx) -> critical section
+        mov     ecx,fs:PcTeb                ; (ecx) == NtCurrentTeb()
+        mov     eax,TbClientId+4[ecx]       ; (eax) == NtCurrentTeb()->ClientId.UniqueThread
+        mov     CsOwningThread[edx],eax
+        mov     dword ptr CsRecursionCount[edx],1
+
+if DBG
+        inc     dword ptr TbCountOfOwnedCriticalSections[ecx]
+        mov     ecx,CsDebugInfo[edx]
+        inc     dword ptr CsEntryCount[ecx]
+endif ; DBG
+
+        mov     eax,1                        ; return TRUE
+        stdRET  _RtlTryEnterCriticalSection
+
+;
+; The critical section is held.  Succeed only on a recursive re-entry by the
+; owning thread, mirroring RtlEnterCriticalSection's owned-by-self path.
+;
+        align   16
+tryen10:
+        mov     edx,CriticalSection         ; (edx) -> critical section
+        mov     ecx,fs:PcTeb                ; (ecx) == NtCurrentTeb()
+        mov     eax,TbClientId+4[ecx]       ; (eax) == this thread's UniqueThread
+        cmp     CsOwningThread[edx],eax
+        jne     tryen20                     ; owned by another thread -> fail
+
+Lock5:
+   lock inc     dword ptr CsLockCount[edx]  ; interlocked inc of LockCount
+        inc     dword ptr CsRecursionCount[edx]
+if DEVL
+        mov     eax,CsDebugInfo[edx]
+        inc     dword ptr CsEntryCount[eax]
+endif
+        mov     eax,1                        ; return TRUE
+        stdRET  _RtlTryEnterCriticalSection
+
+tryen20:
+        xor     eax,eax                     ; return FALSE
+        stdRET  _RtlTryEnterCriticalSection
+
+stdENDP _RtlTryEnterCriticalSection
+
 _TEXT   ends
         end

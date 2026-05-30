@@ -60,6 +60,47 @@ Return Value:
     RtlInitializeCriticalSection(lpCriticalSection);
 }
 
+BOOL
+InitializeCriticalSectionAndSpinCount(
+    LPCRITICAL_SECTION lpCriticalSection,
+    DWORD dwSpinCount
+    )
+
+/*++
+
+Routine Description:
+
+    Initializes a critical section and records a spin count.  Behaves as
+    InitializeCriticalSection (the spin count is a performance hint; see
+    RtlInitializeCriticalSectionAndSpinCount) but reports success via the
+    Win32 BOOL contract rather than NTSTATUS.
+
+Arguments:
+
+    lpCriticalSection - Supplies the address of the critical section object
+        to be initialized.
+
+    dwSpinCount - Supplies the spin count for the critical section.
+
+Return Value:
+
+    TRUE if the critical section was initialized; otherwise FALSE with the
+    last error set.
+
+--*/
+
+{
+    NTSTATUS Status;
+
+    Status = RtlInitializeCriticalSectionAndSpinCount(lpCriticalSection, dwSpinCount);
+    if (!NT_SUCCESS(Status)) {
+        BaseSetLastNTError(Status);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
 VOID
 DeleteCriticalSection(
     LPCRITICAL_SECTION lpCriticalSection

@@ -361,6 +361,7 @@ EXPORTS
     HeapWalk
     InitAtomTable
     InitializeCriticalSection
+    InitializeCriticalSectionAndSpinCount
     InterlockedCompareExchange
     InterlockedDecrement
     InterlockedExchange
@@ -562,6 +563,7 @@ EXPORTS
     TlsSetValue
     TransactNamedPipe
     TransmitCommChar
+    TryEnterCriticalSection = NTDLL.RtlTryEnterCriticalSection
     UnhandledExceptionFilter
     UnlockFile
     UnlockFileEx

@@ -1354,6 +1354,50 @@ Return Value:
 }
 
 
+NTSTATUS
+RtlInitializeCriticalSectionAndSpinCount(
+    IN PRTL_CRITICAL_SECTION CriticalSection,
+    IN ULONG SpinCount
+    )
+
+/*++
+
+Routine Description:
+
+    This routine initializes a critical section and records a spin count.
+
+    The NT 3.5 RTL_CRITICAL_SECTION predates the dedicated SpinCount field: its
+    final member is named Reserved, which occupies the same slot later versions
+    use for SpinCount.  Adaptive spinning only benefits a multiprocessor, and
+    RtlEnterCriticalSection here does not spin, so the count is recorded for
+    parity (and debuggers) but is otherwise not consulted -- initialization is
+    identical to RtlInitializeCriticalSection.
+
+Arguments:
+
+    CriticalSection - Supplies the critical section being initialized.
+
+    SpinCount - Supplies the requested spin count.  Recorded, not used.
+
+Return Value:
+
+    Status of the underlying RtlInitializeCriticalSection.
+
+--*/
+
+{
+    NTSTATUS Status;
+
+    Status = RtlInitializeCriticalSection( CriticalSection );
+
+    if (NT_SUCCESS( Status )) {
+        CriticalSection->Reserved = SpinCount;
+    }
+
+    return Status;
+}
+
+
 VOID
 RtlpCreateCriticalSectionSem(
     IN PRTL_CRITICAL_SECTION CriticalSection

@@ -1869,6 +1869,21 @@ DeleteCriticalSection(
 WINBASEAPI
 BOOL
 WINAPI
+InitializeCriticalSectionAndSpinCount(
+    LPCRITICAL_SECTION lpCriticalSection,
+    DWORD dwSpinCount
+    );
+
+WINBASEAPI
+BOOL
+WINAPI
+TryEnterCriticalSection(
+    LPCRITICAL_SECTION lpCriticalSection
+    );
+
+WINBASEAPI
+BOOL
+WINAPI
 SetEvent(
     HANDLE hEvent
     );

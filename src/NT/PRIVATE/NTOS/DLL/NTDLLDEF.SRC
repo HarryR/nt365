@@ -170,6 +170,7 @@ EXPORTS
     RtlInitializeBitMap
     RtlInitializeContext
     RtlInitializeCriticalSection
+    RtlInitializeCriticalSectionAndSpinCount
     RtlInitializeGenericTable
     RtlInitializeResource
     RtlInitializeRXact
@@ -268,6 +269,7 @@ EXPORTS
     RtlTimeToSecondsSince1970
     RtlTimeToSecondsSince1980
     RtlTimeToTimeFields
+    RtlTryEnterCriticalSection
     RtlUnicodeStringToAnsiSize=RtlxUnicodeStringToAnsiSize
     RtlUnicodeStringToAnsiString
     RtlUnicodeStringToInteger

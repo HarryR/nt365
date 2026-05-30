@@ -144,6 +144,21 @@ RtlInitializeCriticalSection(
 NTSYSAPI
 NTSTATUS
 NTAPI
+RtlInitializeCriticalSectionAndSpinCount(
+    PRTL_CRITICAL_SECTION CriticalSection,
+    ULONG SpinCount
+    );
+
+NTSYSAPI
+BOOLEAN
+NTAPI
+RtlTryEnterCriticalSection(
+    PRTL_CRITICAL_SECTION CriticalSection
+    );
+
+NTSYSAPI
+NTSTATUS
+NTAPI
 RtlDeleteCriticalSection(
     PRTL_CRITICAL_SECTION CriticalSection
     );
