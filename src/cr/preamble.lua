@@ -87,6 +87,14 @@ local FILE_OPEN_OPTS             = 0x00000060   -- SYNCHRONOUS_IO_NONALERT | NON
 local OBJ_CASE_INSENSITIVE       = 0x00000040
 local STATUS_SUCCESS             = 0
 local CHUNK                      = 65536
+local STATUS_END_OF_FILE           = 0xC0000011
+local STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
+local STATUS_OBJECT_PATH_NOT_FOUND = 0xC000003A
+
+-- NtOpenFile / NtReadFile return a signed `long`; fold it to the
+-- conventional unsigned 0xC.......  NTSTATUS form so it compares against
+-- the constants above (and prints correctly).
+local function nt_status(st) return st % 0x100000000 end
 
 -- Open an NT-namespace path and return its entire contents as a Lua
 -- string, or nil if it can't be opened (e.g. archive doesn't exist).
@@ -113,15 +121,27 @@ local function read_whole_file(nt_path)
                                   ffi.cast('void *', oap),
                                   ffi.cast('void *', iosb),
                                   FILE_SHARE_READ, FILE_OPEN_OPTS)
-    if st ~= STATUS_SUCCESS then return nil end
+    if st ~= STATUS_SUCCESS then
+        -- A genuinely-absent archive (OBJECT_{NAME,PATH}_NOT_FOUND) is the
+        -- normal "fall through to the next searcher" case — no status to
+        -- surface.  Any other failure (sharing, resources, ...) is
+        -- transient/unexpected: hand the status back so the caller reports it.
+        local s = nt_status(st)
+        if s == STATUS_OBJECT_NAME_NOT_FOUND or s == STATUS_OBJECT_PATH_NOT_FOUND then
+            return nil
+        end
+        return nil, s
+    end
 
     local buf    = ffi.new('unsigned char[?]', CHUNK)
     local chunks = {}
+    local last_rst = STATUS_SUCCESS
     while true do
         iosb.Status = 0; iosb.Information = 0
         local rst = ntdll.NtReadFile(h[0], nil, nil, nil,
                                      ffi.cast('void *', iosb),
                                      ffi.cast('void *', buf), CHUNK, nil, nil)
+        last_rst = rst
         local got = tonumber(iosb.Information)
         if got > 0 then chunks[#chunks + 1] = ffi.string(buf, got) end
         -- STATUS_SUCCESS with a short/zero read, or any non-success
@@ -129,6 +149,14 @@ local function read_whole_file(nt_path)
         if rst ~= STATUS_SUCCESS or got == 0 then break end
     end
     ntdll.NtClose(h[0])
+    -- A clean read ends on STATUS_SUCCESS (short/zero read) or
+    -- STATUS_END_OF_FILE.  Anything else is a real, partial read: discard
+    -- the truncated blob and surface the status rather than handing back a
+    -- corrupt archive (which would fail the central-dir parse downstream).
+    local s = nt_status(last_rst)
+    if s ~= STATUS_SUCCESS and s ~= STATUS_END_OF_FILE then
+        return nil, s
+    end
     return table.concat(chunks)
 end
 
@@ -176,17 +204,27 @@ local function parse_central_dir(blob)
     return index
 end
 
--- Per-archive cache: archive base name -> { blob = <bytes>, index = <table> }
--- or false for a known-absent archive (negative cache, avoids re-open).
+-- Per-archive cache: archive base name -> { blob = <bytes>, index = <table> }.
+-- SUCCESS only — never a negative/absent entry (see load_archive).
 local archive_cache = {}
 
+-- Returns the cached archive entry, or (nil[, status]) on failure.
+--
+-- Caches SUCCESS only: a hit short-circuits the whole read+parse, so we
+-- never re-read or re-parse nt.zip on a later require('nt.*').  Failures
+-- (absent OR transient) are deliberately NOT cached — like Lua's stock
+-- searchers, a miss is simply re-probed next time.  Caching absence here
+-- used to turn a one-off read hiccup into a PERMANENT require failure for
+-- the whole lua_State (a worker thread that fumbled its first nt.zip read
+-- could never require('nt.*') again).  `status` is the surfaced NTSTATUS
+-- for a non-not-found read failure (nil for genuine absence).
 local function load_archive(base)
     local cached = archive_cache[base]
-    if cached ~= nil then return cached or nil end
-    local blob = read_whole_file("\\SystemRoot\\pkg\\" .. base .. ".zip")
-    if not blob then archive_cache[base] = false; return nil end
+    if cached then return cached end
+    local blob, status = read_whole_file("\\SystemRoot\\pkg\\" .. base .. ".zip")
+    if not blob then return nil, status end
     local index = parse_central_dir(blob)
-    if not index then archive_cache[base] = false; return nil end
+    if not index then return nil end
     local entry = { blob = blob, index = index }
     archive_cache[base] = entry
     return entry
@@ -198,8 +236,18 @@ end
 local function zip_searcher(modname)
     local base = modname:match("^([^.]+)")
     if not base then return "\n\tzip: bad module name" end
-    local arc = load_archive(base)
-    if not arc then return "\n\tzip: no pkg\\" .. base .. ".zip" end
+    local arc, status = load_archive(base)
+    if not arc then
+        -- Genuine absence -> the plain message (the module just isn't here).
+        -- A surfaced status means the archive read FAILED unexpectedly
+        -- (sharing, resources, partial read, ...) -- report it so a flaky
+        -- load is diagnosable instead of masquerading as "not found".
+        if status then
+            return string.format(
+                "\n\tzip: pkg\\%s.zip read failed (NTSTATUS 0x%08X)", base, status)
+        end
+        return "\n\tzip: no pkg\\" .. base .. ".zip"
+    end
 
     local rel = modname:gsub("%.", "/")
     for _, member in ipairs({ rel .. ".lua", rel .. "/init.lua" }) do
