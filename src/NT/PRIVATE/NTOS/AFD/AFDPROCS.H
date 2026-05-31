@@ -243,6 +243,12 @@ AfdSetEventHandler (
     );
 
 NTSTATUS
+AfdSetKeepAliveOnConnection (
+    IN PAFD_CONNECTION Connection,
+    IN BOOLEAN Enable
+    );
+
+NTSTATUS
 AfdReceive (
     IN PIRP Irp,
     IN PIO_STACK_LOCATION IrpSp

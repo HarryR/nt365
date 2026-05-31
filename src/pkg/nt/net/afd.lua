@@ -316,6 +316,9 @@ local AFD_SENDS_PENDING        = 0x04   -- ULONG   (read-only)
 local AFD_MAX_PATH_SEND_SIZE   = 0x05   -- ULONG   (read-only; takes optional remote addr)
 local AFD_RECEIVE_WINDOW_SIZE  = 0x06   -- ULONG
 local AFD_SEND_WINDOW_SIZE     = 0x07   -- ULONG
+local AFD_KEEPALIVE            = 0x08   -- BOOLEAN (enable/disable TCP keepalive;
+                                        -- pushed to the transport via
+                                        -- IOCTL_TCP_SET_INFORMATION_EX)
 
 local IOCTL_TDI_CONNECT            = 0x210004
 
@@ -1222,6 +1225,7 @@ return {
     MAX_PATH_SEND_SIZE  = AFD_MAX_PATH_SEND_SIZE,
     RECEIVE_WINDOW_SIZE = AFD_RECEIVE_WINDOW_SIZE,
     SEND_WINDOW_SIZE    = AFD_SEND_WINDOW_SIZE,
+    KEEPALIVE           = AFD_KEEPALIVE,
     -- Helpers that occasionally come in handy outside this module.
     parse_ipv4  = parse_ipv4,
     format_ipv4 = format_ipv4,

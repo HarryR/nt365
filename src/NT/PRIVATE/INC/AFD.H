@@ -195,6 +195,13 @@ typedef struct _AFD_INFORMATION {
 #define AFD_SEND_WINDOW_SIZE     0x07
 
 //
+// Enable/disable TCP keepalive on a connected stream endpoint.  Carried as
+// the Boolean field of AFD_INFORMATION; AFD pushes it to the transport.
+//
+
+#define AFD_KEEPALIVE            0x08
+
+//
 // AFD IOCTL code definitions.
 //
 

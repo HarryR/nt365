@@ -30,6 +30,73 @@ struct sockaddr_nb {
 };
 
 //
+// Winsock 2 surface needed by WSAIoctl().  The DLL is built on the Winsock
+// 1.1 <winsock.h>, which predates these, so we declare the minimum here
+// rather than pulling in a full <winsock2.h>/<mstcpip.h>.  IOC_IN/IOC_OUT,
+// SOCKET and WSAEOPNOTSUPP already come from <winsock.h>.
+//
+
+#define IOC_VENDOR  0x18000000
+#define IOC_WS2     0x08000000
+
+#define _WSAIO(x,y)    (IOC_VOID|(x)|(y))
+#define _WSAIOR(x,y)   (IOC_OUT|(x)|(y))
+#define _WSAIOW(x,y)   (IOC_IN|(x)|(y))
+#define _WSAIORW(x,y)  (IOC_INOUT|(x)|(y))
+
+//
+// The only control codes WSAIoctl() handles (see WSAMISC.c).  SIO_RCVALL and
+// the extension-function/overlapped codes are deliberately rejected there.
+//
+
+#define SIO_RCVALL                          _WSAIOW(IOC_VENDOR,1)
+#define SIO_KEEPALIVE_VALS                  _WSAIOW(IOC_VENDOR,4)
+#define SIO_GET_EXTENSION_FUNCTION_POINTER  _WSAIORW(IOC_WS2,6)
+
+//
+// Argument structure for SIO_KEEPALIVE_VALS.  onoff enables/disables
+// keepalive on the connection; keepalivetime/keepaliveinterval are accepted
+// but governed by the stack's global timers (this TCP is NT4-era and has no
+// per-socket keepalive timers -- see WSAMISC.c).
+//
+
+struct tcp_keepalive {
+    u_long  onoff;
+    u_long  keepalivetime;
+    u_long  keepaliveinterval;
+};
+
+//
+// WSAIoctl() is synchronous-only here, so the overlapped argument types are
+// just the Win32 OVERLAPPED forms; the overlapped path itself is rejected.
+//
+
+typedef OVERLAPPED   WSAOVERLAPPED;
+typedef OVERLAPPED * LPWSAOVERLAPPED;
+
+typedef
+void
+(CALLBACK * LPWSAOVERLAPPED_COMPLETION_ROUTINE) (
+    IN DWORD dwError,
+    IN DWORD cbTransferred,
+    IN LPWSAOVERLAPPED lpOverlapped,
+    IN DWORD dwFlags
+    );
+
+int PASCAL
+WSAIoctl (
+    SOCKET s,
+    DWORD dwIoControlCode,
+    LPVOID lpvInBuffer,
+    DWORD cbInBuffer,
+    LPVOID lpvOutBuffer,
+    DWORD cbOutBuffer,
+    LPDWORD lpcbBytesReturned,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+    );
+
+//
 // SOCKET_STATE defines the various states a socket may have.  Note that
 // not all states are valid for all types of sockets.
 //
@@ -92,6 +159,7 @@ typedef struct _SOCKET_INFORMATION {
     BOOLEAN ReuseAddresses;
     BOOLEAN NonBlocking;
     BOOLEAN DontUseWildcard;
+    BOOLEAN KeepAlive;
 
     BOOLEAN ConnectInProgress;
 

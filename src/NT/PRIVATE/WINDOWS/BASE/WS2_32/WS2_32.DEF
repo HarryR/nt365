@@ -38,6 +38,10 @@ EXPORTS
     shutdown        @22
     socket          @23
 
+;   --- WSA 2.0 socket calls (24-50) ---
+;   Only the synchronous subset; WSAIoctl rejects overlapped/extension codes.
+    WSAIoctl        @36
+
 ;   --- Resolver stubs (51-57; 54=getprotobynumber not imported) ---
     gethostbyaddr   @51
     gethostbyname   @52

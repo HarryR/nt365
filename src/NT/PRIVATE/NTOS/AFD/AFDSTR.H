@@ -160,6 +160,14 @@ typedef struct _AFD_ENDPOINT {
 
     BOOLEAN NonBlocking;
 
+    //
+    // TRUE if TCP keepalive has been enabled on this endpoint.  Remembered
+    // here so it can be applied to the connection at connect time even if it
+    // was set before the socket was connected.
+    //
+
+    BOOLEAN KeepAlive;
+
     LIST_ENTRY GlobalEndpointListEntry;
     PAFD_TRANSPORT_INFO TransportInfo;
     AFD_ENDPOINT_TYPE EndpointType;

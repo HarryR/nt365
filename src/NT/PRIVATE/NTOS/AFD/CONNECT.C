@@ -209,6 +209,17 @@ Return Value:
     AfdReferenceEndpoint( endpoint, FALSE );
     connection->Endpoint = endpoint;
 
+    //
+    // If keepalive was enabled on the endpoint before it connected, push it
+    // to the connection now.  The flag lands on the transport's connection
+    // object and is inherited when the connection is established.  This is
+    // best-effort: a keepalive failure must not fail the connect.
+    //
+
+    if ( endpoint->KeepAlive ) {
+        (VOID)AfdSetKeepAliveOnConnection( connection, TRUE );
+    }
+
     tdiRequest = Irp->AssociatedIrp.SystemBuffer;
 
     //

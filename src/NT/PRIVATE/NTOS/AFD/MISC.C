@@ -42,6 +42,7 @@ AfdRestartDeviceControl (
 #pragma alloc_text( PAGE, AfdQueryHandles )
 #pragma alloc_text( PAGE, AfdGetInformation )
 #pragma alloc_text( PAGE, AfdSetInformation )
+#pragma alloc_text( PAGE, AfdSetKeepAliveOnConnection )
 #pragma alloc_text( PAGE, AfdGetContext )
 #pragma alloc_text( PAGE, AfdGetContextLength )
 #pragma alloc_text( PAGE, AfdSetContext )
@@ -836,6 +837,33 @@ Return Value:
         break;
     }
 
+    case AFD_KEEPALIVE: {
+
+        PAFD_CONNECTION connection;
+
+        //
+        // Remember the keepalive state on the endpoint.  It is applied to the
+        // connection when the endpoint connects (see AfdConnect); if the
+        // endpoint is already connected, push it to the transport now.
+        //
+
+        endpoint->KeepAlive = afdInfo->Information.Boolean;
+
+        connection = AFD_CONNECTION_FROM_ENDPOINT( endpoint );
+
+        if ( connection != NULL && connection->Handle != NULL ) {
+            status = AfdSetKeepAliveOnConnection(
+                         connection,
+                         endpoint->KeepAlive
+                         );
+            if ( !NT_SUCCESS(status) ) {
+                return status;
+            }
+        }
+
+        break;
+    }
+
     default:
 
         return STATUS_INVALID_PARAMETER;
@@ -844,6 +872,115 @@ Return Value:
     return STATUS_SUCCESS;
 
 } // AfdSetInformation
+
+
+NTSTATUS
+AfdSetKeepAliveOnConnection (
+    IN PAFD_CONNECTION Connection,
+    IN BOOLEAN Enable
+    )
+
+/*++
+
+Routine Description:
+
+    Enables or disables TCP keepalive on the transport connection underlying
+    an AFD connection block, by issuing IOCTL_TCP_SET_INFORMATION_EX with the
+    TCP_SOCKET_KEEPALIVE option on the connection's TDI handle.
+
+    Only the on/off state is set.  This TCP uses global keepalive timers
+    (KeepAliveTime/KeepAliveInterval); per-socket timer values
+    (the Windows 2000 TCP_SOCKET_KEEPALIVE_VALS option) are not supported.
+
+Arguments:
+
+    Connection - the connection on which to set keepalive.  Must have an open
+        transport handle.
+
+    Enable - TRUE to enable keepalive, FALSE to disable.
+
+Return Value:
+
+    NTSTATUS -- Indicates the status of the request.
+
+--*/
+
+{
+    //
+    // The option value lives in the variable-length Buffer[] tail of the
+    // request, so size the storage for the request plus one TCPSocketOption.
+    //
+
+    UCHAR requestBuffer[ sizeof(TCP_REQUEST_SET_INFORMATION_EX) - 1 +
+                             sizeof(TCPSocketOption) ];
+    PTCP_REQUEST_SET_INFORMATION_EX request;
+    TCPSocketOption *option;
+    IO_STATUS_BLOCK ioStatusBlock;
+    NTSTATUS status;
+
+    PAGED_CODE( );
+
+    ASSERT( Connection->Type == AfdBlockTypeConnection );
+    ASSERT( Connection->Handle != NULL );
+
+    //
+    // Build the extended set-information request identifying the
+    // per-connection TCP keepalive option, with the on/off value in the
+    // trailing buffer.
+    //
+
+    RtlZeroMemory( requestBuffer, sizeof(requestBuffer) );
+
+    request = (PTCP_REQUEST_SET_INFORMATION_EX)requestBuffer;
+    request->ID.toi_entity.tei_entity = CO_TL_ENTITY;
+    request->ID.toi_entity.tei_instance = 0;
+    request->ID.toi_class = INFO_CLASS_PROTOCOL;
+    request->ID.toi_type = INFO_TYPE_CONNECTION;
+    request->ID.toi_id = TCP_SOCKET_KEEPALIVE;
+    request->BufferSize = sizeof(TCPSocketOption);
+
+    option = (TCPSocketOption *)&request->Buffer[0];
+    option->tso_value = Enable ? 1 : 0;
+
+    //
+    // The connection handle was opened in the AFD system process, so attach
+    // to that process before using it (as AfdCreateConnection does).
+    //
+
+    KeAttachProcess( AfdSystemProcess );
+
+    status = ZwDeviceIoControlFile(
+                 Connection->Handle,
+                 NULL,                          // EventHandle
+                 NULL,                          // APC Routine
+                 NULL,                          // APC Context
+                 &ioStatusBlock,
+                 IOCTL_TCP_SET_INFORMATION_EX,
+                 requestBuffer,                 // InputBuffer
+                 sizeof(requestBuffer),         // InputBufferLength
+                 NULL,                          // OutputBuffer
+                 0                              // OutputBufferLength
+                 );
+
+    if ( status == STATUS_PENDING ) {
+        status = ZwWaitForSingleObject( Connection->Handle, TRUE, NULL );
+        if ( NT_SUCCESS(status) ) {
+            status = ioStatusBlock.Status;
+        }
+    }
+
+    KeDetachProcess( );
+
+    IF_DEBUG(CONNECT) {
+        if ( !NT_SUCCESS(status) ) {
+            KdPrint(( "AfdSetKeepAliveOnConnection: keepalive=%d on connection "
+                      "%lx failed: %lx\n", Enable, Connection, status ));
+        }
+    }
+
+    return status;
+
+} // AfdSetKeepAliveOnConnection
 
 
 

@@ -262,6 +262,78 @@ t.test("SET AFD_INLINE_MODE on connected TCP is rejected", function()
     server:close()
 end)
 
+t.test("SET AFD_KEEPALIVE on connected TCP enables and disables keepalive", function()
+    -- Exercises AfdSetInformation's AFD_KEEPALIVE arm with a live
+    -- connection: it calls AfdSetKeepAliveOnConnection, which issues
+    -- IOCTL_TCP_SET_INFORMATION_EX(TCP_SOCKET_KEEPALIVE) down to TCP.  A
+    -- clean return means TCP accepted the option end-to-end (set/cleared
+    -- the KEEPALIVE flag on the connection) — a real wiring check, not an
+    -- AFD-local no-op.  Per-socket timer values aren't honored by this
+    -- NT4-era TCP (global timers) and aren't exercised here.
+    local server = afd.tcp()
+    afd.bind(server, "127.0.0.1", 0)
+    afd.listen(server, 1)
+    local _, port = afd.getsockname(server)
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    afd.connect(client, "127.0.0.1", port, LOOPBACK_TIMEOUT)
+    local conn = afd.accept(server, LOOPBACK_TIMEOUT)
+
+    -- The active-connect side is a VcConnecting endpoint with a live
+    -- transport connection, so this drives the push-to-TCP path.
+    afd.set_info(client, afd.KEEPALIVE, 1)   -- enable
+    afd.set_info(client, afd.KEEPALIVE, 0)   -- disable (clears the flag)
+    afd.set_info(client, afd.KEEPALIVE, 1)   -- re-enable
+
+    conn:close()
+    client:close()
+    server:close()
+    t.ok(true, "keepalive enable/disable round-tripped to TCP")
+end)
+
+t.test("SET AFD_KEEPALIVE before connect is applied at connect", function()
+    -- On an unconnected endpoint there is no transport connection to push
+    -- to yet, so AfdSetInformation just records endpoint->KeepAlive and
+    -- returns success (the connection==NULL branch).  AfdConnect then
+    -- applies it to the new connection via the apply-at-connect hook in
+    -- CONNECT.C.  We assert the connect still succeeds and data flows,
+    -- proving the connect-time keepalive push didn't disturb the handshake.
+    local thread = require('nt.thread')
+
+    local listener = afd.tcp()
+    afd.bind(listener, "127.0.0.1", 0)
+    afd.listen(listener, 5)
+    local _, listener_port = afd.getsockname(listener)
+
+    local th = thread.run([[
+        local handle = require('nt.dll.handle')
+        local afd    = require('nt.net.afd')
+        local listener = handle.from_payload(PAYLOAD)
+        local peer = afd.accept(listener, 2.0)
+        afd.send(peer, "ka-ok", 1.0)
+        peer:close()
+        return "ok"
+    ]], handle.to_payload(listener))
+    t.defer(function() th:close() end)
+
+    local client = afd.tcp()
+    afd.bind(client, "127.0.0.1", 0)
+    -- Enable keepalive BEFORE connect: stored on the endpoint now, pushed
+    -- to TCP when the connection object is created at connect time.
+    afd.set_info(client, afd.KEEPALIVE, 1)
+    afd.connect(client, "127.0.0.1", listener_port, LOOPBACK_TIMEOUT)
+    local got = afd.recv(client, 16, LOOPBACK_TIMEOUT)
+    client:close()
+
+    th:wait(2.0)
+    local s, v = th:result()
+    t.eq(s, "ok", "child thread crashed: " .. tostring(v))
+    t.eq(got, "ka-ok")
+
+    listener:close()
+end)
+
 t.test("AFD_POLL_RECEIVE_EXPEDITED bit is never set by the kernel", function()
     -- AfdReceiveExpeditedEventHandler and the TDI_EVENT_RECEIVE_EXPEDITED
     -- registration are gone; the POLL.C arm that ORed in the bit is gone

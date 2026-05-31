@@ -199,6 +199,7 @@ Return Value:
            ( OptionName == SO_BROADCAST ||
              OptionName == SO_DEBUG ||
              OptionName == SO_DONTLINGER ||
+             OptionName == SO_KEEPALIVE ||
              OptionName == SO_LINGER ||
              OptionName == SO_RCVBUF ||
              OptionName == SO_REUSEADDR ||
@@ -387,8 +388,17 @@ Return Value:
             goto exit;
         }
 
-        case SO_DONTROUTE:
         case SO_KEEPALIVE:
+
+            //
+            // Return the cached keepalive state.  The buffer was zeroed and
+            // *OptionLength set to sizeof(int) above.
+            //
+
+            *OptionValue = socket->KeepAlive;
+            break;
+
+        case SO_DONTROUTE:
         case SO_RCVLOWAT:
         case SO_SNDLOWAT:
         default:
@@ -1080,10 +1090,37 @@ Return Value:
 
             break;
 
+        case SO_KEEPALIVE: {
+
+            BOOLEAN enable;
+
+            //
+            // Enable or disable TCP keepalive on the connection.  Hand the
+            // state to AFD, which pushes it to the TCP transport (immediately
+            // if the socket is connected, otherwise when it connects).
+            //
+
+            enable = (BOOLEAN)( optionValue != 0 );
+
+            error = SockSetInformation(
+                        socket,
+                        AFD_KEEPALIVE,
+                        &enable,
+                        NULL,
+                        NULL
+                        );
+            if ( error != NO_ERROR ) {
+                goto exit;
+            }
+
+            socket->KeepAlive = enable;
+
+            break;
+        }
+
         case SO_DONTROUTE:
         case SO_ACCEPTCONN:
         case SO_ERROR:
-        case SO_KEEPALIVE:
         case SO_RCVLOWAT:
         case SO_SNDLOWAT:
         case SO_TYPE:

@@ -14,6 +14,7 @@ Abstract:
         WSACencelBlockingCall()
         WSACleanup()
         WSAGetLastError()
+        WSAIoctl()
         WSAIsBlocking()
         WSASetBlockingHook()
         WSAUnhookBlockingHook()
@@ -481,6 +482,196 @@ Return Value:
 } // WSAStartup
 
 
+int PASCAL
+WSAIoctl (
+    SOCKET s,
+    DWORD dwIoControlCode,
+    LPVOID lpvInBuffer,
+    DWORD cbInBuffer,
+    LPVOID lpvOutBuffer,
+    DWORD cbOutBuffer,
+    LPDWORD lpcbBytesReturned,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+    )
+
+/*++
+
+Routine Description:
+
+    Performs a control operation on a socket.  This implementation supports
+    only the synchronous control codes a Winsock 1.1-era BSD application needs;
+    it is not the full Winsock 2 ioctl surface.
+
+    Specifically:
+
+        SIO_KEEPALIVE_VALS - enable/disable TCP keepalive on a connected VC
+            socket.  The tcp_keepalive 'onoff' field is honored for real (it is
+            pushed through AFD to the TCP transport).  The 'keepalivetime' and
+            'keepaliveinterval' fields are accepted but NOT applied per-socket:
+            this TCP is NT4-era and uses global keepalive timers
+            (KeepAliveTime/KeepAliveInterval).  Per-socket timers
+            (TCP_SOCKET_KEEPALIVE_VALS) are a Windows 2000 feature and are not
+            implemented here.
+
+    Everything else -- SIO_RCVALL (promiscuous capture; out of scope on a
+    single-NIC, non-routing host), SIO_GET_EXTENSION_FUNCTION_POINTER
+    (AcceptEx/ConnectEx), and any overlapped request -- is rejected with
+    WSAEOPNOTSUPP so that this one entry point cannot pull in the overlapped /
+    IOCP / mswsock surface.
+
+Arguments:
+
+    s - A descriptor identifying a socket.
+
+    dwIoControlCode - The control code of the operation to perform.
+
+    lpvInBuffer - A pointer to the input buffer.
+
+    cbInBuffer - The size, in bytes, of the input buffer.
+
+    lpvOutBuffer - A pointer to the output buffer (unused here).
+
+    cbOutBuffer - The size, in bytes, of the output buffer (unused here).
+
+    lpcbBytesReturned - A pointer to the actual number of bytes of output.
+
+    lpOverlapped - A pointer to a WSAOVERLAPPED structure.  Must be NULL --
+        overlapped operation is not supported.
+
+    lpCompletionRoutine - A completion routine.  Must be NULL.
+
+Return Value:
+
+    Upon successful completion, WSAIoctl() returns 0.  Otherwise a value of
+    SOCKET_ERROR is returned, and a specific error code may be retrieved by
+    calling WSAGetLastError().
+
+--*/
+
+{
+    ULONG error;
+    PSOCKET_INFORMATION socket;
+
+    WS_ENTER( "WSAIoctl", (PVOID)s, (PVOID)dwIoControlCode, lpvInBuffer, lpOverlapped );
+
+    if ( !SockEnterApi( TRUE, TRUE, FALSE ) ) {
+        WS_EXIT( "WSAIoctl", SOCKET_ERROR, TRUE );
+        return SOCKET_ERROR;
+    }
+
+    //
+    // Overlapped operation is not supported.  Reject it before touching the
+    // socket so the overlapped/IOCP path can never be reached through here.
+    //
+
+    if ( lpOverlapped != NULL || lpCompletionRoutine != NULL ) {
+        SetLastError( WSAEOPNOTSUPP );
+        WS_EXIT( "WSAIoctl", SOCKET_ERROR, TRUE );
+        return SOCKET_ERROR;
+    }
+
+    error = NO_ERROR;
+
+    socket = SockFindAndReferenceSocket( s, TRUE );
+
+    if ( socket == NULL ) {
+        SetLastError( WSAENOTSOCK );
+        WS_EXIT( "WSAIoctl", SOCKET_ERROR, TRUE );
+        return SOCKET_ERROR;
+    }
+
+    SockAcquireSocketLockExclusive( socket );
+
+    switch ( dwIoControlCode ) {
+
+    case SIO_KEEPALIVE_VALS: {
+
+        struct tcp_keepalive *keepAliveVals;
+        BOOLEAN enable;
+
+        //
+        // Keepalive only applies to connection-oriented sockets.
+        //
+
+        if ( socket->SocketType == SOCK_DGRAM ) {
+            error = WSAEINVAL;
+            goto exit;
+        }
+
+        if ( lpvInBuffer == NULL ||
+                 cbInBuffer < sizeof(struct tcp_keepalive) ) {
+            error = WSAEFAULT;
+            goto exit;
+        }
+
+        keepAliveVals = (struct tcp_keepalive *)lpvInBuffer;
+        enable = (BOOLEAN)( keepAliveVals->onoff != 0 );
+
+        //
+        // Hand the on/off state to AFD, which pushes it to the TCP transport
+        // (immediately if the socket is connected, otherwise when it
+        // connects).  keepalivetime/keepaliveinterval are intentionally
+        // ignored -- see the routine description.
+        //
+
+        error = SockSetInformation(
+                    socket,
+                    AFD_KEEPALIVE,
+                    &enable,
+                    NULL,
+                    NULL
+                    );
+
+        if ( error == NO_ERROR ) {
+            socket->KeepAlive = enable;
+        }
+
+        if ( ARGUMENT_PRESENT( lpcbBytesReturned ) ) {
+            *lpcbBytesReturned = 0;
+        }
+
+        break;
+    }
+
+    default:
+
+        //
+        // SIO_RCVALL, SIO_GET_EXTENSION_FUNCTION_POINTER, and every other
+        // code are not supported.
+        //
+
+        error = WSAEOPNOTSUPP;
+        goto exit;
+    }
+
+exit:
+
+    IF_DEBUG(SOCKOPT) {
+        if ( error != NO_ERROR ) {
+            WS_PRINT(( "WSAIoctl on socket %lx, code %lx failed: %ld\n",
+                           s, dwIoControlCode, error ));
+        } else {
+            WS_PRINT(( "WSAIoctl on socket %lx code %lx succeeded\n",
+                           s, dwIoControlCode ));
+        }
+    }
+
+    SockReleaseSocketLock( socket );
+    SockDereferenceSocket( socket );
+
+    if ( error != NO_ERROR ) {
+        SetLastError( error );
+        WS_EXIT( "WSAIoctl", SOCKET_ERROR, TRUE );
+        return SOCKET_ERROR;
+    }
+
+    WS_EXIT( "WSAIoctl", NO_ERROR, FALSE );
+    return NO_ERROR;
+
+} // WSAIoctl
+
+
 int PASCAL
 WSApSetPostRoutine (
     IN PVOID PostRoutine
